@@ -1,6 +1,5 @@
 package com.ibicza.redlinetech.content.ore;
 
-
 import com.ibicza.redlinetech.content.block.MiningTier;
 import com.ibicza.redlinetech.content.block.MiningTool;
 import com.ibicza.redlinetech.content.common.FloatRange;
@@ -10,8 +9,13 @@ import com.ibicza.redlinetech.content.material.MaterialDefinition;
 import com.ibicza.redlinetech.content.worldgen.OreWorldgenProfile;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static com.ibicza.redlinetech.content.csv.CsvParsers.booleanValue;
 import static com.ibicza.redlinetech.content.csv.CsvParsers.color;
@@ -23,7 +27,12 @@ import static com.ibicza.redlinetech.content.csv.CsvParsers.string;
 
 public final class MetallicOreCsvLoader {
     private static final String PATH = "redline_content/metallic_ores.csv";
-    private static final int MAX_COMPONENTS = 8;
+
+    private static final Pattern COMPOSITION_MATERIAL_KEY =
+            Pattern.compile("^comp_(\\d+)_material$");
+
+    private static final Pattern COMPOSITION_CONTENT_KEY =
+            Pattern.compile("^comp_(\\d+)_content$");
 
     public static List<MetallicOreDefinition> load(Map<String, MaterialDefinition> materialsById) {
         return CsvTableReader.readResource(PATH).stream()
@@ -69,11 +78,31 @@ public final class MetallicOreCsvLoader {
             Map<String, String> row,
             Map<String, MaterialDefinition> materialsById
     ) {
+        List<Integer> indexes = findCompositionIndexes(row);
         List<OreCompositionEntry> result = new ArrayList<>();
+        Set<String> usedMaterialIds = new HashSet<>();
 
-        for (int index = 1; index <= MAX_COMPONENTS; index++) {
+        if (indexes.isEmpty()) {
+            throw new IllegalStateException(
+                    "Metallic ore CSV row has no comp_N_material / comp_N_content columns: "
+                            + string(row, "id")
+            );
+        }
+
+        for (int index : indexes) {
             String materialKey = "comp_" + index + "_material";
             String contentKey = "comp_" + index + "_content";
+
+            if (!row.containsKey(materialKey) || !row.containsKey(contentKey)) {
+                throw new IllegalStateException(
+                        "Broken ore composition columns in "
+                                + string(row, "id")
+                                + ". Both columns must exist in CSV header: "
+                                + materialKey
+                                + " and "
+                                + contentKey
+                );
+            }
 
             String materialId = optionalString(row, materialKey);
             String contentText = optionalString(row, contentKey);
@@ -84,32 +113,47 @@ public final class MetallicOreCsvLoader {
 
             if (materialId.isBlank() || contentText.isBlank()) {
                 throw new IllegalStateException(
-                        "Broken ore composition pair in " + string(row, "id")
-                                + ": " + materialKey + "=" + materialId
-                                + ", " + contentKey + "=" + contentText
+                        "Broken ore composition pair in "
+                                + string(row, "id")
+                                + ": "
+                                + materialKey
+                                + "="
+                                + materialId
+                                + ", "
+                                + contentKey
+                                + "="
+                                + contentText
                 );
             }
 
             if (!materialsById.containsKey(materialId)) {
                 throw new IllegalStateException(
-                        "Unknown material '" + materialId + "' in ore " + string(row, "id")
+                        "Unknown material '"
+                                + materialId
+                                + "' in ore "
+                                + string(row, "id")
                 );
             }
 
             float content = Float.parseFloat(contentText);
+
             if (content <= 0) {
                 throw new IllegalStateException(
-                        "Ore composition content must be positive in " + string(row, "id")
-                                + ": " + materialId + "=" + content
+                        "Ore composition content must be positive in "
+                                + string(row, "id")
+                                + ": "
+                                + materialId
+                                + "="
+                                + content
                 );
             }
 
-            boolean duplicate = result.stream()
-                    .anyMatch(entry -> entry.materialId().equals(materialId));
-
-            if (duplicate) {
+            if (!usedMaterialIds.add(materialId)) {
                 throw new IllegalStateException(
-                        "Duplicate material '" + materialId + "' in ore " + string(row, "id")
+                        "Duplicate material '"
+                                + materialId
+                                + "' in ore "
+                                + string(row, "id")
                 );
             }
 
@@ -117,6 +161,29 @@ public final class MetallicOreCsvLoader {
         }
 
         return List.copyOf(result);
+    }
+
+    private static List<Integer> findCompositionIndexes(Map<String, String> row) {
+        Set<Integer> indexes = new HashSet<>();
+
+        for (String key : row.keySet()) {
+            Matcher materialMatcher = COMPOSITION_MATERIAL_KEY.matcher(key);
+
+            if (materialMatcher.matches()) {
+                indexes.add(Integer.parseInt(materialMatcher.group(1)));
+                continue;
+            }
+
+            Matcher contentMatcher = COMPOSITION_CONTENT_KEY.matcher(key);
+
+            if (contentMatcher.matches()) {
+                indexes.add(Integer.parseInt(contentMatcher.group(1)));
+            }
+        }
+
+        return indexes.stream()
+                .sorted(Comparator.naturalOrder())
+                .toList();
     }
 
     private MetallicOreCsvLoader() {

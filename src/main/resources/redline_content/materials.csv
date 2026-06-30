@@ -1,9 +1,91 @@
-id,ru_name,en_name,kind,color,has_ingot,has_dust,has_plate,has_wire,has_rod,has_nugget,has_block,enabled
-zinc,Цинк,Zinc,metal,#B7BCC2,true,true,true,false,true,true,true,true
-graphite,Графит,Graphite,non_metal,#222222,false,true,false,false,false,false,false,true
-lead,Свинец,Lead,metal,#4F5668,true,true,true,false,true,true,true,true
-silver,Серебро,Silver,metal,#D8E4EA,true,true,true,true,true,true,true,true
-indium,Индий,Indium,metal,#BFC7D5,true,true,false,false,false,true,true,true
-germanium,Германий,Germanium,metal,#8E8E96,true,true,false,false,false,true,true,true
-gallium,Галлий,Gallium,metal,#BBCBD6,true,true,false,false,false,true,true,true
-copper,Медь,Copper,vanilla_proxy,#D68A4A,false,true,true,true,true,false,false,true
+id,ru_name,en_name,kind,color,has_ingot,has_dust,has_small_dust,has_plate,has_dense_plate,has_casing,has_wire,has_rod,has_foil,has_ribbon,has_nugget,has_block,enabled
+aluminum,Алюминий,Aluminum,METAL,#B8C6D8,true,true,true,true,true,true,true,true,true,true,true,true,true
+barium,Барий,Barium,METAL,#B9B58A,true,true,true,true,false,true,false,false,false,false,true,true,true
+beryllium,Бериллий,Beryllium,METAL,#6E8F75,true,true,true,true,false,true,false,true,false,false,true,true,true
+borate,Борат,Borate,NON_METAL,#E8D7B0,false,true,false,false,false,false,false,false,false,false,false,false,true
+brass,Латунь,Brass,METAL,#C8A24A,true,true,true,true,true,true,true,true,true,true,true,true,true
+bronze,Бронза,Bronze,METAL,#C07A3A,true,true,true,true,true,true,false,true,false,true,true,true,true
+cadmium,Кадмий,Cadmium,METAL,#B7A15D,true,true,true,true,false,true,false,true,false,false,true,true,true
+calcium,Кальций,Calcium,METAL,#D7D4C6,true,true,true,true,false,true,false,false,false,false,true,true,true
+cesium_fraction,Цезиевая фракция,Cesium Fraction,NON_METAL,#B6A0D6,false,false,false,false,false,false,false,false,false,false,false,false,true
+charcoal,Древесный уголь,Charcoal,VANILLA_PROXY,#28231E,false,true,false,false,false,false,false,false,false,false,false,false,true
+chloride_salt_fraction,Хлоридно-солевая фракция,Chloride Salt Fraction,NON_METAL,#DCD8C8,false,false,false,false,false,false,false,false,false,false,false,false,true
+chromium,Хром,Chromium,METAL,#8FA1A6,true,true,true,true,false,true,false,false,false,false,true,true,true
+clay,Глина,Clay,VANILLA_PROXY,#A68E7A,false,true,false,false,false,false,false,false,false,false,false,false,true
+coal,Уголь,Coal,VANILLA_PROXY,#252525,false,true,false,false,false,false,false,false,false,false,false,false,true
+cobalt,Кобальт,Cobalt,METAL,#496D9A,true,true,true,true,false,true,false,false,false,false,true,true,true
+coke,Кокс,Coke,NON_METAL,#1F2022,false,true,false,false,false,false,false,false,false,false,false,false,true
+constantan,Константан,Constantan,METAL,#B5895D,true,true,true,true,false,true,true,false,true,false,true,true,true
+copper,Медь,Copper,VANILLA_PROXY,#D68A4A,false,true,true,true,false,true,true,true,true,true,true,false,true
+diamond,Алмаз,Diamond,VANILLA_PROXY,#86D9E8,false,true,false,false,false,false,false,false,false,false,false,false,true
+duralumin,Дюралюминий,Duralumin,METAL,#B4BEC8,true,true,true,true,true,true,false,true,false,false,true,true,true
+dysprosium,Диспрозий,Dysprosium,METAL,#A7AFC6,true,true,true,true,false,true,false,false,false,false,true,true,true
+electrum,Электрум,Electrum,METAL,#E0C66A,true,true,true,true,false,true,true,false,true,false,true,true,true
+flint,Кремень,Flint,VANILLA_PROXY,#4B4F55,false,true,false,false,false,false,false,false,false,false,false,false,true
+fluorite,Флюорит,Fluorite,NON_METAL,#8FC6B3,false,true,false,false,false,false,false,false,false,false,false,false,true
+gadolinium,Гадолиний,Gadolinium,METAL,#A0B2B0,true,true,true,true,false,true,false,false,false,false,true,true,true
+gallium,Галлий,Gallium,METAL,#BBCBD6,true,true,true,true,false,true,false,false,false,false,true,true,true
+germanium,Германий,Germanium,METAL,#8E8E96,true,true,true,true,false,true,false,false,false,false,true,true,true
+gold,Золото,Gold,VANILLA_PROXY,#F2C94C,false,true,true,true,false,true,true,false,true,false,true,false,true
+graphite,Графит,Graphite,NON_METAL,#222222,false,true,false,false,false,false,false,false,false,false,false,false,true
+gypsum,Гипс,Gypsum,NON_METAL,#E3E0D5,false,true,false,false,false,false,false,false,false,false,false,false,true
+hafnium,Гафний,Hafnium,METAL,#8B98A6,true,true,true,true,true,true,false,true,false,false,true,true,true
+indium,Индий,Indium,METAL,#BFC7D5,true,true,true,true,false,true,false,false,false,false,true,true,true
+invar,Инвар,Invar,METAL,#8C908A,true,true,true,true,true,true,false,true,false,false,true,true,true
+iridium,Иридий,Iridium,METAL,#D6D6D8,true,true,true,true,false,false,false,false,false,false,true,true,true
+iron,Железо,Iron,VANILLA_PROXY,#B6B1A8,false,true,true,true,true,true,false,true,false,true,true,false,true
+kaolin,Каолин,Kaolin,NON_METAL,#DAD4C2,false,true,false,false,false,false,false,false,false,false,false,false,true
+lanthanum_fraction,Лантановая фракция,Lanthanum Fraction,NON_METAL,#B6BCA0,false,false,false,false,false,false,false,false,false,false,false,false,true
+lead,Свинец,Lead,METAL,#4F5668,true,true,true,true,true,true,false,false,true,false,true,true,true
+limestone,Известняк,Limestone,NON_METAL,#B8B39E,false,true,false,false,false,false,false,false,false,false,false,false,true
+lithium,Литий,Lithium,METAL,#C8C8D8,true,true,true,true,false,true,false,false,false,false,true,true,true
+magnesium,Магний,Magnesium,METAL,#D3D3CF,true,true,true,true,false,true,false,false,false,false,true,true,true
+manganese,Марганец,Manganese,METAL,#7E6A75,true,true,true,true,false,true,false,false,false,false,true,true,true
+mica,Мика,Mica,NON_METAL,#C0B090,false,true,false,false,false,false,false,false,false,false,false,false,true
+misc_mineral_fraction,Прочая минеральная фракция,Misc Mineral Fraction,NON_METAL,#8E8272,false,false,false,false,false,false,false,false,false,false,false,false,true
+molybdenum,Молибден,Molybdenum,METAL,#7F8990,true,true,true,true,false,true,false,true,false,false,true,true,true
+neodymium,Неодим,Neodymium,METAL,#9DB1D6,true,true,true,true,false,true,false,false,false,false,true,true,true
+nichrome,Нихром,Nichrome,METAL,#A06F6B,true,true,true,true,false,true,true,false,false,false,true,true,true
+nickel,Никель,Nickel,METAL,#B8B086,true,true,true,true,true,true,false,true,false,false,true,true,true
+nickel_superalloy,Никелевый суперсплав,Nickel Superalloy,METAL,#9A9B8D,true,true,true,true,true,true,false,true,false,false,true,true,true
+niobium,Ниобий,Niobium,METAL,#7FA0A8,true,true,true,true,false,true,false,true,false,false,true,true,true
+niobium_titanium_alloy,Ниобий-титановый сплав,Niobium-Titanium Alloy,METAL,#7CA4B0,true,true,true,true,true,true,true,true,false,false,true,true,true
+obsidian,Обсидиан,Obsidian,VANILLA_PROXY,#211A2F,false,true,false,false,false,false,false,false,false,false,false,false,true
+osmium,Осмий,Osmium,METAL,#96A7B8,true,true,true,true,false,false,false,false,false,false,true,true,true
+palladium,Палладий,Palladium,METAL,#C6C8C7,true,true,true,true,false,true,false,false,false,false,true,true,true
+phosphate,Фосфат,Phosphate,NON_METAL,#B7A47A,false,true,false,false,false,false,false,false,false,false,false,false,true
+platinum,Платина,Platinum,METAL,#D8D8D0,true,true,true,true,false,true,false,false,false,false,true,true,true
+polonium,Полоний,Polonium,METAL,#667A54,true,true,true,true,false,true,false,false,false,false,true,true,true
+potassium,Калий,Potassium,METAL,#BFC1D9,true,true,true,true,false,true,false,false,false,false,true,true,true
+praseodymium,Празеодим,Praseodymium,METAL,#9FAE88,true,true,true,true,false,true,false,false,false,false,true,true,true
+quartzite,Кварцит,Quartzite,NON_METAL,#D7D9D6,false,true,false,false,false,false,false,false,false,false,false,false,true
+radium,Радий,Radium,METAL,#C3D78B,true,true,true,true,false,true,false,false,false,false,true,true,true
+ree_fraction,REE-фракция,REE Fraction,NON_METAL,#A8B0C8,false,false,false,false,false,false,false,false,false,false,false,false,true
+rhenium,Рений,Rhenium,METAL,#5F6872,true,true,true,true,false,true,false,false,false,false,true,true,true
+rhodium,Родий,Rhodium,METAL,#D0D3D5,true,true,true,true,false,false,false,false,false,false,true,true,true
+rubidium_fraction,Рубидиевая фракция,Rubidium Fraction,NON_METAL,#C6A0C6,false,false,false,false,false,false,false,false,false,false,false,false,true
+ruthenium,Рутений,Ruthenium,METAL,#9FA9AE,true,true,true,true,false,false,false,false,false,false,true,true,true
+salt,Соль,Salt,NON_METAL,#F0EAD8,false,true,false,false,false,false,false,false,false,false,false,false,true
+saltpeter,Селитра,Saltpeter,NON_METAL,#DAD7C8,false,true,false,false,false,false,false,false,false,false,false,false,true
+samarium,Самарий,Samarium,METAL,#A7A0C5,true,true,true,true,false,true,false,false,false,false,true,true,true
+samarium_cobalt_magnetic_alloy,Самарий-кобальтовый магнитный сплав,Samarium-Cobalt Magnetic Alloy,METAL,#7B6F93,true,true,true,true,false,true,false,false,false,false,true,true,true
+silver,Серебро,Silver,METAL,#D8E4EA,true,true,true,true,false,true,true,false,true,false,true,true,true
+sodium,Натрий,Sodium,METAL,#C8D2DF,true,true,true,true,false,true,false,false,false,false,true,true,true
+solder,Припой,Solder,METAL,#C2B7A3,true,true,true,true,false,true,true,false,true,false,true,true,true
+space_grade_heat_resistant_alloy,Жаропрочный сплав космического класса,Space Grade Heat-Resistant Alloy,METAL,#80706A,true,true,true,true,true,true,false,true,false,true,true,true,true
+stainless_steel,Нержавеющая сталь,Stainless Steel,METAL,#B8C0C6,true,true,true,true,true,true,false,true,false,true,true,true,true
+steel,Сталь,Steel,METAL,#6B737A,true,true,true,true,true,true,false,true,false,true,true,true,true
+strontium,Стронций,Strontium,METAL,#D0C2A8,true,true,true,true,false,true,false,false,false,false,true,true,true
+sulfur,Сера,Sulfur,NON_METAL,#E3CE48,false,true,false,false,false,false,false,false,false,false,false,false,true
+tantalum,Тантал,Tantalum,METAL,#657887,true,true,true,true,false,true,false,true,false,false,true,true,true
+terbium,Тербий,Terbium,METAL,#9AC38B,true,true,true,true,false,true,false,false,false,false,true,true,true
+thorium,Торий,Thorium,METAL,#556C55,true,true,true,true,true,true,false,false,false,false,true,true,true
+tin,Олово,Tin,METAL,#D0D5D8,true,true,true,true,false,true,true,false,true,false,true,true,true
+titanium,Титан,Titanium,METAL,#9CA8B2,true,true,true,true,true,true,false,true,false,true,true,true,true
+titanium_alloy,Титановый сплав,Titanium Alloy,METAL,#8C9AA4,true,true,true,true,true,true,false,true,false,true,true,true,true
+tool_steel,Инструментальная сталь,Tool Steel,METAL,#5E6870,true,true,true,true,true,true,false,true,false,false,true,true,true
+tungsten,Вольфрам,Tungsten,METAL,#4A4E55,true,true,true,true,true,false,false,true,false,false,true,true,true
+uranium,Уран,Uranium,METAL,#4F8A3A,true,true,true,true,true,true,false,false,false,false,true,true,true
+vanadium,Ванадий,Vanadium,METAL,#6F7C86,true,true,true,true,false,true,false,false,false,false,true,true,true
+yttrium_fraction,Иттриевая фракция,Yttrium Fraction,NON_METAL,#A0C0B8,false,false,false,false,false,false,false,false,false,false,false,false,true
+zinc,Цинк,Zinc,METAL,#B7BCC2,true,true,true,true,false,true,false,false,true,false,true,true,true

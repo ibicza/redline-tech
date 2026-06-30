@@ -1,6 +1,7 @@
 package com.ibicza.redlinetech;
 
 
+import com.ibicza.redlinetech.datagen.ModDataGenerators;
 import com.ibicza.redlinetech.registry.ModBlocks;
 import com.ibicza.redlinetech.registry.ModCreativeTabs;
 import com.ibicza.redlinetech.registry.ModItems;
@@ -19,6 +20,8 @@ public final class RedlineTech {
         ModBlocks.BLOCKS.register(modEventBus);
         ModItems.ITEMS.register(modEventBus);
         ModCreativeTabs.CREATIVE_TABS.register(modEventBus);
+
+        modEventBus.addListener(ModDataGenerators::gatherData);
 
         LOGGER.info("Loading Redline Tech");
         LOGGER.info("Loaded ore blocks: {}", ModBlocks.ORE_BLOCKS.size());

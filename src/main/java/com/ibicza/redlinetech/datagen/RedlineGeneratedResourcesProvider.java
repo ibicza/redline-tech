@@ -1,6 +1,6 @@
 package com.ibicza.redlinetech.datagen;
 
-
+import com.google.common.hash.Hashing;
 import com.ibicza.redlinetech.RedlineTech;
 import com.ibicza.redlinetech.content.block.MiningTier;
 import com.ibicza.redlinetech.content.block.MiningTool;
@@ -18,6 +18,7 @@ import javax.imageio.ImageIO;
 import java.awt.AlphaComposite;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -30,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
+@SuppressWarnings("UnstableApiUsage")
 public final class RedlineGeneratedResourcesProvider implements DataProvider {
     private final Path root;
 
@@ -41,18 +43,18 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
     public CompletableFuture<?> run(CachedOutput cachedOutput) {
         return CompletableFuture.runAsync(() -> {
             try {
-                generateLang("ru_ru");
-                generateLang("en_us");
+                generateLang(cachedOutput, "ru_ru");
+                generateLang(cachedOutput, "en_us");
 
-                generateOreResources();
-                generateMaterialItemResources();
-                generateMaterialBlockResources();
+                generateOreResources(cachedOutput);
+                generateMaterialItemResources(cachedOutput);
+                generateMaterialBlockResources(cachedOutput);
 
-                generateOreTextures();
-                generateMaterialItemTextures();
-                generateMaterialBlockTextures();
+                generateOreTextures(cachedOutput);
+                generateMaterialItemTextures(cachedOutput);
+                generateMaterialBlockTextures(cachedOutput);
 
-                generateTags();
+                generateTags(cachedOutput);
             } catch (IOException exception) {
                 throw new UncheckedIOException(exception);
             }
@@ -64,60 +66,83 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
         return "Redline Tech generated resources";
     }
 
-    private void generateOreResources() throws IOException {
+    private void generateOreResources(CachedOutput cachedOutput) throws IOException {
         for (RegisteredOreBlock oreBlock : ModBlocks.ORE_BLOCKS) {
             String blockId = oreBlock.blockId();
 
-            writeJson(assets("blockstates/" + blockId + ".json"), blockStateJson(blockId));
-            writeJson(assets("models/block/" + blockId + ".json"), cubeAllBlockModelJson(blockId));
-            writeJson(assets("models/item/" + blockId + ".json"), blockItemModelJson(blockId));
-            writeJson(assets("items/" + blockId + ".json"), clientItemJson(blockId));
-            writeJson(data(RedlineTech.MOD_ID + "/loot_table/blocks/" + blockId + ".json"), selfDropLootTableJson(blockId));
+            writeJson(cachedOutput, assets("blockstates/" + blockId + ".json"), blockStateJson(blockId));
+            writeJson(cachedOutput, assets("models/block/" + blockId + ".json"), cubeAllBlockModelJson(blockId));
+            writeJson(cachedOutput, assets("models/item/" + blockId + ".json"), blockItemModelJson(blockId));
+            writeJson(cachedOutput, assets("items/" + blockId + ".json"), clientItemJson(blockId));
+
+            writeJson(
+                    cachedOutput,
+                    data(RedlineTech.MOD_ID + "/loot_table/blocks/" + blockId + ".json"),
+                    selfDropLootTableJson(blockId)
+            );
         }
     }
 
-    private void generateMaterialItemResources() throws IOException {
+    private void generateMaterialItemResources(CachedOutput cachedOutput) throws IOException {
         for (RegisteredMaterialItem materialItem : ModItems.MATERIAL_ITEMS) {
             String itemId = materialItem.itemId();
 
-            writeJson(assets("models/item/" + itemId + ".json"), generatedItemModelJson(itemId));
-            writeJson(assets("items/" + itemId + ".json"), clientItemJson(itemId));
+            writeJson(cachedOutput, assets("models/item/" + itemId + ".json"), generatedItemModelJson(itemId));
+            writeJson(cachedOutput, assets("items/" + itemId + ".json"), clientItemJson(itemId));
         }
     }
 
-    private void generateMaterialBlockResources() throws IOException {
+    private void generateMaterialBlockResources(CachedOutput cachedOutput) throws IOException {
         for (RegisteredMaterialBlock materialBlock : ModBlocks.MATERIAL_BLOCKS) {
             String blockId = materialBlock.blockId();
 
-            writeJson(assets("blockstates/" + blockId + ".json"), blockStateJson(blockId));
-            writeJson(assets("models/block/" + blockId + ".json"), cubeAllBlockModelJson(blockId));
-            writeJson(assets("models/item/" + blockId + ".json"), blockItemModelJson(blockId));
-            writeJson(assets("items/" + blockId + ".json"), clientItemJson(blockId));
-            writeJson(data(RedlineTech.MOD_ID + "/loot_table/blocks/" + blockId + ".json"), selfDropLootTableJson(blockId));
+            writeJson(cachedOutput, assets("blockstates/" + blockId + ".json"), blockStateJson(blockId));
+            writeJson(cachedOutput, assets("models/block/" + blockId + ".json"), cubeAllBlockModelJson(blockId));
+            writeJson(cachedOutput, assets("models/item/" + blockId + ".json"), blockItemModelJson(blockId));
+            writeJson(cachedOutput, assets("items/" + blockId + ".json"), clientItemJson(blockId));
+
+            writeJson(
+                    cachedOutput,
+                    data(RedlineTech.MOD_ID + "/loot_table/blocks/" + blockId + ".json"),
+                    selfDropLootTableJson(blockId)
+            );
         }
     }
 
-    private void generateLang(String locale) throws IOException {
+    private void generateLang(CachedOutput cachedOutput, String locale) throws IOException {
         StringBuilder json = new StringBuilder();
+
         json.append("{\n");
         json.append("  \"mod.redline_tech.name\": \"Redline Tech\",\n");
         json.append("  \"itemGroup.redline_tech.main\": \"Redline Tech\"");
 
         for (RegisteredOreBlock oreBlock : ModBlocks.ORE_BLOCKS) {
-            appendLang(json, "block." + RedlineTech.MOD_ID + "." + oreBlock.blockId(), oreName(oreBlock, locale));
+            appendLang(
+                    json,
+                    "block." + RedlineTech.MOD_ID + "." + oreBlock.blockId(),
+                    oreName(oreBlock, locale)
+            );
         }
 
         for (RegisteredMaterialItem materialItem : ModItems.MATERIAL_ITEMS) {
-            appendLang(json, "item." + RedlineTech.MOD_ID + "." + materialItem.itemId(), materialItemName(materialItem, locale));
+            appendLang(
+                    json,
+                    "item." + RedlineTech.MOD_ID + "." + materialItem.itemId(),
+                    materialItemName(materialItem, locale)
+            );
         }
 
         for (RegisteredMaterialBlock materialBlock : ModBlocks.MATERIAL_BLOCKS) {
-            appendLang(json, "block." + RedlineTech.MOD_ID + "." + materialBlock.blockId(), materialBlockName(materialBlock, locale));
+            appendLang(
+                    json,
+                    "block." + RedlineTech.MOD_ID + "." + materialBlock.blockId(),
+                    materialBlockName(materialBlock, locale)
+            );
         }
 
         json.append("\n}\n");
 
-        writeJson(assets("lang/" + locale + ".json"), json.toString());
+        writeJson(cachedOutput, assets("lang/" + locale + ".json"), json.toString());
     }
 
     private static void appendLang(StringBuilder json, String key, String value) {
@@ -161,7 +186,7 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
         return block.material().enName() + " Block";
     }
 
-    private void generateOreTextures() throws IOException {
+    private void generateOreTextures(CachedOutput cachedOutput) throws IOException {
         BufferedImage stoneBase = readTemplateImage("redline_templates/ore/stone_base.png");
         BufferedImage deepslateBase = readTemplateImage("redline_templates/ore/deepslate_base.png");
 
@@ -178,11 +203,11 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
             BufferedImage tintedOverlay = tintGrayscale(overlayTemplate, definition.color());
             BufferedImage result = overlay(base, tintedOverlay);
 
-            writePng(assets("textures/block/" + oreBlock.blockId() + ".png"), result);
+            writePng(cachedOutput, assets("textures/block/" + oreBlock.blockId() + ".png"), result);
         }
     }
 
-    private void generateMaterialItemTextures() throws IOException {
+    private void generateMaterialItemTextures(CachedOutput cachedOutput) throws IOException {
         for (RegisteredMaterialItem materialItem : ModItems.MATERIAL_ITEMS) {
             BufferedImage template = readTemplateImage(
                     "redline_templates/material/" + materialItem.form().templateFile()
@@ -190,31 +215,33 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
 
             BufferedImage result = tintGrayscale(template, materialItem.material().color());
 
-            writePng(assets("textures/item/" + materialItem.itemId() + ".png"), result);
+            writePng(cachedOutput, assets("textures/item/" + materialItem.itemId() + ".png"), result);
         }
     }
 
-    private void generateMaterialBlockTextures() throws IOException {
+    private void generateMaterialBlockTextures(CachedOutput cachedOutput) throws IOException {
         for (RegisteredMaterialBlock materialBlock : ModBlocks.MATERIAL_BLOCKS) {
             BufferedImage template = readTemplateImage("redline_templates/material/block_template.png");
             BufferedImage result = tintGrayscale(template, materialBlock.material().color());
 
-            writePng(assets("textures/block/" + materialBlock.blockId() + ".png"), result);
+            writePng(cachedOutput, assets("textures/block/" + materialBlock.blockId() + ".png"), result);
         }
     }
 
-    private void generateTags() throws IOException {
+    private void generateTags(CachedOutput cachedOutput) throws IOException {
         Map<MiningTool, List<String>> mineableTags = new EnumMap<>(MiningTool.class);
         Map<MiningTier, List<String>> tierTags = new EnumMap<>(MiningTier.class);
 
         for (RegisteredOreBlock oreBlock : ModBlocks.ORE_BLOCKS) {
             String value = RedlineTech.MOD_ID + ":" + oreBlock.blockId();
+
             addTagValue(mineableTags, oreBlock.definition().tool(), value);
             addTagValue(tierTags, oreBlock.definition().tier(), value);
         }
 
         for (RegisteredMaterialBlock materialBlock : ModBlocks.MATERIAL_BLOCKS) {
             String value = RedlineTech.MOD_ID + ":" + materialBlock.blockId();
+
             addTagValue(mineableTags, MiningTool.PICKAXE, value);
             addTagValue(tierTags, MiningTier.STONE, value);
         }
@@ -229,7 +256,7 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
             };
 
             if (path != null) {
-                writeJson(data(path), tagJson(entry.getValue()));
+                writeJson(cachedOutput, data(path), tagJson(entry.getValue()));
             }
         }
 
@@ -242,7 +269,7 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
             };
 
             if (path != null) {
-                writeJson(data(path), tagJson(entry.getValue()));
+                writeJson(cachedOutput, data(path), tagJson(entry.getValue()));
             }
         }
     }
@@ -350,6 +377,7 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
 
     private static String tagJson(List<String> values) {
         StringBuilder json = new StringBuilder();
+
         json.append("{\n");
         json.append("  \"replace\": false,\n");
         json.append("  \"values\": [\n");
@@ -370,21 +398,28 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
         return json.toString();
     }
 
-    private static void writeJson(Path path, String content) throws IOException {
-        writeText(path, content);
+    private static void writeJson(CachedOutput cachedOutput, Path path, String content) throws IOException {
+        writeText(cachedOutput, path, content);
     }
 
-    private static void writeText(Path path, String content) throws IOException {
+    private static void writeText(CachedOutput cachedOutput, Path path, String content) throws IOException {
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+
         Files.createDirectories(path.getParent());
-        Files.writeString(path, content, StandardCharsets.UTF_8);
+        cachedOutput.writeIfNeeded(path, bytes, Hashing.sha1().hashBytes(bytes));
     }
 
-    private static void writePng(Path path, BufferedImage image) throws IOException {
-        Files.createDirectories(path.getParent());
+    private static void writePng(CachedOutput cachedOutput, Path path, BufferedImage image) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
 
-        if (!ImageIO.write(image, "png", path.toFile())) {
+        if (!ImageIO.write(image, "png", output)) {
             throw new IOException("No PNG writer available for: " + path);
         }
+
+        byte[] bytes = output.toByteArray();
+
+        Files.createDirectories(path.getParent());
+        cachedOutput.writeIfNeeded(path, bytes, Hashing.sha1().hashBytes(bytes));
     }
 
     private static BufferedImage readTemplateImage(String resourcePath) throws IOException {
@@ -416,6 +451,7 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
         }
 
         String path = textureId.substring(prefix.length());
+
         return "redline_templates/" + path + ".png";
     }
 
@@ -445,6 +481,7 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
                 int outB = clamp(baseB * brightness / 255);
 
                 int outArgb = (alpha << 24) | (outR << 16) | (outG << 8) | outB;
+
                 result.setRGB(x, y, outArgb);
             }
         }
@@ -456,14 +493,23 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
         if (base.getWidth() != overlay.getWidth() || base.getHeight() != overlay.getHeight()) {
             throw new IllegalStateException(
                     "Base and overlay textures must have same size. Base: "
-                            + base.getWidth() + "x" + base.getHeight()
-                            + ", overlay: " + overlay.getWidth() + "x" + overlay.getHeight()
+                            + base.getWidth()
+                            + "x"
+                            + base.getHeight()
+                            + ", overlay: "
+                            + overlay.getWidth()
+                            + "x"
+                            + overlay.getHeight()
             );
         }
 
-        BufferedImage result = new BufferedImage(base.getWidth(), base.getHeight(), BufferedImage.TYPE_INT_ARGB);
-        Graphics2D graphics = result.createGraphics();
+        BufferedImage result = new BufferedImage(
+                base.getWidth(),
+                base.getHeight(),
+                BufferedImage.TYPE_INT_ARGB
+        );
 
+        Graphics2D graphics = result.createGraphics();
         graphics.drawImage(base, 0, 0, null);
         graphics.setComposite(AlphaComposite.SrcOver);
         graphics.drawImage(overlay, 0, 0, null);

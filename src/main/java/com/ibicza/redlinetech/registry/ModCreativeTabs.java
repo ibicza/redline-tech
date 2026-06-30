@@ -17,7 +17,17 @@ public final class ModCreativeTabs {
             CREATIVE_TABS.register("main", () -> CreativeModeTab.builder()
                     .title(Component.translatable("itemGroup.redline_tech.main"))
                     .withTabsBefore(CreativeModeTabs.BUILDING_BLOCKS)
-                    .icon(() -> ModBlocks.ORE_BLOCKS.get(0).item().get().getDefaultInstance())
+                    .icon(() -> {
+                        if (!ModBlocks.ORE_BLOCKS.isEmpty()) {
+                            return ModBlocks.ORE_BLOCKS.get(0).item().get().getDefaultInstance();
+                        }
+
+                        if (!ModItems.MATERIAL_ITEMS.isEmpty()) {
+                            return ModItems.MATERIAL_ITEMS.get(0).item().get().getDefaultInstance();
+                        }
+
+                        return net.minecraft.world.item.Items.STONE.getDefaultInstance();
+                    })
                     .displayItems((parameters, output) -> {
                         ModBlocks.ORE_BLOCKS.forEach(ore -> output.accept(ore.item().get()));
                         ModItems.MATERIAL_ITEMS.forEach(materialItem -> output.accept(materialItem.item().get()));

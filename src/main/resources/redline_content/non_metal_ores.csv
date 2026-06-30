@@ -1,2 +1,11 @@
 id,ru_name,en_name,material_id,drop_style,hardness,resistance,tool,tier,y_min,y_max,peak_min,peak_max,vein_min,vein_max,amount_min,amount_max,base_texture,overlay_texture,color,has_stone_variant,has_deepslate_variant,enabled
+quartzite,Кварцит,Quartzite,quartzite,drop_self,3.0,3.0,pickaxe,stone,-320,0,-180,-40,6,24,3,10,minecraft:block/stone,redline_tech:template/ore/non_metal_overlay,#D7D9D6,true,true,true
 graphite_ore,Графитовая руда,Graphite Ore,graphite,drop_item,3.0,3.0,pickaxe,iron,-360,-80,-280,-160,3,12,0.8,2.5,minecraft:block/stone,redline_tech:template/ore/non_metal_overlay,#252525,true,true,true
+sulfur_ore,Серная руда,Sulfur Ore,sulfur,drop_item,2.0,2.0,pickaxe,stone,-220,0,-140,-40,4,16,1,4,minecraft:block/stone,redline_tech:template/ore/non_metal_overlay,#D8BF38,true,true,true
+phosphate_ore,Фосфатная руда,Phosphate Ore,phosphate,drop_item,2.5,2.5,pickaxe,stone,-180,0,-120,-40,4,18,1.5,5,minecraft:block/stone,redline_tech:template/ore/non_metal_overlay,#B7A47A,true,true,true
+borate_ore,Боратовая руда,Borate Ore,borate,drop_item,2.0,2.0,pickaxe,stone,-160,0,-90,-20,3,12,0.5,2,minecraft:block/stone,redline_tech:template/ore/non_metal_overlay,#E0CFA8,true,true,true
+fluorite_ore,Флюоритовая руда,Fluorite Ore,fluorite,drop_item,3.0,3.0,pickaxe,iron,-360,-80,-300,-160,2,10,0.4,1.6,minecraft:block/stone,redline_tech:template/ore/non_metal_overlay,#8FC6B3,true,true,true
+kaolin_clay,Каолиновая глина,Kaolin Clay,kaolin,drop_self,0.7,0.7,shovel,stone,-120,0,-60,0,8,32,4,14,minecraft:block/stone,redline_tech:template/ore/non_metal_overlay,#DAD4C2,true,true,true
+mica_ore,Мика,Mica,mica,drop_item,2.5,2.5,pickaxe,iron,-320,-80,-240,-120,2,8,0.4,1.5,minecraft:block/stone,redline_tech:template/ore/non_metal_overlay,#C0B090,true,true,true
+gypsum,Гипс,Gypsum,gypsum,drop_self,1.5,1.5,pickaxe,stone,-180,0,-120,-30,8,32,3,10,minecraft:block/stone,redline_tech:template/ore/non_metal_overlay,#E3E0D5,true,true,true
+saltpeter_deposit,Селитряная залежь,Saltpeter Deposit,saltpeter,drop_item,0.8,0.8,shovel,stone,-80,0,-60,-10,3,10,0.5,2.5,minecraft:block/stone,redline_tech:template/ore/non_metal_overlay,#DAD7C8,true,true,true

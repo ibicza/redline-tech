@@ -1,7 +1,5 @@
 package com.ibicza.redlinetech.registry;
 
-
-
 import com.ibicza.redlinetech.RedlineTech;
 import com.ibicza.redlinetech.content.ContentDatabase;
 import com.ibicza.redlinetech.content.material.MaterialDefinition;
@@ -20,6 +18,7 @@ public final class ModItems {
     public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(RedlineTech.MOD_ID);
 
     private static final List<RegisteredMaterialItem> MUTABLE_MATERIAL_ITEMS = new ArrayList<>();
+
     public static final List<RegisteredMaterialItem> MATERIAL_ITEMS =
             Collections.unmodifiableList(MUTABLE_MATERIAL_ITEMS);
 
@@ -34,6 +33,7 @@ public final class ModItems {
                     materialBlock.blockId(),
                     materialBlock.block()
             );
+
             materialBlock.setItem(item);
         });
 
@@ -49,8 +49,21 @@ public final class ModItems {
             registerMaterialItem(material, MaterialItemForm.DUST);
         }
 
+        if (material.hasSmallDust()) {
+            registerMaterialItem(material, MaterialItemForm.SMALL_DUST);
+        }
+
+
         if (material.hasPlate()) {
             registerMaterialItem(material, MaterialItemForm.PLATE);
+        }
+
+        if (material.hasDensePlate()) {
+            registerMaterialItem(material, MaterialItemForm.DENSE_PLATE);
+        }
+
+        if (material.hasCasing()) {
+            registerMaterialItem(material, MaterialItemForm.CASING);
         }
 
         if (material.hasWire()) {
@@ -61,6 +74,14 @@ public final class ModItems {
             registerMaterialItem(material, MaterialItemForm.ROD);
         }
 
+        if (material.hasFoil()) {
+            registerMaterialItem(material, MaterialItemForm.FOIL);
+        }
+
+        if (material.hasRibbon()) {
+            registerMaterialItem(material, MaterialItemForm.RIBBON);
+        }
+
         if (material.hasNugget()) {
             registerMaterialItem(material, MaterialItemForm.NUGGET);
         }
@@ -68,6 +89,7 @@ public final class ModItems {
 
     private static void registerMaterialItem(MaterialDefinition material, MaterialItemForm form) {
         String itemId = material.id() + "_" + form.suffix();
+
         DeferredItem<Item> item = ITEMS.registerSimpleItem(itemId);
 
         MUTABLE_MATERIAL_ITEMS.add(new RegisteredMaterialItem(material, form, itemId, item));

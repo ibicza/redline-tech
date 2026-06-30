@@ -6,11 +6,21 @@ public record MaterialDefinition(
         String enName,
         MaterialKind kind,
         int color,
+
         boolean hasIngot,
         boolean hasDust,
+        boolean hasSmallDust,
+
+
         boolean hasPlate,
+        boolean hasDensePlate,
+        boolean hasCasing,
+
         boolean hasWire,
         boolean hasRod,
+        boolean hasFoil,
+        boolean hasRibbon,
+
         boolean hasNugget,
         boolean hasBlock
 ) {
