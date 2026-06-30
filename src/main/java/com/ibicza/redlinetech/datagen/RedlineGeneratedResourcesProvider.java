@@ -65,7 +65,6 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
                 generateLiquidTextureMetadata(cachedOutput);
 
                 generateGasResources(cachedOutput);
-                generateGasTextures(cachedOutput);
 
                 generateGasCapsuleResources(cachedOutput);
                 generateGasCapsuleTexture(cachedOutput);
@@ -891,7 +890,7 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
             minY = Math.min(15.0D, 16.0D * (1.0D - fraction));
         }
 
-        String texture = RedlineTech.MOD_ID + ":block/gas/" + gas.blockId() + "_" + amount;
+        String texture = RedlineTech.MOD_ID + ":block/gas/gas_mask_" + amount;
 
         return """
             {
@@ -907,12 +906,12 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
                   "to": [16, %.3f, 16],
                   "shade": false,
                   "faces": {
-                    "down":  { "texture": "#gas" },
-                    "up":    { "texture": "#gas" },
-                    "north": { "texture": "#gas" },
-                    "south": { "texture": "#gas" },
-                    "west":  { "texture": "#gas" },
-                    "east":  { "texture": "#gas" }
+                    "down":  { "texture": "#gas", "tintindex": 0 },
+                    "up":    { "texture": "#gas", "tintindex": 0 },
+                    "north": { "texture": "#gas", "tintindex": 0 },
+                    "south": { "texture": "#gas", "tintindex": 0 },
+                    "west":  { "texture": "#gas", "tintindex": 0 },
+                    "east":  { "texture": "#gas", "tintindex": 0 }
                   }
                 }
               ]
@@ -923,29 +922,19 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
     private void generateGasTextures(CachedOutput cachedOutput) throws IOException {
         BufferedImage template = readTemplateImage("redline_templates/gas/gas_template.png");
 
-        for (RegisteredGas gas : ModGases.GASES) {
-            for (int amount = 1; amount <= gas.definition().maxAmount(); amount++) {
-                BufferedImage result = tintGasTextureForAmount(
-                        template,
-                        gas.definition().color(),
-                        gas.definition().alpha(),
-                        amount,
-                        gas.definition().maxAmount()
-                );
+        for (int amount = 1; amount <= 16; amount++) {
+            BufferedImage result = gasMaskTextureForAmount(template, amount, 16);
 
-                writePng(
-                        cachedOutput,
-                        assets("textures/block/gas/" + gas.blockId() + "_" + amount + ".png"),
-                        result
-                );
-            }
+            writePng(
+                    cachedOutput,
+                    assets("textures/block/gas/gas_mask_" + amount + ".png"),
+                    result
+            );
         }
     }
 
-    private static BufferedImage tintGasTextureForAmount(
+    private static BufferedImage gasMaskTextureForAmount(
             BufferedImage template,
-            int rgbColor,
-            int maxAlpha,
             int amount,
             int maxAmount
     ) {
@@ -953,13 +942,8 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
         int height = template.getHeight();
         BufferedImage result = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
 
-        int baseR = (rgbColor >> 16) & 0xFF;
-        int baseG = (rgbColor >> 8) & 0xFF;
-        int baseB = rgbColor & 0xFF;
-
-        float amountFactor = Math.max(0.15F, amount / (float) maxAmount);
-        int visualAlpha = clamp(Math.round(maxAlpha * amountFactor));
-        visualAlpha = Math.max(28, visualAlpha);
+        float amountFactor = Math.max(0.18F, amount / (float) maxAmount);
+        int visualAlpha = Math.max(36, Math.round(180.0F * amountFactor));
 
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
@@ -974,13 +958,11 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
                     continue;
                 }
 
-                int brightness = Math.max(48, (red + green + blue) / 3);
-                int outR = clamp(baseR * brightness / 255 + 24);
-                int outG = clamp(baseG * brightness / 255 + 24);
-                int outB = clamp(baseB * brightness / 255 + 24);
-                int outA = clamp(alpha * visualAlpha / 255);
+                int brightness = Math.max(96, (red + green + blue) / 3);
+                int outAlpha = clamp(alpha * visualAlpha / 255);
+                int outRgb = (brightness << 16) | (brightness << 8) | brightness;
 
-                result.setRGB(x, y, (outA << 24) | (outR << 16) | (outG << 8) | outB);
+                result.setRGB(x, y, (outAlpha << 24) | outRgb);
             }
         }
 
