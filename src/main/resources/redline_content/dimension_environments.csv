@@ -1,0 +1,6 @@
+dimension_id,ambient_temperature_k,pressure_kpa,evaporation_enabled,evaporation_multiplier,gas_escape_enabled,gas_escape_y_min,enabled
+minecraft:overworld,295,101,True,1.0,True,200,True
+minecraft:the_nether,340,101,True,1.4,False,256,True
+minecraft:the_end,240,20,True,0.8,True,160,True
+redline_tech:cold_planet,80,60,False,0.0,True,160,True
+redline_tech:mars_like_planet,220,6,True,1.6,True,140,True

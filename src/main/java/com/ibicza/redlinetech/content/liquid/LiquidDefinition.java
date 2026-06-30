@@ -11,6 +11,11 @@ public record LiquidDefinition(
         int flowDistance,
         int flowDelayTicks,
         int temperature,
+        double densityKgM3,
+        int boilingPointK,
+        LiquidEvaporationMode evaporationMode,
+        double gasExpansionScale,
+        int maxGasUnitsFromOneBlock,
         String evaporatesToGasId,
         List<LiquidEffectEntry> effects
 ) {

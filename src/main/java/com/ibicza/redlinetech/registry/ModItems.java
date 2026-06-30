@@ -5,6 +5,7 @@ import com.ibicza.redlinetech.content.ContentDatabase;
 import com.ibicza.redlinetech.content.material.MaterialDefinition;
 import com.ibicza.redlinetech.content.material.MaterialItemForm;
 import com.ibicza.redlinetech.content.material.RegisteredMaterialItem;
+import com.ibicza.redlinetech.item.GasCapsuleItem;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.neoforged.neoforge.registries.DeferredItem;
@@ -86,6 +87,9 @@ public final class ModItems {
             registerMaterialItem(material, MaterialItemForm.NUGGET);
         }
     }
+
+    public static final DeferredItem<GasCapsuleItem> GAS_CAPSULE =
+            ITEMS.registerItem("gas_capsule", GasCapsuleItem::new);
 
     private static void registerMaterialItem(MaterialDefinition material, MaterialItemForm form) {
         String itemId = material.id() + "_" + form.suffix();

@@ -1,26 +1,31 @@
-id,ru_name,en_name,color,alpha,flow_distance,flow_delay_ticks,t,evaporates_to_gas_id,effect_1_id,effect_1_duration_ticks,effect_1_amplifier,effect_1_chance,effect_2_id,effect_2_duration_ticks,effect_2_amplifier,effect_2_chance,effect_3_id,effect_3_duration_ticks,effect_3_amplifier,effect_3_chance,enabled
-water,Вода,Water,#3F76E4,160,7,5,295,,,,,,,,,,,,,true
-distilled_water,Дистиллированная вода,Distilled Water,#A9D8FF,135,7,5,295,,,,,,,,,,,,,true
-heavy_water,Тяжёлая вода,Heavy Water,#86C9FF,150,7,6,295,,,,,,,,,,,,,true
-technical_coolant,Технический теплоноситель,Technical Coolant,#4BA6B8,170,6,7,295,,,,,,,,,,,,,true
-crude_oil,Сырая нефть,Crude Oil,#17110A,225,4,18,295,,redline_tech:oil_coated,240,0,1.0,minecraft:slowness,100,0,0.35,,,,true
-oil_residue,Нефтяной остаток,Oil Residue,#0D0906,240,2,35,305,,redline_tech:oil_coated,360,0,1.0,minecraft:slowness,160,1,0.6,,,,true
-heavy_fuel_oil,Мазут,Heavy Fuel Oil,#0B0805,238,2,34,305,,redline_tech:oil_coated,320,0,1.0,minecraft:slowness,140,1,0.5,,,,true
-lubricating_oil,Смазочное масло,Lubricating Oil,#2A2118,210,3,24,295,,redline_tech:oil_coated,260,0,1.0,minecraft:slowness,100,0,0.35,,,,true
-plastic_feedstock,Пластиковое сырьё,Plastic Feedstock,#C9B27A,190,4,18,310,,redline_tech:toxic_exposure,160,0,0.35,minecraft:nausea,80,0,0.25,,,,true
-gasoline,Бензин,Gasoline,#D8C46A,170,6,4,295,,redline_tech:oil_coated,160,0,1.0,minecraft:nausea,100,0,0.3,,,,true
-diesel,Дизель,Diesel,#A36F28,205,4,12,295,,redline_tech:oil_coated,220,0,1.0,minecraft:slowness,80,0,0.2,,,,true
-biodiesel,Биодизель,Biodiesel,#B68B2C,195,4,12,295,,redline_tech:oil_coated,180,0,1.0,minecraft:slowness,60,0,0.15,,,,true
-rp1_kerosene,Керосин RP-1,RP-1 Kerosene,#A16D36,195,4,10,295,,redline_tech:oil_coated,200,0,1.0,minecraft:nausea,80,0,0.2,,,,true
-ethanol,Этанол,Ethanol,#D8D6B0,150,6,5,295,,minecraft:nausea,100,0,0.25,,,,,,,,true
-methanol,Метанол,Methanol,#D4E6E6,145,6,5,295,,minecraft:poison,140,0,0.45,minecraft:nausea,100,0,0.35,,,,true
-sulfuric_acid,Серная кислота,Sulfuric Acid,#C8D96A,190,5,8,295,,redline_tech:chemical_burn,180,1,1.0,minecraft:poison,120,0,0.8,,,,true
-hydrochloric_acid,Соляная кислота,Hydrochloric Acid,#DDEFA0,165,5,7,295,,redline_tech:chemical_burn,140,0,1.0,minecraft:poison,80,0,0.55,,,,true
-nitric_acid,Азотная кислота,Nitric Acid,#E4DD78,170,5,8,295,,redline_tech:chemical_burn,170,1,1.0,minecraft:poison,120,0,0.85,,,,true
-hydrofluoric_acid,Плавиковая кислота,Hydrofluoric Acid,#B8E6C0,150,5,7,295,,redline_tech:chemical_burn,220,2,1.0,minecraft:poison,160,1,1.0,minecraft:weakness,160,0,0.8,true
-radioactive_water,Радиоактивная вода,Radioactive Water,#5EEA42,190,6,8,310,,redline_tech:radiation,420,0,1.0,minecraft:poison,160,0,0.4,,,,true
-molten_salt,Расплав солей,Molten Salt,#E6A94E,220,3,18,800,,redline_tech:chemical_burn,100,0,0.4,,,,,,,,true
-liquid_sodium,Жидкий натрий,Liquid Sodium,#D6D0B8,210,5,8,371,,,,,,,,,,,,,true
-liquid_hydrogen,Жидкий водород,Liquid Hydrogen,#E8FBFF,145,6,5,20,hydrogen,,,,,,,,,,,,true
-liquid_oxygen,Жидкий кислород,Liquid Oxygen,#B6D8FF,150,6,5,90,oxygen,,,,,,,,,,,,true
-liquid_methane,Жидкий метан,Liquid Methane,#CFEFFF,150,5,7,111,methane,,,,,,,,,,,,true
+id,ru_name,en_name,color,alpha,flow_distance,flow_delay_ticks,t,density_kg_m3,boiling_point_k,evaporation_mode,gas_expansion_scale,max_gas_units_from_one_block,evaporates_to_gas_id,effect_1_id,effect_1_duration_ticks,effect_1_amplifier,effect_1_chance,effect_2_id,effect_2_duration_ticks,effect_2_amplifier,effect_2_chance,effect_3_id,effect_3_duration_ticks,effect_3_amplifier,effect_3_chance,enabled
+water,Вода,Water,#3F76E4,160,7,5,295,997,373,NONE,1.0,16384,,,,,,,,,,,,,,true
+distilled_water,Дистиллированная вода,Distilled Water,#A9D8FF,135,7,5,295,997,373,NONE,1.0,16384,,,,,,,,,,,,,,true
+heavy_water,Тяжёлая вода,Heavy Water,#86C9FF,150,7,6,295,1105,374,NONE,1.0,16384,,,,,,,,,,,,,,true
+technical_coolant,Технический теплоноситель,Technical Coolant,#4BA6B8,170,6,7,295,1030,390,NONE,1.0,16384,,,,,,,,,,,,,,true
+crude_oil,Сырая нефть,Crude Oil,#17110A,225,4,18,295,880,650,NONE,1.0,16384,,redline_tech:oil_coated,240,0,1.0,minecraft:slowness,100,0,0.35,,,,,true
+oil_residue,Нефтяной остаток,Oil Residue,#0D0906,240,2,35,305,980,720,NONE,1.0,16384,,redline_tech:oil_coated,360,0,1.0,minecraft:slowness,160,1,0.6,,,,,true
+heavy_fuel_oil,Мазут,Heavy Fuel Oil,#0B0805,238,2,34,305,950,700,NONE,1.0,16384,,redline_tech:oil_coated,320,0,1.0,minecraft:slowness,140,1,0.5,,,,,true
+lubricating_oil,Смазочное масло,Lubricating Oil,#2A2118,210,3,24,295,900,650,NONE,1.0,16384,,redline_tech:oil_coated,260,0,1.0,minecraft:slowness,100,0,0.35,,,,,true
+plastic_feedstock,Пластиковое сырьё,Plastic Feedstock,#C9B27A,190,4,18,310,800,500,NONE,1.0,16384,,redline_tech:toxic_exposure,160,0,0.35,minecraft:nausea,80,0,0.25,,,,,true
+gasoline,Бензин,Gasoline,#D8C46A,170,6,4,295,740,350,NONE,1.0,16384,,redline_tech:oil_coated,160,0,1.0,minecraft:nausea,100,0,0.3,,,,,true
+diesel,Дизель,Diesel,#A36F28,205,4,12,295,830,450,NONE,1.0,16384,,redline_tech:oil_coated,220,0,1.0,minecraft:slowness,80,0,0.2,,,,,true
+biodiesel,Биодизель,Biodiesel,#B68B2C,195,4,12,295,880,480,NONE,1.0,16384,,redline_tech:oil_coated,180,0,1.0,minecraft:slowness,60,0,0.15,,,,,true
+rp1_kerosene,Керосин RP-1,RP-1 Kerosene,#A16D36,195,4,10,295,810,420,NONE,1.0,16384,,redline_tech:oil_coated,200,0,1.0,minecraft:nausea,80,0,0.2,,,,,true
+ethanol,Этанол,Ethanol,#D8D6B0,150,6,5,295,789,351,NONE,1.0,16384,,minecraft:nausea,100,0,0.25,,,,,,,,,true
+methanol,Метанол,Methanol,#D4E6E6,145,6,5,295,792,338,NONE,1.0,16384,,minecraft:poison,140,0,0.45,minecraft:nausea,100,0,0.35,,,,,true
+sulfuric_acid,Серная кислота,Sulfuric Acid,#C8D96A,190,5,8,295,1840,610,NONE,1.0,16384,,redline_tech:chemical_burn,180,1,1.0,minecraft:poison,120,0,0.8,,,,,true
+hydrochloric_acid,Соляная кислота,Hydrochloric Acid,#DDEFA0,165,5,7,295,1190,383,NONE,1.0,16384,,redline_tech:chemical_burn,140,0,1.0,minecraft:poison,80,0,0.55,,,,,true
+nitric_acid,Азотная кислота,Nitric Acid,#E4DD78,170,5,8,295,1510,356,NONE,1.0,16384,,redline_tech:chemical_burn,170,1,1.0,minecraft:poison,120,0,0.85,,,,,true
+hydrofluoric_acid,Плавиковая кислота,Hydrofluoric Acid,#B8E6C0,150,5,7,295,1150,293,NONE,1.0,16384,,redline_tech:chemical_burn,220,2,1.0,minecraft:poison,160,1,1.0,minecraft:weakness,160,0,0.8,true
+radioactive_water,Радиоактивная вода,Radioactive Water,#5EEA42,190,6,8,310,1000,373,NONE,1.0,16384,radioactive_steam,redline_tech:radiation,420,0,1.0,minecraft:poison,160,0,0.4,,,,,true
+molten_salt,Расплав солей,Molten Salt,#E6A94E,220,3,18,800,1800,1700,NONE,1.0,16384,,redline_tech:chemical_burn,100,0,0.4,,,,,,,,,true
+liquid_sodium,Жидкий натрий,Liquid Sodium,#D6D0B8,210,5,8,371,927,1156,NONE,1.0,16384,,,,,,,,,,,,,,true
+liquid_nitrogen,Жидкий азот,Liquid Nitrogen,#D8E8FF,145,6,5,77,808,77,DIMENSION_TEMPERATURE,1.0,16384,nitrogen,,,,,,,,,,,,,true
+liquid_hydrogen,Жидкий водород,Liquid Hydrogen,#E8FBFF,145,6,5,20,70,20,DIMENSION_TEMPERATURE,1.0,16384,hydrogen,,,,,,,,,,,,,true
+liquid_oxygen,Жидкий кислород,Liquid Oxygen,#B6D8FF,150,6,5,90,1140,90,DIMENSION_TEMPERATURE,1.0,16384,oxygen,,,,,,,,,,,,,true
+liquid_methane,Жидкий метан,Liquid Methane,#CFEFFF,150,5,7,111,422,111,DIMENSION_TEMPERATURE,1.0,16384,methane,,,,,,,,,,,,,true
+liquid_deuterium,Жидкий дейтерий,Liquid Deuterium,#D8F0FF,145,6,5,24,162,24,DIMENSION_TEMPERATURE,1.0,16384,deuterium,,,,,,,,,,,,,true
+liquid_tritium,Жидкий тритий,Liquid Tritium,#A8F0C0,145,6,5,25,250,25,DIMENSION_TEMPERATURE,1.0,16384,tritium,redline_tech:radiation,200,0,0.35,,,,,,,,,true
+liquid_helium,Жидкий гелий,Liquid Helium,#F2E8FF,135,7,4,4,125,4,DIMENSION_TEMPERATURE,1.0,16384,helium,,,,,,,,,,,,,true
+liquid_helium3,Жидкий гелий-3,Liquid Helium-3,#F0E8FF,135,7,4,3,82,3,DIMENSION_TEMPERATURE,1.0,16384,helium3,,,,,,,,,,,,,true

@@ -1,0 +1,21 @@
+id,ru_name,en_name,color,alpha,density_kg_m3,spread_delay_ticks,max_amount,render_mode,flammable,explosion_power,escape_to_atmosphere,escape_y_min,escape_chance,effect_1_id,effect_1_duration_ticks,effect_1_amplifier,effect_1_chance,effect_2_id,effect_2_duration_ticks,effect_2_amplifier,effect_2_chance,effect_3_id,effect_3_duration_ticks,effect_3_amplifier,effect_3_chance,enabled
+nitrogen,Азот,Nitrogen,#D8E8FF,60,1.25,10,16,FULL_CUBE_ALPHA,False,0,True,200,0.01,,,,,,,,,,,,,True
+ammonia,Аммиак,Ammonia,#D8FFF0,100,0.73,8,16,CEILING_LAYER,True,1.5,True,200,0.012,redline_tech:toxic_exposure,180,0,0.8,minecraft:nausea,120,0,0.45,,,,,True
+argon,Аргон,Argon,#D7D6FF,70,1.78,12,16,FLOOR_LAYER,False,0,True,200,0.008,,,,,,,,,,,,,True
+hydrogen,Водород,Hydrogen,#D8F7FF,75,0.09,5,16,CEILING_LAYER,True,3.5,True,180,0.018,,,,,,,,,,,,,True
+helium3,Гелий-3,Helium-3,#F0E8FF,70,0.13,5,16,CEILING_LAYER,False,0,True,180,0.018,,,,,,,,,,,,,True
+helium,Гелий,Helium,#F2E8FF,70,0.18,5,16,CEILING_LAYER,False,0,True,180,0.018,,,,,,,,,,,,,True
+deuterium,Дейтерий,Deuterium,#D8F0FF,75,0.18,5,16,CEILING_LAYER,True,3.0,True,180,0.018,,,,,,,,,,,,,True
+oxygen,Кислород,Oxygen,#B6D8FF,80,1.43,9,16,FLOOR_LAYER,False,0,True,200,0.01,,,,,,,,,,,,,True
+methane,Метан,Methane,#D0E8FF,85,0.66,7,16,CEILING_LAYER,True,4.0,True,190,0.015,minecraft:nausea,100,0,0.2,,,,,,,,,True
+petroleum_gas,Нефтяной газ,Petroleum Gas,#C9B27A,110,1.9,9,16,FLOOR_LAYER,True,4.5,True,200,0.01,redline_tech:oil_coated,180,0,0.8,minecraft:nausea,120,0,0.35,,,,,True
+steam,Пар,Steam,#FFFFFF,75,0.6,5,16,CEILING_LAYER,False,0,True,180,0.025,,,,,,,,,,,,,True
+natural_gas,Природный газ,Natural Gas,#CFE7FF,90,0.75,7,16,CEILING_LAYER,True,4.5,True,190,0.015,minecraft:nausea,100,0,0.15,,,,,,,,,True
+radioactive_steam,Радиоактивный пар,Radioactive Steam,#5EEA42,115,0.6,6,16,CEILING_LAYER,False,0,True,190,0.018,redline_tech:radiation,420,0,1.0,minecraft:poison,160,0,0.45,,,,,True
+hydrogen_sulfide,Сероводород,Hydrogen Sulfide,#DAD89A,120,1.36,10,16,FLOOR_LAYER,True,3.0,True,200,0.008,minecraft:poison,220,1,1.0,redline_tech:toxic_exposure,220,0,0.9,minecraft:blindness,80,0,0.25,True
+fusion_mix_dd,Термоядерная смесь D-D,D-D Fusion Mixture,#D8F6FF,80,0.18,5,16,CEILING_LAYER,True,3.5,True,180,0.018,,,,,,,,,,,,,True
+fusion_mix_d_he3,Термоядерная смесь D-He3,D-He3 Fusion Mixture,#E8F0FF,80,0.16,5,16,CEILING_LAYER,True,3.0,True,180,0.018,,,,,,,,,,,,,True
+fusion_mix_d_t,Термоядерная смесь D-T,D-T Fusion Mixture,#B9F7D0,85,0.18,5,16,CEILING_LAYER,True,4.0,True,180,0.018,redline_tech:radiation,220,0,0.45,,,,,,,,,True
+tritium,Тритий,Tritium,#A8F0C0,80,0.27,5,16,CEILING_LAYER,True,3.5,True,180,0.018,redline_tech:radiation,300,0,0.7,,,,,,,,,True
+carbon_dioxide,Углекислый газ,Carbon Dioxide,#C8C8C8,90,1.98,12,16,FLOOR_LAYER,False,0,True,200,0.008,minecraft:weakness,180,0,0.4,minecraft:slowness,120,0,0.25,,,,,True
+chlorine,Хлор,Chlorine,#A7D64A,125,3.2,12,16,FLOOR_LAYER,False,0,True,200,0.006,minecraft:poison,180,1,1.0,redline_tech:chemical_burn,140,0,0.7,redline_tech:toxic_exposure,220,0,1.0,True

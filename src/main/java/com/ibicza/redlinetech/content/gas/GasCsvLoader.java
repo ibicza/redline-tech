@@ -1,4 +1,4 @@
-package com.ibicza.redlinetech.content.liquid;
+package com.ibicza.redlinetech.content.gas;
 
 import com.ibicza.redlinetech.content.csv.CsvTableReader;
 
@@ -13,71 +13,82 @@ import java.util.regex.Pattern;
 
 import static com.ibicza.redlinetech.content.csv.CsvParsers.booleanValue;
 import static com.ibicza.redlinetech.content.csv.CsvParsers.color;
+import static com.ibicza.redlinetech.content.csv.CsvParsers.enumValue;
 import static com.ibicza.redlinetech.content.csv.CsvParsers.intValue;
 import static com.ibicza.redlinetech.content.csv.CsvParsers.optionalString;
 import static com.ibicza.redlinetech.content.csv.CsvParsers.string;
 
-public final class LiquidCsvLoader {
-    private static final String PATH = "redline_content/liquids.csv";
+public final class GasCsvLoader {
+    private static final String PATH = "redline_content/gases.csv";
 
     private static final Pattern EFFECT_ID_KEY = Pattern.compile("^effect_(\\d+)_id$");
     private static final Pattern EFFECT_DURATION_KEY = Pattern.compile("^effect_(\\d+)_duration_ticks$");
     private static final Pattern EFFECT_AMPLIFIER_KEY = Pattern.compile("^effect_(\\d+)_amplifier$");
     private static final Pattern EFFECT_CHANCE_KEY = Pattern.compile("^effect_(\\d+)_chance$");
 
-    public static List<LiquidDefinition> load() {
+    public static List<GasDefinition> load() {
         return CsvTableReader.readResource(PATH).stream()
                 .filter(row -> booleanValue(row, "enabled"))
-                .map(LiquidCsvLoader::loadOne)
+                .map(GasCsvLoader::loadOne)
                 .toList();
     }
 
-    private static LiquidDefinition loadOne(Map<String, String> row) {
+    private static GasDefinition loadOne(Map<String, String> row) {
         String id = string(row, "id");
 
         int alpha = intValue(row, "alpha");
-        int flowDistance = intValue(row, "flow_distance");
-        int flowDelayTicks = intValue(row, "flow_delay_ticks");
-        int temperature = intValue(row, "t");
+        int spreadDelayTicks = intValue(row, "spread_delay_ticks");
+        int maxAmount = intValue(row, "max_amount");
+        double densityKgM3 = doubleValue(row, "density_kg_m3");
+        float explosionPower = floatValue(row, "explosion_power");
+        float escapeChance = floatValue(row, "escape_chance");
 
         if (alpha < 0 || alpha > 255) {
-            throw new IllegalStateException("Liquid " + id + " has invalid alpha: " + alpha);
+            throw new IllegalStateException("Gas " + id + " has invalid alpha: " + alpha);
         }
 
-        if (flowDistance < 1 || flowDistance > 8) {
-            throw new IllegalStateException("Liquid " + id + " has invalid flow_distance: " + flowDistance);
+        if (densityKgM3 <= 0.0D) {
+            throw new IllegalStateException("Gas " + id + " has invalid density_kg_m3: " + densityKgM3);
         }
 
-        if (flowDelayTicks < 1) {
-            throw new IllegalStateException("Liquid " + id + " has invalid flow_delay_ticks: " + flowDelayTicks);
+        if (spreadDelayTicks < 1) {
+            throw new IllegalStateException("Gas " + id + " has invalid spread_delay_ticks: " + spreadDelayTicks);
         }
 
-        if (temperature < 1) {
-            throw new IllegalStateException("Liquid " + id + " has invalid temperature: " + temperature);
+        if (maxAmount < 1 || maxAmount > 16) {
+            throw new IllegalStateException("Gas " + id + " has invalid max_amount: " + maxAmount + ". Use 1..16.");
         }
 
-        return new LiquidDefinition(
+        if (explosionPower < 0.0F) {
+            throw new IllegalStateException("Gas " + id + " has invalid explosion_power: " + explosionPower);
+        }
+
+        if (escapeChance < 0.0F || escapeChance > 1.0F) {
+            throw new IllegalStateException("Gas " + id + " has invalid escape_chance: " + escapeChance);
+        }
+
+        return new GasDefinition(
                 id,
                 string(row, "ru_name"),
                 string(row, "en_name"),
                 color(row, "color"),
                 alpha,
-                flowDistance,
-                flowDelayTicks,
-                temperature,
-                optionalDouble(row, "density_kg_m3", 1000.0D),
-                optionalInt(row, "boiling_point_k", 999999),
-                optionalEnum(row, "evaporation_mode", LiquidEvaporationMode.class, LiquidEvaporationMode.NONE),
-                optionalDouble(row, "gas_expansion_scale", 1.0D),
-                optionalInt(row, "max_gas_units_from_one_block", 16384),
-                optionalString(row, "evaporates_to_gas_id"),
+                densityKgM3,
+                spreadDelayTicks,
+                maxAmount,
+                enumValue(row, "render_mode", GasRenderMode.class),
+                booleanValue(row, "flammable"),
+                explosionPower,
+                booleanValue(row, "escape_to_atmosphere"),
+                intValue(row, "escape_y_min"),
+                escapeChance,
                 parseEffects(row, id)
         );
     }
 
-    private static List<LiquidEffectEntry> parseEffects(Map<String, String> row, String liquidId) {
+    private static List<GasEffectEntry> parseEffects(Map<String, String> row, String gasId) {
         List<Integer> indexes = findEffectIndexes(row);
-        List<LiquidEffectEntry> result = new ArrayList<>();
+        List<GasEffectEntry> result = new ArrayList<>();
 
         for (int index : indexes) {
             String effectIdKey = "effect_" + index + "_id";
@@ -85,7 +96,7 @@ public final class LiquidCsvLoader {
             String amplifierKey = "effect_" + index + "_amplifier";
             String chanceKey = "effect_" + index + "_chance";
 
-            ensureEffectColumnsExist(row, liquidId, effectIdKey, durationKey, amplifierKey, chanceKey);
+            ensureEffectColumnsExist(row, gasId, effectIdKey, durationKey, amplifierKey, chanceKey);
 
             String effectId = optionalString(row, effectIdKey);
             String durationText = optionalString(row, durationKey);
@@ -103,7 +114,7 @@ public final class LiquidCsvLoader {
                     || durationText.isBlank()
                     || amplifierText.isBlank()
                     || chanceText.isBlank()) {
-                throw new IllegalStateException("Broken liquid effect group in " + liquidId + ": effect_" + index);
+                throw new IllegalStateException("Broken gas effect group in " + gasId + ": effect_" + index);
             }
 
             int durationTicks = Integer.parseInt(durationText);
@@ -111,18 +122,18 @@ public final class LiquidCsvLoader {
             float chance = Float.parseFloat(chanceText);
 
             if (durationTicks <= 0) {
-                throw new IllegalStateException("Liquid " + liquidId + " has effect duration <= 0");
+                throw new IllegalStateException("Gas " + gasId + " has effect duration <= 0");
             }
 
             if (amplifier < 0) {
-                throw new IllegalStateException("Liquid " + liquidId + " has effect amplifier < 0");
+                throw new IllegalStateException("Gas " + gasId + " has effect amplifier < 0");
             }
 
             if (chance < 0.0F || chance > 1.0F) {
-                throw new IllegalStateException("Liquid " + liquidId + " has effect chance outside 0..1");
+                throw new IllegalStateException("Gas " + gasId + " has effect chance outside 0..1");
             }
 
-            result.add(new LiquidEffectEntry(effectId, durationTicks, amplifier, chance));
+            result.add(new GasEffectEntry(effectId, durationTicks, amplifier, chance));
         }
 
         return List.copyOf(result);
@@ -130,7 +141,7 @@ public final class LiquidCsvLoader {
 
     private static void ensureEffectColumnsExist(
             Map<String, String> row,
-            String liquidId,
+            String gasId,
             String effectIdKey,
             String durationKey,
             String amplifierKey,
@@ -141,8 +152,8 @@ public final class LiquidCsvLoader {
                 || !row.containsKey(amplifierKey)
                 || !row.containsKey(chanceKey)) {
             throw new IllegalStateException(
-                    "Broken liquid effect columns in "
-                            + liquidId
+                    "Broken gas effect columns in "
+                            + gasId
                             + ". Every effect_N group must contain id, duration_ticks, amplifier and chance."
             );
         }
@@ -169,35 +180,14 @@ public final class LiquidCsvLoader {
         }
     }
 
-    private static int optionalInt(Map<String, String> row, String column, int defaultValue) {
-        String value = row.get(column);
-        if (value == null || value.isBlank()) {
-            return defaultValue;
-        }
-        return Integer.parseInt(value.trim());
+    private static double doubleValue(Map<String, String> row, String key) {
+        return Double.parseDouble(string(row, key));
     }
 
-    private static double optionalDouble(Map<String, String> row, String column, double defaultValue) {
-        String value = row.get(column);
-        if (value == null || value.isBlank()) {
-            return defaultValue;
-        }
-        return Double.parseDouble(value.trim());
+    private static float floatValue(Map<String, String> row, String key) {
+        return Float.parseFloat(string(row, key));
     }
 
-    private static <T extends Enum<T>> T optionalEnum(
-            Map<String, String> row,
-            String column,
-            Class<T> enumClass,
-            T defaultValue
-    ) {
-        String value = row.get(column);
-        if (value == null || value.isBlank()) {
-            return defaultValue;
-        }
-        return Enum.valueOf(enumClass, value.trim().toUpperCase());
-    }
-
-    private LiquidCsvLoader() {
+    private GasCsvLoader() {
     }
 }

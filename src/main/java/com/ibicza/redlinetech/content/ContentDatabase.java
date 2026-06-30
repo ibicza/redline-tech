@@ -9,6 +9,10 @@ import com.ibicza.redlinetech.content.ore.MetallicOreDefinition;
 import com.ibicza.redlinetech.content.ore.NonMetalOreCsvLoader;
 import com.ibicza.redlinetech.content.ore.NonMetalOreDefinition;
 import com.ibicza.redlinetech.content.ore.OreLikeDefinition;
+import com.ibicza.redlinetech.content.dimension.DimensionEnvironmentCsvLoader;
+import com.ibicza.redlinetech.content.dimension.DimensionEnvironmentDefinition;
+import com.ibicza.redlinetech.content.gas.GasCsvLoader;
+import com.ibicza.redlinetech.content.gas.GasDefinition;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -23,6 +27,10 @@ public final class ContentDatabase {
     public static final List<OreLikeDefinition> ALL_ORES;
     public static final List<LiquidDefinition> LIQUIDS;
     public static final Map<String, LiquidDefinition> LIQUIDS_BY_ID;
+    public static final List<GasDefinition> GASES;
+    public static final Map<String, GasDefinition> GASES_BY_ID;
+    public static final List<DimensionEnvironmentDefinition> DIMENSION_ENVIRONMENTS;
+    public static final Map<String, DimensionEnvironmentDefinition> DIMENSION_ENVIRONMENTS_BY_ID;
 
     static {
         try {
@@ -37,7 +45,12 @@ public final class ContentDatabase {
             List<LiquidDefinition> liquids = LiquidCsvLoader.load();
             Map<String, LiquidDefinition> liquidsById = indexLiquids(liquids);
 
-            validateLoadedContent(materials, allOres, liquids);
+            List<GasDefinition> gases = GasCsvLoader.load();
+            Map<String, GasDefinition> gasesById = indexGases(gases);
+            List<DimensionEnvironmentDefinition> dimensionEnvironments = DimensionEnvironmentCsvLoader.load();
+            Map<String, DimensionEnvironmentDefinition> dimensionEnvironmentsById = indexDimensionEnvironments(dimensionEnvironments);
+
+            validateLoadedContent(materials, allOres, liquids, gases);
 
             MATERIALS = List.copyOf(materials);
             MATERIALS_BY_ID = Map.copyOf(materialsById);
@@ -46,6 +59,10 @@ public final class ContentDatabase {
             ALL_ORES = List.copyOf(allOres);
             LIQUIDS = List.copyOf(liquids);
             LIQUIDS_BY_ID = Map.copyOf(liquidsById);
+            GASES = List.copyOf(gases);
+            GASES_BY_ID = Map.copyOf(gasesById);
+            DIMENSION_ENVIRONMENTS = List.copyOf(dimensionEnvironments);
+            DIMENSION_ENVIRONMENTS_BY_ID = Map.copyOf(dimensionEnvironmentsById);
         } catch (Exception exception) {
             throw new RuntimeException(
                     "Failed to load Redline Tech content tables. Check CSV files in src/main/resources/redline_content.",
@@ -53,6 +70,27 @@ public final class ContentDatabase {
             );
         }
     }
+
+    private static Map<String, GasDefinition> indexGases(List<GasDefinition> gases) {
+        Map<String, GasDefinition> result = new LinkedHashMap<>();
+        for (GasDefinition gas : gases) {
+            GasDefinition previous = result.put(gas.id(), gas);
+            if (previous != null) throw new IllegalStateException("Duplicate gas id: " + gas.id());
+        }
+        return result;
+    }
+
+    private static Map<String, DimensionEnvironmentDefinition> indexDimensionEnvironments(
+            List<DimensionEnvironmentDefinition> dimensionEnvironments
+    ) {
+        Map<String, DimensionEnvironmentDefinition> result = new LinkedHashMap<>();
+        for (DimensionEnvironmentDefinition environment : dimensionEnvironments) {
+            DimensionEnvironmentDefinition previous = result.put(environment.dimensionId(), environment);
+            if (previous != null) throw new IllegalStateException("Duplicate dimension environment id: " + environment.dimensionId());
+        }
+        return result;
+    }
+
 
     private static Map<String, MaterialDefinition> indexMaterials(List<MaterialDefinition> materials) {
         Map<String, MaterialDefinition> result = new LinkedHashMap<>();
@@ -95,7 +133,8 @@ public final class ContentDatabase {
     private static void validateLoadedContent(
             List<MaterialDefinition> materials,
             List<OreLikeDefinition> allOres,
-            List<LiquidDefinition> liquids
+            List<LiquidDefinition> liquids,
+            List<GasDefinition> gases
     ) {
         if (materials.isEmpty()) {
             throw new IllegalStateException(
@@ -113,6 +152,10 @@ public final class ContentDatabase {
             throw new IllegalStateException(
                     "No liquids loaded. Check redline_content/liquids.csv line breaks and enabled column."
             );
+        }
+
+        if (gases.isEmpty()) {
+            throw new IllegalStateException("No gases loaded. Check redline_content/gases.csv.");
         }
     }
 
