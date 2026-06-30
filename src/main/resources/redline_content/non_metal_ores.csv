@@ -1,0 +1,2 @@
+id,ru_name,en_name,material_id,drop_style,hardness,resistance,tool,tier,y_min,y_max,peak_min,peak_max,vein_min,vein_max,amount_min,amount_max,base_texture,overlay_texture,color,has_stone_variant,has_deepslate_variant,enabled
+graphite_ore,Графитовая руда,Graphite Ore,graphite,drop_item,3.0,3.0,pickaxe,iron,-360,-80,-280,-160,3,12,0.8,2.5,minecraft:block/stone,redline_tech:template/ore/non_metal_overlay,#252525,true,true,true

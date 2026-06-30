@@ -1,0 +1,18 @@
+2. Шаблоны, которые тебе надо нарисовать
+
+Создай:
+
+src/main/resources/redline_templates/ore/stone_base.png
+src/main/resources/redline_templates/ore/deepslate_base.png
+src/main/resources/redline_templates/ore/metallic_overlay.png
+src/main/resources/redline_templates/ore/non_metal_overlay.png
+
+И:
+
+src/main/resources/redline_templates/material/ingot_template.png
+src/main/resources/redline_templates/material/dust_template.png
+src/main/resources/redline_templates/material/plate_template.png
+src/main/resources/redline_templates/material/wire_template.png
+src/main/resources/redline_templates/material/rod_template.png
+src/main/resources/redline_templates/material/nugget_template.png
+src/main/resources/redline_templates/material/block_template.png
