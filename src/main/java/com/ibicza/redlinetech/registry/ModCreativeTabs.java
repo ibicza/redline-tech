@@ -34,15 +34,14 @@ public final class ModCreativeTabs {
                         ModItems.MATERIAL_ITEMS.forEach(materialItem -> output.accept(materialItem.item().get()));
                         ModBlocks.MATERIAL_BLOCKS.forEach(materialBlock -> output.accept(materialBlock.item().get()));
                         ModLiquids.LIQUIDS.forEach(liquid -> output.accept(liquid.bucketItem().get()));
+                        
                         output.accept(ModItems.GAS_CAPSULE.get());
 
-                        ModGases.GASES.forEach(gas -> {
-                            output.accept(GasCapsuleItem.createFilled(
-                                    ModItems.GAS_CAPSULE.get(),
-                                    gas.id(),
-                                    16
-                            ));
-                        });
+                        ModGases.GASES.forEach(gas -> output.accept(GasCapsuleItem.createFilled(
+                                ModItems.GAS_CAPSULE.get(),
+                                gas.id(),
+                                16
+                        )));
                     })
                     .build()
             );

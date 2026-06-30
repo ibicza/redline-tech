@@ -1,6 +1,12 @@
 package com.ibicza.redlinetech.content.block;
 
-import com.ibicza.redlinetech.content.gas.*;
+import com.ibicza.redlinetech.content.gas.GasDefinition;
+import com.ibicza.redlinetech.content.gas.GasEntityInteraction;
+import com.ibicza.redlinetech.content.gas.GasIgnitionLogic;
+import com.ibicza.redlinetech.content.gas.GasMovementLogic;
+import com.ibicza.redlinetech.content.gas.GasRenderMode;
+import com.ibicza.redlinetech.content.gas.RegisteredGas;
+import com.ibicza.redlinetech.registry.ModGases;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
@@ -8,18 +14,25 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.InsideBlockEffectApplier;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.RenderShape;
-import com.ibicza.redlinetech.content.gas.RegisteredGas;
-import com.ibicza.redlinetech.registry.ModGases;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.block.state.properties.IntegerProperty;
 import net.minecraft.world.level.redstone.Orientation;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.Shapes;
+import net.minecraft.world.phys.shapes.VoxelShape;
 
 public final class RedlineGasBlock extends Block {
     public static final IntegerProperty AMOUNT = IntegerProperty.create("amount", 1, 16);
+
+    private static final VoxelShape[] FLOOR_SHAPES = createFloorShapes();
+    private static final VoxelShape[] CEILING_SHAPES = createCeilingShapes();
+    private static final VoxelShape FULL_SHAPE = Shapes.block();
+    private static final VoxelShape NO_COLLISION = Shapes.empty();
 
     private final GasDefinition definition;
 
@@ -27,6 +40,10 @@ public final class RedlineGasBlock extends Block {
         super(properties);
         this.definition = definition;
         registerDefaultState(stateDefinition.any().setValue(AMOUNT, definition.maxAmount()));
+    }
+
+    public GasDefinition definition() {
+        return definition;
     }
 
     public RegisteredGas registeredGas() {
@@ -37,10 +54,6 @@ public final class RedlineGasBlock extends Block {
         }
 
         return registeredGas;
-    }
-
-    public GasDefinition definition() {
-        return definition;
     }
 
     @Override
@@ -114,6 +127,37 @@ public final class RedlineGasBlock extends Block {
     }
 
     @Override
+    protected VoxelShape getShape(
+            BlockState state,
+            BlockGetter level,
+            BlockPos pos,
+            CollisionContext context
+    ) {
+        int amount = state.getValue(AMOUNT);
+        int index = Math.max(1, Math.min(16, amount)) - 1;
+
+        if (definition.renderMode() == GasRenderMode.CEILING_LAYER) {
+            return CEILING_SHAPES[index];
+        }
+
+        if (definition.renderMode() == GasRenderMode.FLOOR_LAYER) {
+            return FLOOR_SHAPES[index];
+        }
+
+        return FULL_SHAPE;
+    }
+
+    @Override
+    protected VoxelShape getCollisionShape(
+            BlockState state,
+            BlockGetter level,
+            BlockPos pos,
+            CollisionContext context
+    ) {
+        return NO_COLLISION;
+    }
+
+    @Override
     protected boolean propagatesSkylightDown(BlockState state) {
         return true;
     }
@@ -126,5 +170,25 @@ public final class RedlineGasBlock extends Block {
     @Override
     protected RenderShape getRenderShape(BlockState state) {
         return RenderShape.MODEL;
+    }
+
+    private static VoxelShape[] createFloorShapes() {
+        VoxelShape[] shapes = new VoxelShape[16];
+
+        for (int amount = 1; amount <= 16; amount++) {
+            shapes[amount - 1] = Block.box(0.0D, 0.0D, 0.0D, 16.0D, amount, 16.0D);
+        }
+
+        return shapes;
+    }
+
+    private static VoxelShape[] createCeilingShapes() {
+        VoxelShape[] shapes = new VoxelShape[16];
+
+        for (int amount = 1; amount <= 16; amount++) {
+            shapes[amount - 1] = Block.box(0.0D, 16.0D - amount, 0.0D, 16.0D, 16.0D, 16.0D);
+        }
+
+        return shapes;
     }
 }

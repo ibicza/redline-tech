@@ -23,6 +23,9 @@ public final class ModItems {
     public static final List<RegisteredMaterialItem> MATERIAL_ITEMS =
             Collections.unmodifiableList(MUTABLE_MATERIAL_ITEMS);
 
+    public static final DeferredItem<GasCapsuleItem> GAS_CAPSULE =
+            ITEMS.registerItem("gas_capsule", GasCapsuleItem::new);
+
     static {
         ModBlocks.ORE_BLOCKS.forEach(ore -> {
             DeferredItem<BlockItem> item = ITEMS.registerSimpleBlockItem(ore.blockId(), ore.block());
@@ -87,9 +90,7 @@ public final class ModItems {
             registerMaterialItem(material, MaterialItemForm.NUGGET);
         }
     }
-
-    public static final DeferredItem<GasCapsuleItem> GAS_CAPSULE =
-            ITEMS.registerItem("gas_capsule", GasCapsuleItem::new);
+    
 
     private static void registerMaterialItem(MaterialDefinition material, MaterialItemForm form) {
         String itemId = material.id() + "_" + form.suffix();

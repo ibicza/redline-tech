@@ -67,6 +67,9 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
                 generateGasResources(cachedOutput);
                 generateGasTextures(cachedOutput);
 
+                generateGasCapsuleResources(cachedOutput);
+                generateGasCapsuleTexture(cachedOutput);
+
 
                 generateTags(cachedOutput);
             } catch (IOException exception) {
@@ -209,6 +212,7 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
         for (RegisteredGas gas : ModGases.GASES) {
             appendLang(json, "block." + RedlineTech.MOD_ID + "." + gas.blockId(), gasName(gas, locale));
         }
+        appendLang(json, "item." + RedlineTech.MOD_ID + ".gas_capsule", "ru_ru".equals(locale) ? "Газовая капсула" : "Gas Capsule");
 
         generateEffectLang(json, locale);
 
@@ -298,6 +302,62 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
             );
         }
     }
+
+    private void generateGasCapsuleResources(CachedOutput cachedOutput) throws IOException {
+        writeJson(cachedOutput, assets("models/item/gas_capsule.json"), generatedItemModelJson("gas_capsule"));
+        writeJson(cachedOutput, assets("items/gas_capsule.json"), clientItemJson("gas_capsule"));
+    }
+
+    private void generateGasCapsuleTexture(CachedOutput cachedOutput) throws IOException {
+        BufferedImage template = readTemplateImage("redline_templates/item/gas_capsule_template.png");
+        writePng(cachedOutput, assets("textures/item/gas_capsule.png"), template);
+    }
+    
+
+    private static String gasBlockModelJson(RegisteredGas gas, int amount) {
+        double fromY = 0.0D;
+        double toY = 16.0D;
+
+        if (gas.definition().renderMode() == GasRenderMode.FLOOR_LAYER) {
+            toY = amount;
+        } else if (gas.definition().renderMode() == GasRenderMode.CEILING_LAYER) {
+            fromY = 16.0D - amount;
+        }
+
+        String texture = RedlineTech.MOD_ID + ":block/gas/" + gas.blockId() + "_" + amount;
+
+        return """
+            {
+              "render_type": "minecraft:translucent",
+              "ambientocclusion": false,
+              "textures": {
+                "particle": "%1$s",
+                "gas": "%1$s"
+              },
+              "elements": [
+                {
+                  "from": [0, %2$.3f, 0],
+                  "to": [16, %3$.3f, 16],
+                  "faces": {
+                    "down":  { "texture": "#gas" },
+                    "up":    { "texture": "#gas" },
+                    "north": { "texture": "#gas" },
+                    "south": { "texture": "#gas" },
+                    "west":  { "texture": "#gas" },
+                    "east":  { "texture": "#gas" }
+                  }
+                }
+              ]
+            }
+            """.formatted(texture, fromY, toY);
+    }
+
+    private static int gasTextureAlpha(RegisteredGas gas, int amount) {
+        int maxAmount = Math.max(1, gas.definition().maxAmount());
+        int scaled = gas.definition().alpha() * amount / maxAmount;
+        return clamp(Math.max(48, scaled));
+    }
+
 
     private static BufferedImage tintFullTexture(BufferedImage template, int rgbColor, int forcedAlpha) {
         int width = template.getWidth();
