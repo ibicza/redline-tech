@@ -14,6 +14,7 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.InsideBlockEffectApplier;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
@@ -29,17 +30,19 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 public final class RedlineGasBlock extends Block {
     public static final IntegerProperty AMOUNT = IntegerProperty.create("amount", 1, 16);
 
+    private static final VoxelShape NO_COLLISION = Shapes.empty();
+    private static final VoxelShape FULL_SELECTION =
+            Block.box(0.0D, 0.0D, 0.0D, 16.0D, 16.0D, 16.0D);
+
     private static final VoxelShape[] FLOOR_SHAPES = createFloorShapes();
     private static final VoxelShape[] CEILING_SHAPES = createCeilingShapes();
-    private static final VoxelShape FULL_SHAPE = Shapes.block();
-    private static final VoxelShape NO_COLLISION = Shapes.empty();
 
     private final GasDefinition definition;
 
     public RedlineGasBlock(GasDefinition definition, Properties properties) {
         super(properties);
         this.definition = definition;
-        registerDefaultState(stateDefinition.any().setValue(AMOUNT, definition.maxAmount()));
+        registerDefaultState(stateDefinition.any().setValue(AMOUNT, clampAmount(definition.maxAmount())));
     }
 
     public GasDefinition definition() {
@@ -133,18 +136,23 @@ public final class RedlineGasBlock extends Block {
             BlockPos pos,
             CollisionContext context
     ) {
-        int amount = state.getValue(AMOUNT);
-        int index = Math.max(1, Math.min(16, amount)) - 1;
-
-        if (definition.renderMode() == GasRenderMode.CEILING_LAYER) {
-            return CEILING_SHAPES[index];
-        }
+        int amount = clampAmount(state.getValue(AMOUNT));
+        int index = amount - 1;
 
         if (definition.renderMode() == GasRenderMode.FLOOR_LAYER) {
             return FLOOR_SHAPES[index];
         }
 
-        return FULL_SHAPE;
+        if (definition.renderMode() == GasRenderMode.CEILING_LAYER) {
+            return CEILING_SHAPES[index];
+        }
+
+        return FULL_SELECTION;
+    }
+
+    @Override
+    protected VoxelShape getInteractionShape(BlockState state, BlockGetter level, BlockPos pos) {
+        return getShape(state, level, pos, CollisionContext.empty());
     }
 
     @Override
@@ -155,6 +163,21 @@ public final class RedlineGasBlock extends Block {
             CollisionContext context
     ) {
         return NO_COLLISION;
+    }
+
+    @Override
+    protected VoxelShape getVisualShape(
+            BlockState state,
+            BlockGetter level,
+            BlockPos pos,
+            CollisionContext context
+    ) {
+        return NO_COLLISION;
+    }
+
+    @Override
+    protected boolean canBeReplaced(BlockState state, BlockPlaceContext context) {
+        return true;
     }
 
     @Override
@@ -176,7 +199,15 @@ public final class RedlineGasBlock extends Block {
         VoxelShape[] shapes = new VoxelShape[16];
 
         for (int amount = 1; amount <= 16; amount++) {
-            shapes[amount - 1] = Block.box(0.0D, 0.0D, 0.0D, 16.0D, amount, 16.0D);
+            double maxY = amount;
+            shapes[amount - 1] = Block.box(
+                    0.0D,
+                    0.0D,
+                    0.0D,
+                    16.0D,
+                    maxY,
+                    16.0D
+            );
         }
 
         return shapes;
@@ -186,9 +217,21 @@ public final class RedlineGasBlock extends Block {
         VoxelShape[] shapes = new VoxelShape[16];
 
         for (int amount = 1; amount <= 16; amount++) {
-            shapes[amount - 1] = Block.box(0.0D, 16.0D - amount, 0.0D, 16.0D, 16.0D, 16.0D);
+            double minY = 16.0D - amount;
+            shapes[amount - 1] = Block.box(
+                    0.0D,
+                    minY,
+                    0.0D,
+                    16.0D,
+                    16.0D,
+                    16.0D
+            );
         }
 
         return shapes;
+    }
+
+    private static int clampAmount(int amount) {
+        return Math.max(1, Math.min(16, amount));
     }
 }

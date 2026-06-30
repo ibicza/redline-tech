@@ -312,7 +312,7 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
         BufferedImage template = readTemplateImage("redline_templates/item/gas_capsule_template.png");
         writePng(cachedOutput, assets("textures/item/gas_capsule.png"), template);
     }
-    
+
 
     private static String gasBlockModelJson(RegisteredGas gas, int amount) {
         double fromY = 0.0D;
@@ -881,21 +881,22 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
 
     private static String gasModelJson(RegisteredGas gas, int amount) {
         double fraction = (double) amount / (double) gas.definition().maxAmount();
+
         double minY = 0.0D;
         double maxY = 16.0D;
 
         if (gas.definition().renderMode() == GasRenderMode.FLOOR_LAYER) {
-            maxY = 16.0D * fraction;
+            maxY = Math.max(1.0D, 16.0D * fraction);
         } else if (gas.definition().renderMode() == GasRenderMode.CEILING_LAYER) {
-            minY = 16.0D * (1.0D - fraction);
+            minY = Math.min(15.0D, 16.0D * (1.0D - fraction));
         }
 
-        // FULL_CUBE_ALPHA всегда полный куб, плотность видна через alpha текстуры.
-        String texture = RedlineTech.MOD_ID + ":block/gas/" + gas.blockId();
+        String texture = RedlineTech.MOD_ID + ":block/gas/" + gas.blockId() + "_" + amount;
 
         return """
             {
               "render_type": "minecraft:translucent",
+              "ambientocclusion": false,
               "textures": {
                 "particle": "%s",
                 "gas": "%s"
@@ -904,13 +905,14 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
                 {
                   "from": [0, %.3f, 0],
                   "to": [16, %.3f, 16],
+                  "shade": false,
                   "faces": {
-                    "down":  { "texture": "#gas", "cullface": "down" },
-                    "up":    { "texture": "#gas", "cullface": "up" },
-                    "north": { "texture": "#gas", "cullface": "north" },
-                    "south": { "texture": "#gas", "cullface": "south" },
-                    "west":  { "texture": "#gas", "cullface": "west" },
-                    "east":  { "texture": "#gas", "cullface": "east" }
+                    "down":  { "texture": "#gas" },
+                    "up":    { "texture": "#gas" },
+                    "north": { "texture": "#gas" },
+                    "south": { "texture": "#gas" },
+                    "west":  { "texture": "#gas" },
+                    "east":  { "texture": "#gas" }
                   }
                 }
               ]
@@ -922,18 +924,67 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
         BufferedImage template = readTemplateImage("redline_templates/gas/gas_template.png");
 
         for (RegisteredGas gas : ModGases.GASES) {
-            BufferedImage result = tintFullTexture(
-                    template,
-                    gas.definition().color(),
-                    gas.definition().alpha()
-            );
+            for (int amount = 1; amount <= gas.definition().maxAmount(); amount++) {
+                BufferedImage result = tintGasTextureForAmount(
+                        template,
+                        gas.definition().color(),
+                        gas.definition().alpha(),
+                        amount,
+                        gas.definition().maxAmount()
+                );
 
-            writePng(
-                    cachedOutput,
-                    assets("textures/block/gas/" + gas.blockId() + ".png"),
-                    result
-            );
+                writePng(
+                        cachedOutput,
+                        assets("textures/block/gas/" + gas.blockId() + "_" + amount + ".png"),
+                        result
+                );
+            }
         }
+    }
+
+    private static BufferedImage tintGasTextureForAmount(
+            BufferedImage template,
+            int rgbColor,
+            int maxAlpha,
+            int amount,
+            int maxAmount
+    ) {
+        int width = template.getWidth();
+        int height = template.getHeight();
+        BufferedImage result = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+
+        int baseR = (rgbColor >> 16) & 0xFF;
+        int baseG = (rgbColor >> 8) & 0xFF;
+        int baseB = rgbColor & 0xFF;
+
+        float amountFactor = Math.max(0.15F, amount / (float) maxAmount);
+        int visualAlpha = clamp(Math.round(maxAlpha * amountFactor));
+        visualAlpha = Math.max(28, visualAlpha);
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int argb = template.getRGB(x, y);
+                int alpha = (argb >>> 24) & 0xFF;
+                int red = (argb >>> 16) & 0xFF;
+                int green = (argb >>> 8) & 0xFF;
+                int blue = argb & 0xFF;
+
+                if (alpha == 0) {
+                    result.setRGB(x, y, 0x00000000);
+                    continue;
+                }
+
+                int brightness = Math.max(48, (red + green + blue) / 3);
+                int outR = clamp(baseR * brightness / 255 + 24);
+                int outG = clamp(baseG * brightness / 255 + 24);
+                int outB = clamp(baseB * brightness / 255 + 24);
+                int outA = clamp(alpha * visualAlpha / 255);
+
+                result.setRGB(x, y, (outA << 24) | (outR << 16) | (outG << 8) | outB);
+            }
+        }
+
+        return result;
     }
 
 }

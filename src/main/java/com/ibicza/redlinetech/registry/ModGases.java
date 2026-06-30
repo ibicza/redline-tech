@@ -5,7 +5,7 @@ import com.ibicza.redlinetech.content.ContentDatabase;
 import com.ibicza.redlinetech.content.block.RedlineGasBlock;
 import com.ibicza.redlinetech.content.gas.GasDefinition;
 import com.ibicza.redlinetech.content.gas.RegisteredGas;
-import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.neoforged.neoforge.registries.DeferredBlock;
 import net.neoforged.neoforge.registries.DeferredRegister;
@@ -17,13 +17,17 @@ import java.util.List;
 import java.util.Map;
 
 public final class ModGases {
-    public static final DeferredRegister.Blocks BLOCKS = DeferredRegister.createBlocks(RedlineTech.MOD_ID);
+    public static final DeferredRegister.Blocks BLOCKS =
+            DeferredRegister.createBlocks(RedlineTech.MOD_ID);
 
     private static final List<RegisteredGas> MUTABLE_GASES = new ArrayList<>();
     private static final Map<String, RegisteredGas> MUTABLE_GASES_BY_ID = new LinkedHashMap<>();
 
-    public static final List<RegisteredGas> GASES = Collections.unmodifiableList(MUTABLE_GASES);
-    public static final Map<String, RegisteredGas> GASES_BY_ID = Collections.unmodifiableMap(MUTABLE_GASES_BY_ID);
+    public static final List<RegisteredGas> GASES =
+            Collections.unmodifiableList(MUTABLE_GASES);
+
+    public static final Map<String, RegisteredGas> GASES_BY_ID =
+            Collections.unmodifiableMap(MUTABLE_GASES_BY_ID);
 
     static {
         ContentDatabase.GASES.forEach(ModGases::registerGas);
@@ -48,12 +52,15 @@ public final class ModGases {
     }
 
     private static BlockBehaviour.Properties gasBlockProperties() {
-        return BlockBehaviour.Properties.ofFullCopy(Blocks.AIR)
+        return BlockBehaviour.Properties.of()
                 .noLootTable()
                 .noCollision()
                 .noOcclusion()
                 .replaceable()
-                .strength(0.0F);
+                .strength(0.0F)
+                .sound(SoundType.EMPTY)
+                .isViewBlocking((state, level, pos) -> false)
+                .isSuffocating((state, level, pos) -> false);
     }
 
     private ModGases() {
