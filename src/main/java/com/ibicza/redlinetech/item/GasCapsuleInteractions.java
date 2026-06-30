@@ -1,10 +1,11 @@
 package com.ibicza.redlinetech.item;
 
+import com.ibicza.redlinetech.content.block.RedlineGasBlock;
 import com.ibicza.redlinetech.content.gas.GasCapsuleData;
 import com.ibicza.redlinetech.content.gas.RegisteredGas;
-import com.ibicza.redlinetech.content.block.RedlineGasBlock;
 import com.ibicza.redlinetech.registry.ModGases;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.context.UseOnContext;
@@ -21,12 +22,10 @@ public final class GasCapsuleInteractions {
         BlockPos pos = context.getClickedPos();
         BlockState clickedState = level.getBlockState(pos);
 
-        // 1. попытка собрать газ
-        if (clickedState.getBlock() instanceof RedlineGasBlock gasBlock) {
+        if (clickedState.getBlock() instanceof RedlineGasBlock) {
             return collectGas(level, pos, clickedState, stack);
         }
 
-        // 2. попытка поставить газ
         return placeGas(context, stack);
     }
 
@@ -76,7 +75,8 @@ public final class GasCapsuleInteractions {
         }
 
         Level level = context.getLevel();
-        BlockPos targetPos = context.getClickedPos().relative(context.getClickedFace());
+        BlockPos rawTargetPos = context.getClickedPos().relative(context.getClickedFace());
+        BlockPos targetPos = resolveStablePlacementPos(level, rawTargetPos, gas);
         BlockState targetState = level.getBlockState(targetPos);
 
         int stored = data.amount();
@@ -84,24 +84,25 @@ public final class GasCapsuleInteractions {
             return InteractionResult.FAIL;
         }
 
-        // если пусто — ставим новый газ
         if (targetState.isAir()) {
-            int placed = Math.min(16, stored);
+            int placed = Math.min(gas.definition().maxAmount(), stored);
+
             level.setBlock(
                     targetPos,
                     gas.block().get().defaultBlockState().setValue(RedlineGasBlock.AMOUNT, placed),
                     3
             );
 
+            level.scheduleTick(targetPos, gas.block().get(), gas.definition().spreadDelayTicks());
+
             int left = stored - placed;
             GasCapsuleItem.setData(stack, left <= 0 ? GasCapsuleData.EMPTY : new GasCapsuleData(data.gasId(), left));
             return InteractionResult.SUCCESS;
         }
 
-        // если такой же газ — доливаем
-        if (targetState.getBlock() instanceof RedlineGasBlock gasBlock && gasBlock.registeredGas().id().equals(data.gasId())) {
+        if (isSameGas(targetState, gas)) {
             int current = targetState.getValue(RedlineGasBlock.AMOUNT);
-            int free = 16 - current;
+            int free = gas.definition().maxAmount() - current;
 
             if (free <= 0) {
                 return InteractionResult.FAIL;
@@ -110,12 +111,85 @@ public final class GasCapsuleInteractions {
             int placed = Math.min(free, stored);
             level.setBlock(targetPos, targetState.setValue(RedlineGasBlock.AMOUNT, current + placed), 3);
 
+            if (targetState.getBlock() instanceof RedlineGasBlock gasBlock) {
+                level.scheduleTick(targetPos, gasBlock, gas.definition().spreadDelayTicks());
+            }
+
             int left = stored - placed;
             GasCapsuleItem.setData(stack, left <= 0 ? GasCapsuleData.EMPTY : new GasCapsuleData(data.gasId(), left));
             return InteractionResult.SUCCESS;
         }
 
         return InteractionResult.FAIL;
+    }
+
+    private static BlockPos resolveStablePlacementPos(Level level, BlockPos startPos, RegisteredGas gas) {
+        Direction preferredDirection = preferredVerticalDirection(gas);
+
+        if (preferredDirection == null) {
+            return startPos;
+        }
+
+        BlockPos current = startPos;
+        BlockPos best = canReceiveGas(level.getBlockState(current), gas) ? current : startPos;
+
+        for (int step = 0; step < 16; step++) {
+            BlockPos next = current.relative(preferredDirection);
+            BlockState nextState = level.getBlockState(next);
+
+            if (nextState.isAir()) {
+                best = next;
+                current = next;
+                continue;
+            }
+
+            if (isSameGas(nextState, gas)) {
+                int amount = nextState.getValue(RedlineGasBlock.AMOUNT);
+
+                if (amount < gas.definition().maxAmount()) {
+                    best = next;
+                }
+
+                current = next;
+                continue;
+            }
+
+            break;
+        }
+
+        return best;
+    }
+
+    private static Direction preferredVerticalDirection(RegisteredGas gas) {
+        if (gas.definition().isLighterThanAir()) {
+            return Direction.UP;
+        }
+
+        if (gas.definition().isHeavierThanAir()) {
+            return Direction.DOWN;
+        }
+
+        return null;
+    }
+
+    private static boolean canReceiveGas(BlockState state, RegisteredGas gas) {
+        if (state.isAir()) {
+            return true;
+        }
+
+        if (!isSameGas(state, gas)) {
+            return false;
+        }
+
+        return state.getValue(RedlineGasBlock.AMOUNT) < gas.definition().maxAmount();
+    }
+
+    private static boolean isSameGas(BlockState state, RegisteredGas gas) {
+        if (!(state.getBlock() instanceof RedlineGasBlock gasBlock)) {
+            return false;
+        }
+
+        return gasBlock.definition().id().equals(gas.definition().id());
     }
 
     private GasCapsuleInteractions() {

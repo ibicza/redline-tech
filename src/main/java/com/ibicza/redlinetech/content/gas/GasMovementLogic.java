@@ -12,8 +12,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class GasMovementLogic {
-    private static final double AIR_DENSITY_KG_M3 = 1.225D;
-
     public static void tick(ServerLevel level, BlockPos pos, BlockState state, RedlineGasBlock block, RandomSource random) {
         GasDefinition definition = block.definition();
         RegisteredGas gas = ModGases.getByGasId(definition.id());
@@ -22,13 +20,17 @@ public final class GasMovementLogic {
             return;
         }
 
+        BlockState currentState = level.getBlockState(pos);
+        if (!currentState.is(block)) {
+            return;
+        }
+
         if (definition.flammable() && GasIgnitionLogic.hasIgniterNearby(level, pos)) {
             GasIgnitionLogic.explodeGasCloud(level, pos, block);
             return;
         }
 
-        int amount = state.getValue(RedlineGasBlock.AMOUNT);
-
+        int amount = currentState.getValue(RedlineGasBlock.AMOUNT);
         amount = tryAtmosphereEscape(level, pos, definition, amount, random);
 
         if (amount <= 0) {
@@ -36,20 +38,167 @@ public final class GasMovementLogic {
             return;
         }
 
-        SpreadResult spreadResult = spread(level, pos, definition, gas, amount, random);
-        amount = spreadResult.remainingAmount();
-
-        if (amount <= 0) {
-            level.removeBlock(pos, false);
-            return;
+        if (definition.isLighterThanAir()) {
+            amount = tickLayeredGas(level, pos, block, gas, amount, Direction.UP, random);
+        } else if (definition.isHeavierThanAir()) {
+            amount = tickLayeredGas(level, pos, block, gas, amount, Direction.DOWN, random);
+        } else {
+            amount = tickNeutralGas(level, pos, block, gas, amount, random);
         }
 
-        BlockState currentState = level.getBlockState(pos);
+        writeSelfAndReschedule(level, pos, block, amount);
+    }
 
-        if (currentState.is(block)) {
-            level.setBlock(pos, currentState.setValue(RedlineGasBlock.AMOUNT, amount), 3);
-            level.scheduleTick(pos, block, definition.spreadDelayTicks());
+    private static int tickLayeredGas(
+            ServerLevel level,
+            BlockPos pos,
+            RedlineGasBlock block,
+            RegisteredGas gas,
+            int amount,
+            Direction preferredVertical,
+            RandomSource random
+    ) {
+        VerticalMoveResult verticalMove = tryMovePreferredVertical(
+                level,
+                pos,
+                block,
+                gas,
+                amount,
+                preferredVertical
+        );
+
+        if (verticalMove.moved()) {
+            return verticalMove.remainingAmount();
         }
+
+        if (verticalMove.blockedByFullSameGas()) {
+            BlockPos preferredPos = pos.relative(preferredVertical);
+            BlockState preferredState = level.getBlockState(preferredPos);
+
+            if (preferredState.getBlock() instanceof RedlineGasBlock preferredBlock) {
+                level.scheduleTick(preferredPos, preferredBlock, gas.definition().spreadDelayTicks());
+            }
+
+            return amount;
+        }
+
+        return spreadHorizontally(level, pos, gas, amount, random);
+    }
+
+    private static int tickNeutralGas(
+            ServerLevel level,
+            BlockPos pos,
+            RedlineGasBlock block,
+            RegisteredGas gas,
+            int amount,
+            RandomSource random
+    ) {
+        int remaining = spreadHorizontally(level, pos, gas, amount, random);
+
+        if (remaining <= 1) {
+            return remaining;
+        }
+
+        List<Direction> verticals = new ArrayList<>(List.of(Direction.UP, Direction.DOWN));
+        shuffle(verticals, random);
+
+        for (Direction direction : verticals) {
+            if (remaining <= 1) {
+                break;
+            }
+
+            int transfer = Math.min(remaining - 1, 1);
+            int accepted = GasCloudSpawner.tryAddGasUnits(level, pos.relative(direction), gas, transfer);
+            remaining -= accepted;
+        }
+
+        return remaining;
+    }
+
+    private static VerticalMoveResult tryMovePreferredVertical(
+            ServerLevel level,
+            BlockPos pos,
+            RedlineGasBlock block,
+            RegisteredGas gas,
+            int amount,
+            Direction direction
+    ) {
+        BlockPos targetPos = pos.relative(direction);
+
+        if (!level.isLoaded(targetPos)) {
+            return VerticalMoveResult.blockedBySolid(amount);
+        }
+
+        BlockState targetState = level.getBlockState(targetPos);
+
+        if (targetState.getBlock() instanceof RedlineGasBlock targetGasBlock) {
+            if (!targetGasBlock.definition().id().equals(gas.id())) {
+                return VerticalMoveResult.blockedBySolid(amount);
+            }
+
+            int targetAmount = targetState.getValue(RedlineGasBlock.AMOUNT);
+            int space = gas.definition().maxAmount() - targetAmount;
+
+            if (space <= 0) {
+                return VerticalMoveResult.blockedByFullSameGas(amount);
+            }
+
+            int accepted = Math.min(space, amount);
+            level.setBlock(targetPos, targetState.setValue(RedlineGasBlock.AMOUNT, targetAmount + accepted), 3);
+            level.scheduleTick(targetPos, targetGasBlock, gas.definition().spreadDelayTicks());
+            return VerticalMoveResult.moved(amount - accepted);
+        }
+
+        if (!canReplaceWithGas(targetState)) {
+            return VerticalMoveResult.blockedBySolid(amount);
+        }
+
+        int accepted = Math.min(gas.definition().maxAmount(), amount);
+        BlockState newState = gas.block().get().defaultBlockState()
+                .setValue(RedlineGasBlock.AMOUNT, accepted);
+
+        level.setBlock(targetPos, newState, 3);
+        level.scheduleTick(targetPos, gas.block().get(), gas.definition().spreadDelayTicks());
+        return VerticalMoveResult.moved(amount - accepted);
+    }
+
+    private static int spreadHorizontally(
+            ServerLevel level,
+            BlockPos pos,
+            RegisteredGas gas,
+            int amount,
+            RandomSource random
+    ) {
+        int remaining = amount;
+        List<Direction> directions = randomizedHorizontals(random);
+
+        for (Direction direction : directions) {
+            if (remaining <= 1) {
+                break;
+            }
+
+            int transfer = horizontalTransferAmount(remaining, random);
+            int accepted = GasCloudSpawner.tryAddGasUnits(level, pos.relative(direction), gas, transfer);
+            remaining -= accepted;
+        }
+
+        return remaining;
+    }
+
+    private static int horizontalTransferAmount(int remaining, RandomSource random) {
+        if (remaining <= 2) {
+            return 1;
+        }
+
+        if (remaining >= 12) {
+            return Math.min(remaining - 1, 3 + random.nextInt(4));
+        }
+
+        if (remaining >= 6) {
+            return Math.min(remaining - 1, 2 + random.nextInt(3));
+        }
+
+        return Math.min(remaining - 1, 1 + random.nextInt(2));
     }
 
     private static int tryAtmosphereEscape(
@@ -104,115 +253,63 @@ public final class GasMovementLogic {
         return true;
     }
 
-    private static SpreadResult spread(
-            ServerLevel level,
-            BlockPos pos,
-            GasDefinition definition,
-            RegisteredGas gas,
-            int amount,
-            RandomSource random
-    ) {
-        int remaining = amount;
-        List<Direction> directions = orderedDirections(definition, random);
-
-        for (Direction direction : directions) {
-            if (remaining <= 1) {
-                break;
-            }
-
-            int transfer = transferAmountFor(direction, definition, remaining, random);
-
-            if (transfer <= 0) {
-                continue;
-            }
-
-            int accepted = GasCloudSpawner.tryAddGasUnits(level, pos.relative(direction), gas, transfer);
-            remaining -= accepted;
+    private static void writeSelfAndReschedule(ServerLevel level, BlockPos pos, RedlineGasBlock block, int amount) {
+        if (amount <= 0) {
+            level.removeBlock(pos, false);
+            return;
         }
 
-        return new SpreadResult(remaining);
+        BlockState currentState = level.getBlockState(pos);
+
+        if (!currentState.is(block)) {
+            return;
+        }
+
+        int clampedAmount = Math.max(1, Math.min(block.definition().maxAmount(), amount));
+        level.setBlock(pos, currentState.setValue(RedlineGasBlock.AMOUNT, clampedAmount), 3);
+        level.scheduleTick(pos, block, block.definition().spreadDelayTicks());
     }
 
-    private static int transferAmountFor(
-            Direction direction,
-            GasDefinition definition,
-            int remaining,
-            RandomSource random
-    ) {
-        boolean verticalPriority = isPreferredVerticalDirection(direction, definition);
-        int maxTransfer = verticalPriority ? 4 : 2;
-
-        if (remaining >= 12 && verticalPriority) {
-            maxTransfer = 6;
-        }
-
-        if (remaining <= 2) {
-            maxTransfer = 1;
-        }
-
-        return Math.min(remaining - 1, 1 + random.nextInt(maxTransfer));
+    private static boolean canReplaceWithGas(BlockState state) {
+        return state.isAir();
     }
 
-    private static boolean isPreferredVerticalDirection(Direction direction, GasDefinition definition) {
-        double relativeDensity = definition.densityKgM3() / AIR_DENSITY_KG_M3;
-
-        if (relativeDensity < 0.85D) {
-            return direction == Direction.UP;
-        }
-
-        if (relativeDensity > 1.15D) {
-            return direction == Direction.DOWN;
-        }
-
-        return false;
-    }
-
-    private static List<Direction> orderedDirections(GasDefinition definition, RandomSource random) {
-        List<Direction> result = new ArrayList<>();
-        double relativeDensity = definition.densityKgM3() / AIR_DENSITY_KG_M3;
-
-        if (relativeDensity < 0.85D) {
-            result.add(Direction.UP);
-            addRandomHorizontal(result, random);
-            result.add(Direction.DOWN);
-            return result;
-        }
-
-        if (relativeDensity > 1.15D) {
-            result.add(Direction.DOWN);
-            addRandomHorizontal(result, random);
-            result.add(Direction.UP);
-            return result;
-        }
-
-        addRandomHorizontal(result, random);
-
-        if (random.nextBoolean()) {
-            result.add(Direction.UP);
-            result.add(Direction.DOWN);
-        } else {
-            result.add(Direction.DOWN);
-            result.add(Direction.UP);
-        }
-
-        return result;
-    }
-
-    private static void addRandomHorizontal(List<Direction> result, RandomSource random) {
-        List<Direction> horizontal = new ArrayList<>(List.of(
+    private static List<Direction> randomizedHorizontals(RandomSource random) {
+        List<Direction> directions = new ArrayList<>(List.of(
                 Direction.NORTH,
                 Direction.SOUTH,
                 Direction.WEST,
                 Direction.EAST
         ));
+        shuffle(directions, random);
+        return directions;
+    }
 
-        while (!horizontal.isEmpty()) {
-            int index = random.nextInt(horizontal.size());
-            result.add(horizontal.remove(index));
+    private static void shuffle(List<Direction> directions, RandomSource random) {
+        for (int i = directions.size() - 1; i > 0; i--) {
+            int j = random.nextInt(i + 1);
+            Direction tmp = directions.get(i);
+            directions.set(i, directions.get(j));
+            directions.set(j, tmp);
         }
     }
 
-    private record SpreadResult(int remainingAmount) {
+    private record VerticalMoveResult(
+            boolean moved,
+            boolean blockedByFullSameGas,
+            int remainingAmount
+    ) {
+        static VerticalMoveResult moved(int remainingAmount) {
+            return new VerticalMoveResult(true, false, remainingAmount);
+        }
+
+        static VerticalMoveResult blockedByFullSameGas(int remainingAmount) {
+            return new VerticalMoveResult(false, true, remainingAmount);
+        }
+
+        static VerticalMoveResult blockedBySolid(int remainingAmount) {
+            return new VerticalMoveResult(false, false, remainingAmount);
+        }
     }
 
     private GasMovementLogic() {

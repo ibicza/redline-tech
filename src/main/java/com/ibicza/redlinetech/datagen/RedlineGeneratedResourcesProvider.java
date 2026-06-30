@@ -30,10 +30,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.EnumMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import com.google.gson.JsonObject;
 
@@ -879,7 +876,8 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
     }
 
     private static String gasModelJson(RegisteredGas gas, int amount) {
-        double fraction = (double) amount / (double) gas.definition().maxAmount();
+        int maxAmount = Math.max(1, gas.definition().maxAmount());
+        double fraction = amount / (double) maxAmount;
 
         double minY = 0.0D;
         double maxY = 16.0D;
@@ -892,31 +890,48 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
 
         String texture = RedlineTech.MOD_ID + ":block/gas/gas_mask_" + amount;
 
-        return """
-            {
-              "render_type": "minecraft:translucent",
-              "ambientocclusion": false,
-              "textures": {
-                "particle": "%s",
-                "gas": "%s"
-              },
-              "elements": [
+        return String.format(
+                Locale.ROOT,
+                """
                 {
-                  "from": [0, %.3f, 0],
-                  "to": [16, %.3f, 16],
-                  "shade": false,
-                  "faces": {
-                    "down":  { "texture": "#gas", "tintindex": 0 },
-                    "up":    { "texture": "#gas", "tintindex": 0 },
-                    "north": { "texture": "#gas", "tintindex": 0 },
-                    "south": { "texture": "#gas", "tintindex": 0 },
-                    "west":  { "texture": "#gas", "tintindex": 0 },
-                    "east":  { "texture": "#gas", "tintindex": 0 }
-                  }
+                  "render_type": "minecraft:translucent",
+                  "ambientocclusion": false,
+                  "textures": {
+                    "particle": "%s",
+                    "gas": "%s"
+                  },
+                  "elements": [
+                    {
+                      "from": [0, %s, 0],
+                      "to": [16, %s, 16],
+                      "shade": false,
+                      "faces": {
+                        "down":  { "texture": "#gas", "tintindex": 0 },
+                        "up":    { "texture": "#gas", "tintindex": 0 },
+                        "north": { "texture": "#gas", "tintindex": 0 },
+                        "south": { "texture": "#gas", "tintindex": 0 },
+                        "west":  { "texture": "#gas", "tintindex": 0 },
+                        "east":  { "texture": "#gas", "tintindex": 0 }
+                      }
+                    }
+                  ]
                 }
-              ]
-            }
-            """.formatted(texture, texture, minY, maxY);
+                """,
+                texture,
+                texture,
+                jsonNumber(minY),
+                jsonNumber(maxY)
+        );
+    }
+
+    private static String jsonNumber(double value) {
+        double rounded = Math.rint(value);
+
+        if (Math.abs(value - rounded) < 0.000001D) {
+            return Integer.toString((int) rounded);
+        }
+
+        return String.format(Locale.ROOT, "%.3f", value);
     }
 
     private void generateGasTextures(CachedOutput cachedOutput) throws IOException {

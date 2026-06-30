@@ -21,6 +21,16 @@ public record GasDefinition(
 ) {
     private static final double AIR_DENSITY_KG_M3 = 1.225D;
 
+    /*
+     * Порог специально мягкий.
+     *
+     * Старые 0.85 / 1.15 были слишком грубыми:
+     * сероводород 1.36 кг/м3 тяжелее воздуха, но ratio = 1.11,
+     * из-за чего он ошибочно считался нейтральным.
+     */
+    private static final double LIGHT_GAS_RATIO = 0.95D;
+    private static final double HEAVY_GAS_RATIO = 1.05D;
+
     public GasDefinition {
         effects = List.copyOf(effects);
     }
@@ -30,10 +40,30 @@ public record GasDefinition(
     }
 
     public boolean isLighterThanAir() {
-        return airDensityRatio() < 0.85D;
+        if (renderMode == GasRenderMode.CEILING_LAYER) {
+            return true;
+        }
+
+        if (renderMode == GasRenderMode.FLOOR_LAYER) {
+            return false;
+        }
+
+        return airDensityRatio() < LIGHT_GAS_RATIO;
     }
 
     public boolean isHeavierThanAir() {
-        return airDensityRatio() > 1.15D;
+        if (renderMode == GasRenderMode.FLOOR_LAYER) {
+            return true;
+        }
+
+        if (renderMode == GasRenderMode.CEILING_LAYER) {
+            return false;
+        }
+
+        return airDensityRatio() > HEAVY_GAS_RATIO;
+    }
+
+    public boolean isNeutralGas() {
+        return !isLighterThanAir() && !isHeavierThanAir();
     }
 }

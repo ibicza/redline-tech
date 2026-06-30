@@ -57,7 +57,8 @@ public final class ModGases {
                 .noCollision()
                 .noOcclusion()
                 .replaceable()
-                .strength(0.0F)
+                .destroyTime(-1.0F)
+                .explosionResistance(3_600_000.0F)
                 .sound(SoundType.EMPTY)
                 .isViewBlocking((state, level, pos) -> false)
                 .isSuffocating((state, level, pos) -> false);
