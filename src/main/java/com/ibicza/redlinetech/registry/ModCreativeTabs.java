@@ -32,6 +32,7 @@ public final class ModCreativeTabs {
                         ModBlocks.ORE_BLOCKS.forEach(ore -> output.accept(ore.item().get()));
                         ModItems.MATERIAL_ITEMS.forEach(materialItem -> output.accept(materialItem.item().get()));
                         ModBlocks.MATERIAL_BLOCKS.forEach(materialBlock -> output.accept(materialBlock.item().get()));
+                        ModLiquids.LIQUIDS.forEach(liquid -> output.accept(liquid.bucketItem().get()));
                     })
                     .build()
             );

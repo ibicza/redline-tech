@@ -1,5 +1,7 @@
 package com.ibicza.redlinetech.content;
 
+import com.ibicza.redlinetech.content.liquid.LiquidCsvLoader;
+import com.ibicza.redlinetech.content.liquid.LiquidDefinition;
 import com.ibicza.redlinetech.content.material.MaterialCsvLoader;
 import com.ibicza.redlinetech.content.material.MaterialDefinition;
 import com.ibicza.redlinetech.content.ore.MetallicOreCsvLoader;
@@ -19,6 +21,8 @@ public final class ContentDatabase {
     public static final List<MetallicOreDefinition> METALLIC_ORES;
     public static final List<NonMetalOreDefinition> NON_METAL_ORES;
     public static final List<OreLikeDefinition> ALL_ORES;
+    public static final List<LiquidDefinition> LIQUIDS;
+    public static final Map<String, LiquidDefinition> LIQUIDS_BY_ID;
 
     static {
         try {
@@ -30,13 +34,18 @@ public final class ContentDatabase {
 
             List<OreLikeDefinition> allOres = collectOres(metallicOres, nonMetalOres);
 
-            validateLoadedContent(materials, allOres);
+            List<LiquidDefinition> liquids = LiquidCsvLoader.load();
+            Map<String, LiquidDefinition> liquidsById = indexLiquids(liquids);
+
+            validateLoadedContent(materials, allOres, liquids);
 
             MATERIALS = List.copyOf(materials);
             MATERIALS_BY_ID = Map.copyOf(materialsById);
             METALLIC_ORES = List.copyOf(metallicOres);
             NON_METAL_ORES = List.copyOf(nonMetalOres);
             ALL_ORES = List.copyOf(allOres);
+            LIQUIDS = List.copyOf(liquids);
+            LIQUIDS_BY_ID = Map.copyOf(liquidsById);
         } catch (Exception exception) {
             throw new RuntimeException(
                     "Failed to load Redline Tech content tables. Check CSV files in src/main/resources/redline_content.",
@@ -59,6 +68,20 @@ public final class ContentDatabase {
         return result;
     }
 
+    private static Map<String, LiquidDefinition> indexLiquids(List<LiquidDefinition> liquids) {
+        Map<String, LiquidDefinition> result = new LinkedHashMap<>();
+
+        for (LiquidDefinition liquid : liquids) {
+            LiquidDefinition previous = result.put(liquid.id(), liquid);
+
+            if (previous != null) {
+                throw new IllegalStateException("Duplicate liquid id: " + liquid.id());
+            }
+        }
+
+        return result;
+    }
+
     private static List<OreLikeDefinition> collectOres(
             List<MetallicOreDefinition> metallicOres,
             List<NonMetalOreDefinition> nonMetalOres
@@ -71,7 +94,8 @@ public final class ContentDatabase {
 
     private static void validateLoadedContent(
             List<MaterialDefinition> materials,
-            List<OreLikeDefinition> allOres
+            List<OreLikeDefinition> allOres,
+            List<LiquidDefinition> liquids
     ) {
         if (materials.isEmpty()) {
             throw new IllegalStateException(
@@ -82,6 +106,12 @@ public final class ContentDatabase {
         if (allOres.isEmpty()) {
             throw new IllegalStateException(
                     "No ores loaded. Check redline_content/metallic_ores.csv and redline_content/non_metal_ores.csv line breaks and enabled column."
+            );
+        }
+
+        if (liquids.isEmpty()) {
+            throw new IllegalStateException(
+                    "No liquids loaded. Check redline_content/liquids.csv line breaks and enabled column."
             );
         }
     }

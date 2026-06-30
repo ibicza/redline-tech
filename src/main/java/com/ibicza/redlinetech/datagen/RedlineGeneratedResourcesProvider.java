@@ -4,12 +4,14 @@ import com.google.common.hash.Hashing;
 import com.ibicza.redlinetech.RedlineTech;
 import com.ibicza.redlinetech.content.block.MiningTier;
 import com.ibicza.redlinetech.content.block.MiningTool;
+import com.ibicza.redlinetech.content.liquid.RegisteredLiquid;
 import com.ibicza.redlinetech.content.material.RegisteredMaterialBlock;
 import com.ibicza.redlinetech.content.material.RegisteredMaterialItem;
 import com.ibicza.redlinetech.content.ore.OreLikeDefinition;
 import com.ibicza.redlinetech.content.ore.RegisteredOreBlock;
 import com.ibicza.redlinetech.registry.ModBlocks;
 import com.ibicza.redlinetech.registry.ModItems;
+import com.ibicza.redlinetech.registry.ModLiquids;
 import net.minecraft.data.CachedOutput;
 import net.minecraft.data.DataProvider;
 import net.minecraft.data.PackOutput;
@@ -30,6 +32,7 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import com.google.gson.JsonObject;
 
 @SuppressWarnings("UnstableApiUsage")
 public final class RedlineGeneratedResourcesProvider implements DataProvider {
@@ -53,6 +56,10 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
                 generateOreTextures(cachedOutput);
                 generateMaterialItemTextures(cachedOutput);
                 generateMaterialBlockTextures(cachedOutput);
+
+                generateLiquidResources(cachedOutput);
+                generateLiquidTextures(cachedOutput);
+                generateLiquidTextureMetadata(cachedOutput);
 
                 generateTags(cachedOutput);
             } catch (IOException exception) {
@@ -81,6 +88,38 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
                     selfDropLootTableJson(blockId)
             );
         }
+    }
+
+    private void generateLiquidTextureMetadata(CachedOutput cachedOutput) throws IOException {
+        for (RegisteredLiquid liquid : ModLiquids.LIQUIDS) {
+            writeString(
+                    cachedOutput,
+                    assets("textures/block/fluid/" + liquid.id() + "_still.png.mcmeta"),
+                    liquidAnimationMetadataJson()
+            );
+
+            writeString(
+                    cachedOutput,
+                    assets("textures/block/fluid/" + liquid.id() + "_flow.png.mcmeta"),
+                    liquidAnimationMetadataJson()
+            );
+        }
+    }
+
+    private static void writeString(CachedOutput cachedOutput, Path path, String content) throws IOException {
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+        cachedOutput.writeIfNeeded(path, bytes, Hashing.sha1().hashBytes(bytes));
+    }
+
+    private static String liquidAnimationMetadataJson() {
+        return """
+            {
+              "animation": {
+                "frametime": 2,
+                "interpolate": true
+              }
+            }
+            """;
     }
 
     private void generateMaterialItemResources(CachedOutput cachedOutput) throws IOException {
@@ -140,9 +179,189 @@ public final class RedlineGeneratedResourcesProvider implements DataProvider {
             );
         }
 
+        for (RegisteredLiquid liquid : ModLiquids.LIQUIDS) {
+            appendLang(
+                    json,
+                    "fluid_type." + RedlineTech.MOD_ID + "." + liquid.id(),
+                    liquidName(liquid, locale)
+            );
+
+            appendLang(
+                    json,
+                    "item." + RedlineTech.MOD_ID + "." + liquid.bucketItemId(),
+                    liquidBucketName(liquid, locale)
+            );
+
+            appendLang(
+                    json,
+                    "block." + RedlineTech.MOD_ID + "." + liquid.id(),
+                    liquidName(liquid, locale)
+            );
+        }
+        generateEffectLang(json, locale);
+
         json.append("\n}\n");
 
         writeJson(cachedOutput, assets("lang/" + locale + ".json"), json.toString());
+    }
+
+    private static void generateEffectLang(StringBuilder json, String locale) {
+        if ("ru_ru".equals(locale)) {
+            appendLang(json, "effect." + RedlineTech.MOD_ID + ".radiation", "Радиация");
+            appendLang(json, "effect." + RedlineTech.MOD_ID + ".chemical_burn", "Химический ожог");
+            appendLang(json, "effect." + RedlineTech.MOD_ID + ".toxic_exposure", "Токсическое поражение");
+            appendLang(json, "effect." + RedlineTech.MOD_ID + ".oil_coated", "Нефтяная плёнка");
+            return;
+        }
+
+        appendLang(json, "effect." + RedlineTech.MOD_ID + ".radiation", "Radiation");
+        appendLang(json, "effect." + RedlineTech.MOD_ID + ".chemical_burn", "Chemical Burn");
+        appendLang(json, "effect." + RedlineTech.MOD_ID + ".toxic_exposure", "Toxic Exposure");
+        appendLang(json, "effect." + RedlineTech.MOD_ID + ".oil_coated", "Oil Coated");
+    }
+
+    private static String liquidName(RegisteredLiquid liquid, String locale) {
+        if ("ru_ru".equals(locale)) {
+            return liquid.definition().ruName();
+        }
+
+        return liquid.definition().enName();
+    }
+
+    private static String liquidBucketName(RegisteredLiquid liquid, String locale) {
+        if ("ru_ru".equals(locale)) {
+            return "Ведро: " + liquid.definition().ruName();
+        }
+
+        return liquid.definition().enName() + " Bucket";
+    }
+
+    private void generateLiquidResources(CachedOutput cachedOutput) throws IOException {
+        for (RegisteredLiquid liquid : ModLiquids.LIQUIDS) {
+            String bucketItemId = liquid.bucketItemId();
+
+            writeJson(
+                    cachedOutput,
+                    assets("models/item/" + bucketItemId + ".json"),
+                    generatedItemModelJson(bucketItemId)
+            );
+
+            writeJson(
+                    cachedOutput,
+                    assets("items/" + bucketItemId + ".json"),
+                    clientItemJson(bucketItemId)
+            );
+        }
+    }
+
+    private void generateLiquidTextures(CachedOutput cachedOutput) throws IOException {
+        BufferedImage stillTemplate = readTemplateImage("redline_templates/liquid/water_still.png");
+        BufferedImage flowTemplate = readTemplateImage("redline_templates/liquid/water_flow.png");
+        BufferedImage bucketTemplate = readTemplateImage("redline_templates/liquid/water_bucket.png");
+
+        for (RegisteredLiquid liquid : ModLiquids.LIQUIDS) {
+            int color = liquid.definition().color();
+            int alpha = liquid.definition().alpha();
+
+            BufferedImage still = tintFullTexture(stillTemplate, color, alpha);
+            BufferedImage flow = tintFullTexture(flowTemplate, color, alpha);
+            BufferedImage bucket = tintWaterBucket(bucketTemplate, color);
+
+            writePng(
+                    cachedOutput,
+                    assets("textures/block/fluid/" + liquid.id() + "_still.png"),
+                    still
+            );
+
+            writePng(
+                    cachedOutput,
+                    assets("textures/block/fluid/" + liquid.id() + "_flow.png"),
+                    flow
+            );
+
+            writePng(
+                    cachedOutput,
+                    assets("textures/item/" + liquid.bucketItemId() + ".png"),
+                    bucket
+            );
+        }
+    }
+
+    private static BufferedImage tintFullTexture(BufferedImage template, int rgbColor, int forcedAlpha) {
+        int width = template.getWidth();
+        int height = template.getHeight();
+
+        BufferedImage result = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+
+        int baseR = (rgbColor >> 16) & 0xFF;
+        int baseG = (rgbColor >> 8) & 0xFF;
+        int baseB = rgbColor & 0xFF;
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int argb = template.getRGB(x, y);
+
+                int alpha = (argb >>> 24) & 0xFF;
+                int red = (argb >>> 16) & 0xFF;
+                int green = (argb >>> 8) & 0xFF;
+                int blue = argb & 0xFF;
+
+                int brightness = Math.max(red, Math.max(green, blue));
+
+                int outR = clamp(baseR * brightness / 255);
+                int outG = clamp(baseG * brightness / 255);
+                int outB = clamp(baseB * brightness / 255);
+                int outA = clamp(alpha * forcedAlpha / 255);
+
+                result.setRGB(x, y, (outA << 24) | (outR << 16) | (outG << 8) | outB);
+            }
+        }
+
+        return result;
+    }
+
+    private static BufferedImage tintWaterBucket(BufferedImage template, int rgbColor) {
+        int width = template.getWidth();
+        int height = template.getHeight();
+
+        BufferedImage result = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+
+        int baseR = (rgbColor >> 16) & 0xFF;
+        int baseG = (rgbColor >> 8) & 0xFF;
+        int baseB = rgbColor & 0xFF;
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int argb = template.getRGB(x, y);
+
+                int alpha = (argb >>> 24) & 0xFF;
+                int red = (argb >>> 16) & 0xFF;
+                int green = (argb >>> 8) & 0xFF;
+                int blue = argb & 0xFF;
+
+                if (isVanillaWaterPixel(red, green, blue, alpha)) {
+                    int brightness = Math.max(red, Math.max(green, blue));
+
+                    int outR = clamp(baseR * brightness / 255);
+                    int outG = clamp(baseG * brightness / 255);
+                    int outB = clamp(baseB * brightness / 255);
+
+                    result.setRGB(x, y, (alpha << 24) | (outR << 16) | (outG << 8) | outB);
+                } else {
+                    result.setRGB(x, y, argb);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static boolean isVanillaWaterPixel(int red, int green, int blue, int alpha) {
+        if (alpha == 0) {
+            return false;
+        }
+
+        return blue > red + 20 && blue >= green;
     }
 
     private static void appendLang(StringBuilder json, String key, String value) {
