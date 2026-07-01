@@ -13,6 +13,7 @@ import com.redline.worldcore.server.generation.CubeGenerationSummary;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -33,7 +34,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * M8 vanilla-client bridge for the cubic test dimension.
+ * M8/M8.1 vanilla-client bridge for the cubic test dimension.
  *
  * <p>The final project will eventually stream cube sections through a real client chunk compatibility layer. This MVP is
  * intentionally safer: it keeps vanilla columns as the temporary shell, mirrors a small cube window around the player
@@ -41,15 +42,30 @@ import java.util.UUID;
  * without touching ChunkMap packet internals yet.</p>
  */
 public final class CubicClientSyncBridge {
-    public static final int STREAM_HORIZONTAL_RADIUS = 2;
-    public static final int STREAM_VERTICAL_RADIUS = 1;
-    public static final int MAX_MATERIALIZED_CUBES_PER_TICK = 1;
-    public static final int SYNC_PACKET_INTERVAL_TICKS = 10;
+    public static final int OVERLAY_HIDDEN = 0;
+    public static final int OVERLAY_COMPACT = 1;
+    public static final int OVERLAY_FULL = 2;
+
+    public static final int DEFAULT_STREAM_HORIZONTAL_RADIUS = 2;
+    public static final int DEFAULT_STREAM_VERTICAL_RADIUS = 1;
+    public static final int DEFAULT_MAX_MATERIALIZED_CUBES_PER_TICK = 1;
+    public static final int DEFAULT_SYNC_PACKET_INTERVAL_TICKS = 10;
     public static final int MAX_PACKET_ENTRIES = 96;
 
     private static final int SET_BLOCK_FLAGS = 2;
     private static final int MAX_TRACKED_MATERIALIZED = 2048;
     private static final Map<UUID, PlayerBridgeState> PLAYER_STATES = new HashMap<>();
+
+    private static int streamHorizontalRadius = DEFAULT_STREAM_HORIZONTAL_RADIUS;
+    private static int streamVerticalRadius = DEFAULT_STREAM_VERTICAL_RADIUS;
+    private static int maxMaterializedCubesPerTick = DEFAULT_MAX_MATERIALIZED_CUBES_PER_TICK;
+    private static int syncPacketIntervalTicks = DEFAULT_SYNC_PACKET_INTERVAL_TICKS;
+    private static int overlayMode = OVERLAY_FULL;
+
+    private static boolean materializationInProgress;
+    private static long materializerWritesIgnored;
+    private static long playerWritesSaved;
+    private static long commandWritesSaved;
 
     private CubicClientSyncBridge() {
     }
@@ -74,6 +90,8 @@ public final class CubicClientSyncBridge {
             tickPlayer(cubicLevel, player, cache, state);
         }
 
+        // Drop per-player materialized bookkeeping immediately after the player leaves cubic_test. The vanilla shell
+        // blocks themselves are intentionally left alone; they are only a temporary compatibility view of the backend.
         PLAYER_STATES.keySet().removeIf(uuid -> !activePlayers.contains(uuid));
     }
 
@@ -81,6 +99,12 @@ public final class CubicClientSyncBridge {
         int size = PLAYER_STATES.size();
         PLAYER_STATES.clear();
         return size;
+    }
+
+    public static void resetCounters() {
+        materializerWritesIgnored = 0L;
+        playerWritesSaved = 0L;
+        commandWritesSaved = 0L;
     }
 
     public static int trackedPlayers() {
@@ -103,6 +127,82 @@ public final class CubicClientSyncBridge {
         return total;
     }
 
+    public static long materializerWritesIgnored() {
+        return materializerWritesIgnored;
+    }
+
+    public static long playerWritesSaved() {
+        return playerWritesSaved;
+    }
+
+    public static long commandWritesSaved() {
+        return commandWritesSaved;
+    }
+
+    public static int streamHorizontalRadius() {
+        return streamHorizontalRadius;
+    }
+
+    public static int streamVerticalRadius() {
+        return streamVerticalRadius;
+    }
+
+    public static int maxMaterializedCubesPerTick() {
+        return maxMaterializedCubesPerTick;
+    }
+
+    public static int syncPacketIntervalTicks() {
+        return syncPacketIntervalTicks;
+    }
+
+    public static int overlayMode() {
+        return overlayMode;
+    }
+
+    public static String overlayModeName() {
+        return overlayModeName(overlayMode);
+    }
+
+    public static String overlayModeName(int mode) {
+        return switch (mode) {
+            case OVERLAY_HIDDEN -> "hidden";
+            case OVERLAY_COMPACT -> "compact";
+            case OVERLAY_FULL -> "full";
+            default -> "unknown(" + mode + ")";
+        };
+    }
+
+    public static void setOverlayMode(int mode) {
+        if (mode != OVERLAY_HIDDEN && mode != OVERLAY_COMPACT && mode != OVERLAY_FULL) {
+            throw new IllegalArgumentException("Unknown M8 overlay mode: " + mode);
+        }
+        overlayMode = mode;
+    }
+
+    public static void configureStream(int horizontalRadius, int verticalRadius, int maxPerTick, int packetIntervalTicks) {
+        streamHorizontalRadius = Mth.clamp(horizontalRadius, 0, 8);
+        streamVerticalRadius = Mth.clamp(verticalRadius, 0, 4);
+        maxMaterializedCubesPerTick = Mth.clamp(maxPerTick, 1, 8);
+        syncPacketIntervalTicks = Mth.clamp(packetIntervalTicks, 1, 100);
+        for (PlayerBridgeState state : PLAYER_STATES.values()) {
+            state.materializationQueue.clear();
+            state.queued.clear();
+        }
+    }
+
+    public static void resetStreamConfig() {
+        configureStream(
+                DEFAULT_STREAM_HORIZONTAL_RADIUS,
+                DEFAULT_STREAM_VERTICAL_RADIUS,
+                DEFAULT_MAX_MATERIALIZED_CUBES_PER_TICK,
+                DEFAULT_SYNC_PACKET_INTERVAL_TICKS
+        );
+    }
+
+    public static void recordCommandWriteSaved() {
+        commandWritesSaved++;
+    }
+
     private static void tickPlayer(ServerLevel level, ServerPlayer player, ServerCubeCache cache, PlayerBridgeState state) {
         state.tickCounter++;
         state.materializedLastTick = 0;
@@ -111,15 +211,15 @@ public final class CubicClientSyncBridge {
         queueVisibleLoadedCubes(cache, playerCube, state);
         materializeQueued(level, cache, state);
 
-        if (state.tickCounter % SYNC_PACKET_INTERVAL_TICKS == 0) {
+        if (state.tickCounter % syncPacketIntervalTicks == 0) {
             PacketDistributor.sendToPlayer(player, buildPayload(cache, playerCube, state));
         }
     }
 
     private static void queueVisibleLoadedCubes(ServerCubeCache cache, CubePos playerCube, PlayerBridgeState state) {
-        for (int y = playerCube.y() - STREAM_VERTICAL_RADIUS; y <= playerCube.y() + STREAM_VERTICAL_RADIUS; y++) {
-            for (int z = playerCube.z() - STREAM_HORIZONTAL_RADIUS; z <= playerCube.z() + STREAM_HORIZONTAL_RADIUS; z++) {
-                for (int x = playerCube.x() - STREAM_HORIZONTAL_RADIUS; x <= playerCube.x() + STREAM_HORIZONTAL_RADIUS; x++) {
+        for (int y = playerCube.y() - streamVerticalRadius; y <= playerCube.y() + streamVerticalRadius; y++) {
+            for (int z = playerCube.z() - streamHorizontalRadius; z <= playerCube.z() + streamHorizontalRadius; z++) {
+                for (int x = playerCube.x() - streamHorizontalRadius; x <= playerCube.x() + streamHorizontalRadius; x++) {
                     CubePos cubePos = new CubePos(x, y, z);
                     Optional<CubeHolder> holder = cache.holder(cubePos);
                     if (holder.isEmpty()) {
@@ -140,7 +240,7 @@ public final class CubicClientSyncBridge {
 
     private static void materializeQueued(ServerLevel level, ServerCubeCache cache, PlayerBridgeState state) {
         int materialized = 0;
-        while (materialized < MAX_MATERIALIZED_CUBES_PER_TICK && !state.materializationQueue.isEmpty()) {
+        while (materialized < maxMaterializedCubesPerTick && !state.materializationQueue.isEmpty()) {
             CubePos cubePos = state.materializationQueue.removeFirst();
             state.queued.remove(cubePos);
             Optional<CubeHolder> holder = cache.holder(cubePos);
@@ -161,20 +261,25 @@ public final class CubicClientSyncBridge {
 
     private static void materializeCube(ServerLevel level, LevelCube cube) {
         CubePos cubePos = cube.cubePos();
-        for (int localY = 0; localY < CubePos.SIZE; localY++) {
-            int worldY = cubePos.minBlockY() + localY;
-            if (level.isOutsideBuildHeight(worldY)) {
-                continue;
-            }
-            for (int localZ = 0; localZ < CubePos.SIZE; localZ++) {
-                for (int localX = 0; localX < CubePos.SIZE; localX++) {
-                    BlockState state = cube.getBlockState(localX, localY, localZ);
-                    BlockPos blockPos = new BlockPos(cubePos.minBlockX() + localX, worldY, cubePos.minBlockZ() + localZ);
-                    if (level.getBlockState(blockPos) != state) {
-                        level.setBlock(blockPos, state, SET_BLOCK_FLAGS);
+        materializationInProgress = true;
+        try {
+            for (int localY = 0; localY < CubePos.SIZE; localY++) {
+                int worldY = cubePos.minBlockY() + localY;
+                if (level.isOutsideBuildHeight(worldY)) {
+                    continue;
+                }
+                for (int localZ = 0; localZ < CubePos.SIZE; localZ++) {
+                    for (int localX = 0; localX < CubePos.SIZE; localX++) {
+                        BlockState state = cube.getBlockState(localX, localY, localZ);
+                        BlockPos blockPos = new BlockPos(cubePos.minBlockX() + localX, worldY, cubePos.minBlockZ() + localZ);
+                        if (!level.getBlockState(blockPos).equals(state)) {
+                            level.setBlock(blockPos, state, SET_BLOCK_FLAGS);
+                        }
                     }
                 }
             }
+        } finally {
+            materializationInProgress = false;
         }
     }
 
@@ -222,6 +327,14 @@ public final class CubicClientSyncBridge {
                 state.materializedHashes.size(),
                 state.materializationQueue.size(),
                 state.materializedLastTick,
+                overlayMode,
+                streamHorizontalRadius,
+                streamVerticalRadius,
+                maxMaterializedCubesPerTick,
+                syncPacketIntervalTicks,
+                playerWritesSaved,
+                materializerWritesIgnored,
+                commandWritesSaved,
                 entries
         );
     }
@@ -241,7 +354,13 @@ public final class CubicClientSyncBridge {
         if (!(player.level() instanceof ServerLevel level) || !isCubicTest(level)) {
             return;
         }
-        writeBlockEdit(level, event.getPos(), Blocks.AIR.defaultBlockState());
+        if (materializationInProgress) {
+            materializerWritesIgnored++;
+            return;
+        }
+        if (writeBlockEdit(level, event.getPos(), Blocks.AIR.defaultBlockState())) {
+            playerWritesSaved++;
+        }
     }
 
     public static void onBlockPlace(BlockEvent.EntityPlaceEvent event) {
@@ -252,21 +371,29 @@ public final class CubicClientSyncBridge {
         if (!(accessor instanceof ServerLevel level) || !isCubicTest(level)) {
             return;
         }
+        if (materializationInProgress) {
+            materializerWritesIgnored++;
+            return;
+        }
         if (event instanceof BlockEvent.EntityMultiPlaceEvent multiPlace) {
             for (var snapshot : multiPlace.getReplacedBlockSnapshots()) {
-                writeBlockEdit(level, snapshot.getPos(), level.getBlockState(snapshot.getPos()));
+                if (writeBlockEdit(level, snapshot.getPos(), level.getBlockState(snapshot.getPos()))) {
+                    playerWritesSaved++;
+                }
             }
             return;
         }
-        writeBlockEdit(level, event.getPos(), event.getPlacedBlock());
+        if (writeBlockEdit(level, event.getPos(), event.getPlacedBlock())) {
+            playerWritesSaved++;
+        }
     }
 
-    private static void writeBlockEdit(ServerLevel level, BlockPos pos, BlockState state) {
+    private static boolean writeBlockEdit(ServerLevel level, BlockPos pos, BlockState state) {
         if (level.isOutsideBuildHeight(pos)) {
-            return;
+            return false;
         }
         ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
-        cache.writeBlock(pos, state, true);
+        return cache.writeBlock(pos, state, true).isPresent();
     }
 
     private static boolean isCubicTest(ServerLevel level) {

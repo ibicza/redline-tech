@@ -10,7 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * M8 client-bound debug/sync payload for the cubic test dimension.
+ * M8/M8.1 client-bound debug/sync payload for the cubic test dimension.
  *
  * <p>This is intentionally metadata-first: it gives the client a stable view of the cube backend before the later risky
  * packet/mixin work starts replacing vanilla chunk packets. The vanilla column shell is still the compatibility boundary.</p>
@@ -26,6 +26,14 @@ public record CubeClientSyncPayload(
         int materializedCubes,
         int queuedMaterializations,
         int materializedLastTick,
+        int overlayMode,
+        int streamHorizontalRadius,
+        int streamVerticalRadius,
+        int maxMaterializedCubesPerTick,
+        int syncPacketIntervalTicks,
+        long playerWritesSaved,
+        long materializerWritesIgnored,
+        long commandWritesSaved,
         List<Entry> entries
 ) implements CustomPacketPayload {
     public static final Type<CubeClientSyncPayload> TYPE = new Type<>(Identifier.fromNamespaceAndPath(RedlineWorldCore.MOD_ID, "cube_client_sync"));
@@ -51,6 +59,14 @@ public record CubeClientSyncPayload(
         buffer.writeVarInt(materializedCubes);
         buffer.writeVarInt(queuedMaterializations);
         buffer.writeVarInt(materializedLastTick);
+        buffer.writeVarInt(overlayMode);
+        buffer.writeVarInt(streamHorizontalRadius);
+        buffer.writeVarInt(streamVerticalRadius);
+        buffer.writeVarInt(maxMaterializedCubesPerTick);
+        buffer.writeVarInt(syncPacketIntervalTicks);
+        buffer.writeLong(playerWritesSaved);
+        buffer.writeLong(materializerWritesIgnored);
+        buffer.writeLong(commandWritesSaved);
         buffer.writeVarInt(entries.size());
         for (Entry entry : entries) {
             entry.write(buffer);
@@ -68,6 +84,14 @@ public record CubeClientSyncPayload(
         int materializedCubes = buffer.readVarInt();
         int queuedMaterializations = buffer.readVarInt();
         int materializedLastTick = buffer.readVarInt();
+        int overlayMode = buffer.readVarInt();
+        int streamHorizontalRadius = buffer.readVarInt();
+        int streamVerticalRadius = buffer.readVarInt();
+        int maxMaterializedCubesPerTick = buffer.readVarInt();
+        int syncPacketIntervalTicks = buffer.readVarInt();
+        long playerWritesSaved = buffer.readLong();
+        long materializerWritesIgnored = buffer.readLong();
+        long commandWritesSaved = buffer.readLong();
         int count = buffer.readVarInt();
         List<Entry> entries = new ArrayList<>(Math.min(count, 256));
         for (int i = 0; i < count; i++) {
@@ -84,6 +108,14 @@ public record CubeClientSyncPayload(
                 materializedCubes,
                 queuedMaterializations,
                 materializedLastTick,
+                overlayMode,
+                streamHorizontalRadius,
+                streamVerticalRadius,
+                maxMaterializedCubesPerTick,
+                syncPacketIntervalTicks,
+                playerWritesSaved,
+                materializerWritesIgnored,
+                commandWritesSaved,
                 entries
         );
     }

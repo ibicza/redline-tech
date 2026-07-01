@@ -150,6 +150,20 @@ public final class ServerCubeCache {
         return Optional.of(holder);
     }
 
+
+    /**
+     * M8.1 debug helper: reads a cube from durable Region3D storage without creating a generated holder.
+     *
+     * <p>This is used by persistence-check commands to prove that edited cubes survived unload/reload and are no
+     * longer just deterministic generator output.</p>
+     */
+    public synchronized Optional<LevelCube> readPersisted(CubePos cubePos) {
+        if (!settings.containsCubeY(cubePos.y())) {
+            return Optional.empty();
+        }
+        return storage.get(cubePos);
+    }
+
     public synchronized CubeLoadingSnapshot snapshot() {
         Map<CubeTicketLevel, Integer> byTicketLevel = new EnumMap<>(CubeTicketLevel.class);
         Map<CubeStatus, Integer> byCubeStatus = new EnumMap<>(CubeStatus.class);

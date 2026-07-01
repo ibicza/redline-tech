@@ -1,18 +1,17 @@
 package com.redline.worldcore.client.debug;
 
-import com.redline.worldcore.RedlineWorldCore;
 import com.redline.worldcore.api.cube.CubeStatus;
-import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.api.ticket.CubeTicketLevel;
 import com.redline.worldcore.client.sync.ClientCubeSyncState;
 import com.redline.worldcore.network.CubeClientSyncPayload;
+import com.redline.worldcore.server.compat.CubicClientSyncBridge;
 import com.redline.worldcore.server.cube.CubeHolderState;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.network.chat.Component;
 import net.neoforged.neoforge.client.event.RenderGuiEvent;
 
-/** M8 HUD overlay fed by the server cube sync payload. */
+/** M8/M8.1 HUD overlay fed by the server cube sync payload. */
 public final class CubeDebugOverlay {
     private static final int BACKGROUND = 0x88000000;
     private static final int TEXT = 0xFFE6F7FF;
@@ -33,18 +32,47 @@ public final class CubeDebugOverlay {
         }
 
         CubeClientSyncPayload payload = ClientCubeSyncState.latest().orElse(null);
-        if (payload == null) {
+        if (payload == null || payload.overlayMode() == CubicClientSyncBridge.OVERLAY_HIDDEN) {
             return;
         }
 
-        GuiGraphicsExtractor graphics = event.getGuiGraphics();
+        if (payload.overlayMode() == CubicClientSyncBridge.OVERLAY_COMPACT) {
+            renderCompact(event.getGuiGraphics(), minecraft, payload);
+            return;
+        }
+        renderFull(event.getGuiGraphics(), minecraft, payload);
+    }
+
+    private static void renderCompact(GuiGraphicsExtractor graphics, Minecraft minecraft, CubeClientSyncPayload payload) {
         int x = 6;
         int y = 6;
-        int width = 330;
-        int lines = Math.min(8, payload.entries().size()) + 5;
+        int width = 272;
+        int lines = 4;
+        graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
+        draw(graphics, minecraft, x, y, "RWC M8.1 compact", GOOD);
+        y += 10;
+        draw(graphics, minecraft, x, y, "cube=" + payload.playerCubeX() + " " + payload.playerCubeY() + " " + payload.playerCubeZ()
+                + " loaded=" + payload.loadedCubes() + "/" + payload.requestedCubes(), TEXT);
+        y += 10;
+        draw(graphics, minecraft, x, y, "mat=" + payload.materializedCubes()
+                + " q=" + payload.queuedMaterializations()
+                + " writes=" + payload.playerWritesSaved(), TEXT);
+        y += 10;
+        draw(graphics, minecraft, x, y, "stream h=" + payload.streamHorizontalRadius()
+                + " v=" + payload.streamVerticalRadius()
+                + " speed=" + payload.maxMaterializedCubesPerTick()
+                + "/t", MUTED);
+    }
+
+    private static void renderFull(GuiGraphicsExtractor graphics, Minecraft minecraft, CubeClientSyncPayload payload) {
+        int x = 6;
+        int y = 6;
+        int width = 374;
+        int shownEntries = Math.min(8, payload.entries().size());
+        int lines = shownEntries + 7;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
 
-        draw(graphics, minecraft, x, y, "Redline World Core M8 sync", GOOD);
+        draw(graphics, minecraft, x, y, "Redline World Core M8.1 sync", GOOD);
         y += 10;
         draw(graphics, minecraft, x, y, "playerCube=" + payload.playerCubeX() + " " + payload.playerCubeY() + " " + payload.playerCubeZ()
                 + "  cache loaded=" + payload.loadedCubes() + " pending=" + payload.pendingLoads() + " requested=" + payload.requestedCubes(), TEXT);
@@ -53,6 +81,16 @@ public final class CubeDebugOverlay {
                 + "  materialized=" + payload.materializedCubes()
                 + " queue=" + payload.queuedMaterializations()
                 + " lastTick=" + payload.materializedLastTick(), TEXT);
+        y += 10;
+        draw(graphics, minecraft, x, y, "stream h=" + payload.streamHorizontalRadius()
+                + " v=" + payload.streamVerticalRadius()
+                + " speed=" + payload.maxMaterializedCubesPerTick()
+                + "/t sync=" + payload.syncPacketIntervalTicks()
+                + "t", MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "writes player=" + payload.playerWritesSaved()
+                + " ignoredMat=" + payload.materializerWritesIgnored()
+                + " cmd=" + payload.commandWritesSaved(), MUTED);
         y += 10;
         draw(graphics, minecraft, x, y, "nearest cube entries: x y z | status/state/ticket | hash | m", MUTED);
         y += 10;

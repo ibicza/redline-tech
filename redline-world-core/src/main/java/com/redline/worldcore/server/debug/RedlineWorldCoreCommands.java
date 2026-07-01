@@ -73,7 +73,41 @@ public final class RedlineWorldCoreCommands {
                         .then(Commands.literal("status")
                                 .executes(context -> clientSyncStatus(context.getSource())))
                         .then(Commands.literal("reset")
-                                .executes(context -> clientSyncReset(context.getSource()))))
+                                .executes(context -> clientSyncReset(context.getSource())))
+                        .then(Commands.literal("counters")
+                                .then(Commands.literal("reset")
+                                        .executes(context -> clientSyncResetCounters(context.getSource()))))
+                        .then(Commands.literal("overlay")
+                                .then(Commands.literal("hidden")
+                                        .executes(context -> clientSyncOverlay(context.getSource(), CubicClientSyncBridge.OVERLAY_HIDDEN)))
+                                .then(Commands.literal("compact")
+                                        .executes(context -> clientSyncOverlay(context.getSource(), CubicClientSyncBridge.OVERLAY_COMPACT)))
+                                .then(Commands.literal("full")
+                                        .executes(context -> clientSyncOverlay(context.getSource(), CubicClientSyncBridge.OVERLAY_FULL))))
+                        .then(Commands.literal("configure")
+                                .then(Commands.argument("horizontalRadius", IntegerArgumentType.integer(0, 8))
+                                        .then(Commands.argument("verticalRadius", IntegerArgumentType.integer(0, 4))
+                                                .then(Commands.argument("maxPerTick", IntegerArgumentType.integer(1, 8))
+                                                        .then(Commands.argument("syncIntervalTicks", IntegerArgumentType.integer(1, 100))
+                                                                .executes(context -> clientSyncConfigure(
+                                                                        context.getSource(),
+                                                                        IntegerArgumentType.getInteger(context, "horizontalRadius"),
+                                                                        IntegerArgumentType.getInteger(context, "verticalRadius"),
+                                                                        IntegerArgumentType.getInteger(context, "maxPerTick"),
+                                                                        IntegerArgumentType.getInteger(context, "syncIntervalTicks")
+                                                                )))))))
+                        .then(Commands.literal("configure_default")
+                                .executes(context -> clientSyncConfigureDefault(context.getSource())))
+                        .then(Commands.literal("persistence_check")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .executes(context -> clientSyncPersistenceCheck(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                IntegerArgumentType.getInteger(context, "cubeZ")
+                                                        )))))))
                 .then(Commands.literal("gen")
                         .then(Commands.literal("summary")
                                 .then(Commands.argument("cubeX", IntegerArgumentType.integer())
@@ -360,22 +394,87 @@ public final class RedlineWorldCoreCommands {
     }
 
     private static int clientSyncStatus(CommandSourceStack source) {
-        source.sendSuccess(() -> Component.literal("M8 client sync bridge: trackedPlayers="
+        source.sendSuccess(() -> Component.literal("M8.1 client sync bridge: trackedPlayers="
                 + CubicClientSyncBridge.trackedPlayers()
                 + ", materializedCubes=" + CubicClientSyncBridge.totalMaterializedCubes()
                 + ", queuedMaterializations=" + CubicClientSyncBridge.totalQueuedMaterializations()), false);
-        source.sendSuccess(() -> Component.literal("M8 stream window: horizontalRadius="
-                + CubicClientSyncBridge.STREAM_HORIZONTAL_RADIUS
-                + ", verticalRadius=" + CubicClientSyncBridge.STREAM_VERTICAL_RADIUS
-                + ", maxMaterializedCubesPerTick=" + CubicClientSyncBridge.MAX_MATERIALIZED_CUBES_PER_TICK
-                + ", syncPacketIntervalTicks=" + CubicClientSyncBridge.SYNC_PACKET_INTERVAL_TICKS), false);
+        source.sendSuccess(() -> Component.literal("M8.1 stream window: horizontalRadius="
+                + CubicClientSyncBridge.streamHorizontalRadius()
+                + ", verticalRadius=" + CubicClientSyncBridge.streamVerticalRadius()
+                + ", maxMaterializedCubesPerTick=" + CubicClientSyncBridge.maxMaterializedCubesPerTick()
+                + ", syncPacketIntervalTicks=" + CubicClientSyncBridge.syncPacketIntervalTicks()), false);
+        source.sendSuccess(() -> Component.literal("M8.1 overlay=" + CubicClientSyncBridge.overlayModeName()
+                + ", counters: playerWritesSaved=" + CubicClientSyncBridge.playerWritesSaved()
+                + ", materializerWritesIgnored=" + CubicClientSyncBridge.materializerWritesIgnored()
+                + ", commandWritesSaved=" + CubicClientSyncBridge.commandWritesSaved()), false);
         return CubicClientSyncBridge.trackedPlayers();
     }
 
     private static int clientSyncReset(CommandSourceStack source) {
         int reset = CubicClientSyncBridge.resetAll();
-        source.sendSuccess(() -> Component.literal("M8 client sync bridge reset: clearedPlayerStates=" + reset), false);
+        source.sendSuccess(() -> Component.literal("M8.1 client sync bridge reset: clearedPlayerStates=" + reset), false);
         return reset;
+    }
+
+    private static int clientSyncResetCounters(CommandSourceStack source) {
+        CubicClientSyncBridge.resetCounters();
+        source.sendSuccess(() -> Component.literal("M8.1 client sync counters reset."), false);
+        return 1;
+    }
+
+    private static int clientSyncOverlay(CommandSourceStack source, int mode) {
+        CubicClientSyncBridge.setOverlayMode(mode);
+        source.sendSuccess(() -> Component.literal("M8.1 client sync overlay mode: " + CubicClientSyncBridge.overlayModeName()), false);
+        return 1;
+    }
+
+    private static int clientSyncConfigure(CommandSourceStack source, int horizontalRadius, int verticalRadius, int maxPerTick, int syncIntervalTicks) {
+        CubicClientSyncBridge.configureStream(horizontalRadius, verticalRadius, maxPerTick, syncIntervalTicks);
+        source.sendSuccess(() -> Component.literal("M8.1 stream configured: horizontalRadius="
+                + CubicClientSyncBridge.streamHorizontalRadius()
+                + ", verticalRadius=" + CubicClientSyncBridge.streamVerticalRadius()
+                + ", maxMaterializedCubesPerTick=" + CubicClientSyncBridge.maxMaterializedCubesPerTick()
+                + ", syncPacketIntervalTicks=" + CubicClientSyncBridge.syncPacketIntervalTicks()), false);
+        return 1;
+    }
+
+    private static int clientSyncConfigureDefault(CommandSourceStack source) {
+        CubicClientSyncBridge.resetStreamConfig();
+        source.sendSuccess(() -> Component.literal("M8.1 stream config reset to defaults."), false);
+        return clientSyncStatus(source);
+    }
+
+    private static int clientSyncPersistenceCheck(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
+        try {
+            CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+            ServerCubeCache cache = cubeCache(source);
+            CubeGenerationSummary generated = CubeGenerationSummary.from(cache.generateTemporary(cubePos));
+            source.sendSuccess(() -> Component.literal("M8.1 persistence check: cube=" + formatCube(cubePos)), false);
+            source.sendSuccess(() -> Component.literal("Generated baseline: " + generated.oneLine()), false);
+
+            cache.holder(cubePos).ifPresentOrElse(holder -> {
+                CubeGenerationSummary loaded = CubeGenerationSummary.from(holder.cube());
+                source.sendSuccess(() -> Component.literal("Loaded holder: " + formatHolder(holder)), false);
+                source.sendSuccess(() -> Component.literal("Loaded summary: " + loaded.oneLine()), false);
+                source.sendSuccess(() -> Component.literal("Loaded differs from generated baseline: " + !loaded.sameGeneratedData(generated)), false);
+            }, () -> source.sendSuccess(() -> Component.literal("Loaded holder: none"), false));
+
+            return cache.readPersisted(cubePos)
+                    .map(cube -> {
+                        CubeGenerationSummary persisted = CubeGenerationSummary.from(cube);
+                        source.sendSuccess(() -> Component.literal("Persisted Region3D cube: yes"), false);
+                        source.sendSuccess(() -> Component.literal("Persisted summary: " + persisted.oneLine()), false);
+                        source.sendSuccess(() -> Component.literal("Persisted differs from generated baseline: " + !persisted.sameGeneratedData(generated)), false);
+                        return 1;
+                    })
+                    .orElseGet(() -> {
+                        source.sendSuccess(() -> Component.literal("Persisted Region3D cube: no"), false);
+                        return 0;
+                    });
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to run M8.1 persistence check: " + exception.getMessage()));
+            return 0;
+        }
     }
 
     private static int cubicTestStatus(CommandSourceStack source) {
@@ -455,6 +554,7 @@ public final class RedlineWorldCoreCommands {
         try {
             BlockState state = CubicTestDimensionService.parseMarkerBlock(blockName);
             CubicTestDimensionService.VirtualSetResult result = CUBIC_TEST.setVirtualBlock(source.getServer(), new BlockPos(x, y, z), state);
+            CubicClientSyncBridge.recordCommandWriteSaved();
             source.sendSuccess(() -> Component.literal("Cubic virtual block saved: block="
                     + x + " " + y + " " + z
                     + ", cube=" + formatCube(result.cubePos())
@@ -491,6 +591,7 @@ public final class RedlineWorldCoreCommands {
             BlockState state = CubicTestDimensionService.parseMarkerBlock(blockName);
             CubicTestDimensionService.FillCubeResult result = CUBIC_TEST.fillVirtualCube(
                     source.getServer(), new CubePos(cubeX, cubeY, cubeZ), state);
+            CubicClientSyncBridge.recordCommandWriteSaved();
             source.sendSuccess(() -> Component.literal("Cubic virtual cube filled: cube="
                     + formatCube(result.cubePos())
                     + ", blocks=" + result.blockCount()
@@ -505,6 +606,7 @@ public final class RedlineWorldCoreCommands {
     private static int cubicVirtualWriteProbe(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
         try {
             CubicTestDimensionService.ProbeResult result = CUBIC_TEST.writeProbeCube(source.getServer(), new CubePos(cubeX, cubeY, cubeZ));
+            CubicClientSyncBridge.recordCommandWriteSaved();
             source.sendSuccess(() -> Component.literal("Cubic test probe cube written: cube=" + formatCube(result.cubePos())), false);
             return 1;
         } catch (RuntimeException exception) {
