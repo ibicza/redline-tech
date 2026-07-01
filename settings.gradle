@@ -9,3 +9,5 @@ plugins {
 }
 
 rootProject.name = 'redline-tech'
+
+include 'redline-world-core'

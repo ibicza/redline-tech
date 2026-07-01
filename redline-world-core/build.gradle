@@ -5,14 +5,12 @@ plugins {
     id 'idea'
 }
 
-tasks.named('wrapper', Wrapper).configure {
-    distributionType = Wrapper.DistributionType.BIN
-}
-
 version = mod_version
 group = mod_group_id
 
-evaluationDependsOn(':redline-world-core')
+base {
+    archivesName = world_core_mod_id
+}
 
 sourceSets.main.resources {
     srcDir('src/generated/resources')
@@ -21,18 +19,6 @@ sourceSets.main.resources {
 }
 
 repositories {
-    maven {
-        name = "Jared's Maven"
-        url = uri("https://maven.blamejared.com/")
-    }
-    maven {
-        name = "Modrinth"
-        url = uri("https://api.modrinth.com/maven")
-    }
-}
-
-base {
-    archivesName = mod_id
 }
 
 // Mojang ships Java 25 to end users in 26.2, so mods should target Java 25.
@@ -44,23 +30,23 @@ neoForge {
     runs {
         client {
             client()
-            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.world_core_mod_id
         }
 
         server {
             server()
             programArgument '--nogui'
-            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.world_core_mod_id
         }
 
         gameTestServer {
             type = "gameTestServer"
-            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.world_core_mod_id
         }
 
         data {
             clientData()
-            programArguments.addAll '--mod', project.mod_id,
+            programArguments.addAll '--mod', project.world_core_mod_id,
                     '--all',
                     '--output', file('src/generated/resources/').getAbsolutePath(),
                     '--existing', file('src/main/resources/').getAbsolutePath()
@@ -74,10 +60,6 @@ neoForge {
 
     mods {
         "${world_core_mod_id}" {
-            sourceSet(project(":redline-world-core").sourceSets.main)
-        }
-
-        "${mod_id}" {
             sourceSet(sourceSets.main)
         }
     }
@@ -88,15 +70,6 @@ configurations {
 }
 
 dependencies {
-    implementation project(":redline-world-core")
-
-    // JEI integration: API is compile-only, full mod is available only in dev runtime.
-    compileOnly "mezz.jei:jei-${minecraft_version}-common-api:${jei_version}"
-    compileOnly "mezz.jei:jei-${minecraft_version}-neoforge-api:${jei_version}"
-    localRuntime "mezz.jei:jei-${minecraft_version}-neoforge:${jei_version}"
-
-    // Jade is useful for checking block/entity data in dev. It stays optional for users.
-    localRuntime "maven.modrinth:jade:${jade_version}"
 }
 
 var generateModMetadata = tasks.register("generateModMetadata", ProcessResources) {
@@ -104,13 +77,12 @@ var generateModMetadata = tasks.register("generateModMetadata", ProcessResources
             minecraft_version      : minecraft_version,
             minecraft_version_range: minecraft_version_range,
             neo_version            : neo_version,
-            mod_id                 : mod_id,
-            mod_name               : mod_name,
+            mod_id                 : world_core_mod_id,
+            mod_name               : world_core_mod_name,
             mod_license            : mod_license,
             mod_version            : mod_version,
             mod_authors            : mod_authors,
-            mod_description        : mod_description,
-            world_core_mod_id      : world_core_mod_id,
+            mod_description        : world_core_mod_description,
     ]
     inputs.properties replaceProperties
     expand replaceProperties

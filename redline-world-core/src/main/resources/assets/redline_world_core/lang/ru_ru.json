@@ -1,0 +1,5 @@
+{
+  "commands.redline_world_core.status": "Redline World Core загружен.",
+  "commands.redline_world_core.selftest.ok": "Самопроверка математики Redline World Core пройдена.",
+  "commands.redline_world_core.selftest.fail": "Самопроверка математики Redline World Core провалена: %s"
+}

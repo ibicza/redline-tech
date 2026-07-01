@@ -1,0 +1,59 @@
+allprojects {
+    repositories {
+        mavenCentral()
+
+        maven {
+            url = uri("https://libraries.minecraft.net")
+        }
+
+        maven {
+            url = uri("https://maven.neoforged.net/releases")
+        }
+    }
+}
+
+gradle.rootProject { root ->
+    def cfg = root.configurations.create("redlineLinuxNativeCache") {
+        canBeResolved = true
+        canBeConsumed = false
+        transitive = true
+    }
+
+    def deps = [
+            // Netty Linux native only. Do NOT add the base artifact without classifier.
+            "io.netty:netty-transport-native-epoll:4.2.15.Final:linux-x86_64@jar",
+
+            // LWJGL Linux natives
+            "org.lwjgl:lwjgl:3.4.1:natives-linux@jar",
+            "org.lwjgl:lwjgl-freetype:3.4.1:natives-linux@jar",
+            "org.lwjgl:lwjgl-glfw:3.4.1:natives-linux@jar",
+            "org.lwjgl:lwjgl-jemalloc:3.4.1:natives-linux@jar",
+            "org.lwjgl:lwjgl-openal:3.4.1:natives-linux@jar",
+            "org.lwjgl:lwjgl-opengl:3.4.1:natives-linux@jar",
+            "org.lwjgl:lwjgl-stb:3.4.1:natives-linux@jar",
+            "org.lwjgl:lwjgl-tinyfd:3.4.1:natives-linux@jar"
+    ]
+
+    deps.each { notation ->
+        root.dependencies.add("redlineLinuxNativeCache", notation)
+    }
+
+    root.tasks.register("resolveLinuxNativeCache") {
+        group = "redline"
+        description = "Downloads Linux native dependencies into the Gradle cache."
+
+        doLast {
+            println ""
+            println "Resolving Linux native dependencies into Gradle cache..."
+            println ""
+
+            cfg.resolve().sort { it.name }.each { file ->
+                println "cached: ${file.name}"
+            }
+
+            println ""
+            println "Linux native dependency cache resolve finished."
+            println ""
+        }
+    }
+}

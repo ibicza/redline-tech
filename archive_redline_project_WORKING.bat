@@ -32,12 +32,12 @@ echo Project root: %ROOT%
 echo Archive:      %ARCHIVE%
 echo.
 echo Copying project without heavy folders...
-echo Skipped folders: .gradle .idea build gradle run .git generated out .run repo .vscode bin
+echo Skipped folders: .gradle .idea build run .git out .run repo .vscode bin
 echo.
 
 rem Robocopy codes 0..7 are success/warnings, 8+ are errors.
 robocopy "%ROOT%" "%STAGE%" /E ^
-    /XD .gradle .idea build gradle run .git generated out .run repo .vscode bin ^
+    /XD .gradle .idea build run .git out .run repo .vscode bin ^
     /XF *.iws *.iml *.ipr .DS_Store ^
     /R:1 /W:1 /NFL /NDL /NP
 
