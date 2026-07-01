@@ -7,6 +7,9 @@ import com.redline.worldcore.RedlineWorldCore;
 import com.redline.worldcore.api.dimension.CubicDimensionKeys;
 import com.redline.worldcore.api.cube.LevelCube;
 import com.redline.worldcore.api.generation.CubicDimensionSettings;
+import com.redline.worldcore.server.generation.CubeGenerationDebug;
+import com.redline.worldcore.server.generation.CubeGenerationProfiler;
+import com.redline.worldcore.server.generation.CubeGenerationSummary;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.api.pos.Region3DPos;
 import com.redline.worldcore.api.ticket.CubeTicket;
@@ -18,6 +21,7 @@ import com.redline.worldcore.server.cube.CubeLoadingSnapshot;
 import com.redline.worldcore.server.cube.ServerCubeCache;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
+import com.redline.worldcore.server.generation.CubeGenerationHasher;
 import com.redline.worldcore.server.ticket.CubeTicketDebugFormatter;
 import com.redline.worldcore.server.ticket.CubeTicketManager;
 import com.redline.worldcore.server.ticket.CubeTicketSnapshot;
@@ -31,7 +35,6 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.permissions.Permissions;
 import net.minecraft.util.Mth;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.phys.Vec3;
@@ -65,6 +68,71 @@ public final class RedlineWorldCoreCommands {
                 .then(Commands.literal("storage")
                         .then(Commands.literal("selftest")
                                 .executes(context -> storageSelfTest(context.getSource()))))
+                .then(Commands.literal("gen")
+                        .then(Commands.literal("summary")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .executes(context -> genSummary(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                IntegerArgumentType.getInteger(context, "cubeZ")
+                                                        ))))))
+                        .then(Commands.literal("block")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("localX", IntegerArgumentType.integer(0, 15))
+                                                                .then(Commands.argument("localY", IntegerArgumentType.integer(0, 15))
+                                                                        .then(Commands.argument("localZ", IntegerArgumentType.integer(0, 15))
+                                                                                .executes(context -> genBlock(
+                                                                                        context.getSource(),
+                                                                                        IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                                        IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                                        IntegerArgumentType.getInteger(context, "cubeZ"),
+                                                                                        IntegerArgumentType.getInteger(context, "localX"),
+                                                                                        IntegerArgumentType.getInteger(context, "localY"),
+                                                                                        IntegerArgumentType.getInteger(context, "localZ")
+                                                                                )))))))))
+                        .then(Commands.literal("column")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                .then(Commands.argument("minCubeY", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("maxCubeY", IntegerArgumentType.integer())
+                                                                .executes(context -> genColumn(
+                                                                        context.getSource(),
+                                                                        IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                        IntegerArgumentType.getInteger(context, "cubeZ"),
+                                                                        IntegerArgumentType.getInteger(context, "minCubeY"),
+                                                                        IntegerArgumentType.getInteger(context, "maxCubeY")
+                                                                )))))))
+                        .then(Commands.literal("verify")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .executes(context -> genVerify(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                IntegerArgumentType.getInteger(context, "cubeZ")
+                                                        ))))))
+                        .then(Commands.literal("verify_loaded")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .executes(context -> genVerifyLoaded(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                IntegerArgumentType.getInteger(context, "cubeZ")
+                                                        ))))))
+                        .then(Commands.literal("benchmark")
+                                .then(Commands.argument("radius", IntegerArgumentType.integer(0, 12))
+                                        .executes(context -> genBenchmark(
+                                                context.getSource(),
+                                                IntegerArgumentType.getInteger(context, "radius")
+                                        )))))
                 .then(Commands.literal("cubes")
                         .then(Commands.literal("status")
                                 .executes(context -> cubesStatus(context.getSource())))
@@ -500,7 +568,8 @@ public final class RedlineWorldCoreCommands {
         return cubeCache(source).holder(cubePos)
                 .map(holder -> {
                     source.sendSuccess(() -> Component.literal("Holder loaded: " + formatHolder(holder)), false);
-                    source.sendSuccess(() -> Component.literal("Block summary: " + summarizeCubeBlocks(holder.cube())), false);
+                    CubeGenerationSummary summary = CubeGenerationSummary.from(holder.cube());
+                    source.sendSuccess(() -> Component.literal("Generation summary: " + summary.oneLine()), false);
                     return 1;
                 })
                 .orElseGet(() -> {
@@ -525,48 +594,150 @@ public final class RedlineWorldCoreCommands {
         return WorldCoreCubeLoading.cubicTestForServer(source.getServer());
     }
 
-    private static String summarizeCubeBlocks(LevelCube cube) {
-        int air = 0;
-        int grass = 0;
-        int dirt = 0;
-        int stone = 0;
-        int deepslate = 0;
-        int ores = 0;
-        int other = 0;
-
-        for (int y = 0; y < CubePos.SIZE; y++) {
-            for (int z = 0; z < CubePos.SIZE; z++) {
-                for (int x = 0; x < CubePos.SIZE; x++) {
-                    BlockState state = cube.getBlockState(x, y, z);
-                    if (state.isAir()) {
-                        air++;
-                    } else if (state.getBlock() == Blocks.GRASS_BLOCK) {
-                        grass++;
-                    } else if (state.getBlock() == Blocks.DIRT) {
-                        dirt++;
-                    } else if (state.getBlock() == Blocks.STONE) {
-                        stone++;
-                    } else if (state.getBlock() == Blocks.DEEPSLATE) {
-                        deepslate++;
-                    } else if (state.getBlock() == Blocks.COAL_ORE
-                            || state.getBlock() == Blocks.IRON_ORE
-                            || state.getBlock() == Blocks.COPPER_ORE) {
-                        ores++;
-                    } else {
-                        other++;
-                    }
-                }
-            }
-        }
-
-        return "air=" + air
-                + ", grass=" + grass
-                + ", dirt=" + dirt
-                + ", stone=" + stone
-                + ", deepslate=" + deepslate
-                + ", ores=" + ores
-                + ", other=" + other;
+    private static CubeGenerationDebug generationDebug(CommandSourceStack source) {
+        return new CubeGenerationDebug(cubeCache(source));
     }
+
+    private static int genSummary(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
+        try {
+            CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+            CubeGenerationDebug debug = generationDebug(source);
+            CubeGenerationSummary summary = debug.summary(cubePos);
+            boolean loaded = cubeCache(source).holder(cubePos).isPresent();
+            source.sendSuccess(() -> Component.literal("Generated cube summary: " + formatCube(cubePos)
+                    + " source=" + (loaded ? "cache" : "temporary-generator")), false);
+            source.sendSuccess(() -> Component.literal(summary.oneLine()), false);
+            return 1;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to summarize generated cube: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int genBlock(CommandSourceStack source, int cubeX, int cubeY, int cubeZ, int localX, int localY, int localZ) {
+        try {
+            CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+            LevelCube cube = generationDebug(source).cacheOrGenerated(cubePos);
+            BlockState state = cube.getBlockState(localX, localY, localZ);
+            int worldX = cubePos.minBlockX() + localX;
+            int worldY = cubePos.minBlockY() + localY;
+            int worldZ = cubePos.minBlockZ() + localZ;
+            boolean loaded = cubeCache(source).holder(cubePos).isPresent();
+            source.sendSuccess(() -> Component.literal("Cube " + formatCube(cubePos)
+                    + " local " + localX + " " + localY + " " + localZ
+                    + " source=" + (loaded ? "cache" : "temporary-generator")), false);
+            source.sendSuccess(() -> Component.literal("World block: " + worldX + " " + worldY + " " + worldZ
+                    + ", state=" + CubeGenerationHasher.blockStateDebugName(state)), false);
+            return 1;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to inspect generated block: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int genColumn(CommandSourceStack source, int cubeX, int cubeZ, int minCubeY, int maxCubeY) {
+        try {
+            int minY = Math.min(minCubeY, maxCubeY);
+            int maxY = Math.max(minCubeY, maxCubeY);
+            int count = maxY - minY + 1;
+            if (count > 64) {
+                source.sendFailure(Component.literal("Column debug range is too large: " + count + " cubes. Max is 64."));
+                return 0;
+            }
+
+            CubeGenerationDebug debug = generationDebug(source);
+            source.sendSuccess(() -> Component.literal("Generated column summary: cubeX=" + cubeX
+                    + ", cubeZ=" + cubeZ + ", cubeY=" + minY + ".." + maxY), false);
+            for (int cubeY = minY; cubeY <= maxY; cubeY++) {
+                CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+                CubeGenerationSummary summary = debug.summary(cubePos);
+                final int lineCubeY = cubeY;
+                source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
+                        "%4d %s hash=%s",
+                        lineCubeY,
+                        summary.counts(),
+                        CubeGenerationHasher.shortHex(summary.hash()))), false);
+            }
+            return count;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to summarize generated column: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int genVerify(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
+        try {
+            CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+            CubeGenerationDebug.VerifyResult result = generationDebug(source).verify(cubePos);
+            if (result.passed()) {
+                source.sendSuccess(() -> Component.literal("Generation verify passed: cube=" + formatCube(cubePos)
+                        + ", hash=" + CubeGenerationHasher.shortHex(result.first().hash())), false);
+                source.sendSuccess(() -> Component.literal(result.first().oneLine()), false);
+                return 1;
+            }
+            source.sendFailure(Component.literal("Generation verify FAILED: cube=" + formatCube(cubePos)
+                    + ", firstHash=" + CubeGenerationHasher.shortHex(result.first().hash())
+                    + ", secondHash=" + CubeGenerationHasher.shortHex(result.second().hash())));
+            source.sendFailure(Component.literal("first=" + result.first().oneLine()));
+            source.sendFailure(Component.literal("second=" + result.second().oneLine()));
+            return 0;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to verify generated cube: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int genVerifyLoaded(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
+        try {
+            CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+            return generationDebug(source).verifyLoaded(cubePos)
+                    .map(result -> {
+                        if (result.passed()) {
+                            source.sendSuccess(() -> Component.literal("Loaded cube matches generator: cube=" + formatCube(cubePos)
+                                    + ", hash=" + CubeGenerationHasher.shortHex(result.first().hash())), false);
+                            source.sendSuccess(() -> Component.literal(result.first().oneLine()), false);
+                            return 1;
+                        }
+                        source.sendFailure(Component.literal("Loaded cube differs from generator: cube=" + formatCube(cubePos)
+                                + ", loadedHash=" + CubeGenerationHasher.shortHex(result.first().hash())
+                                + ", generatedHash=" + CubeGenerationHasher.shortHex(result.second().hash())));
+                        source.sendFailure(Component.literal("loaded=" + result.first().oneLine()));
+                        source.sendFailure(Component.literal("generated=" + result.second().oneLine()));
+                        return 0;
+                    })
+                    .orElseGet(() -> {
+                        source.sendFailure(Component.literal("Cube is not loaded in cache: " + formatCube(cubePos)));
+                        return 0;
+                    });
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to verify loaded cube: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int genBenchmark(CommandSourceStack source, int radius) {
+        try {
+            Vec3 pos = source.getPosition();
+            CubePos center = CubePos.fromBlock(Mth.floor(pos.x), Mth.floor(pos.y), Mth.floor(pos.z));
+            CubeGenerationProfiler.Result result = CubeGenerationProfiler.benchmark(cubeCache(source), center, radius);
+            source.sendSuccess(() -> Component.literal("Generated " + result.generatedCubes()
+                    + " temporary cubes around " + formatCube(center)
+                    + " radius=" + radius
+                    + " in " + formatMillis(result.totalMillis()) + " ms"), false);
+            source.sendSuccess(() -> Component.literal("avg=" + formatMillis(result.averageMillisPerCube())
+                    + " ms/cube, min=" + formatMillis(result.minMillis())
+                    + ", max=" + formatMillis(result.maxMillis())), false);
+            return result.generatedCubes();
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to benchmark cube generator: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static String formatMillis(double millis) {
+        return String.format(Locale.ROOT, "%.3f", millis);
+    }
+
 
     private static String formatHolder(CubeHolder holder) {
         return "cube=" + formatCube(holder.cubePos())

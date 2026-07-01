@@ -71,6 +71,18 @@ public final class ServerCubeCache {
         return storage.rootDirectory();
     }
 
+    public synchronized LevelCube generateTemporary(CubePos cubePos) {
+        if (!settings.containsCubeY(cubePos.y())) {
+            throw new IllegalArgumentException("Cube Y is outside cubic dimension settings: " + cubePos);
+        }
+        return generator.generate(cubePos);
+    }
+
+    public CubicDimensionSettings settings() {
+        return settings;
+    }
+
+
     public synchronized CubeLoadingTickResult tick(Collection<CubeTicket> tickets) {
         gameTime++;
 
