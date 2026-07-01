@@ -73,6 +73,7 @@ public final class ServerCubeCache {
         requestedLastTick = required.levels().size();
         requestLimitHitLastTick = required.limitHit();
 
+        purgePendingNoLongerRequired(required.levels());
         int queuedThisTick = queueMissingAndRefreshLoaded(required.levels());
         int unloadedThisTick = unloadNoLongerRequired(required.levels());
         int loadedThisTick = loadPending(required.levels());
@@ -128,6 +129,9 @@ public final class ServerCubeCache {
     public synchronized int saveAllLoaded() {
         int saved = 0;
         for (CubeHolder holder : holders.values()) {
+            if (shouldSkipDebugSave(holder)) {
+                continue;
+            }
             storage.put(holder.cube());
             holder.markSaved(CubeHolderState.REGION3D_SAVED);
             saved++;
@@ -169,6 +173,10 @@ public final class ServerCubeCache {
         }
 
         return new RequiredLevels(required, limitHit);
+    }
+
+    private void purgePendingNoLongerRequired(Map<CubePos, CubeTicketLevel> required) {
+        pendingLoads.keySet().removeIf(cubePos -> !required.containsKey(cubePos));
     }
 
     private int queueMissingAndRefreshLoaded(Map<CubePos, CubeTicketLevel> required) {
@@ -239,6 +247,12 @@ public final class ServerCubeCache {
             unloaded++;
         }
         return unloaded;
+    }
+
+    private static boolean shouldSkipDebugSave(CubeHolder holder) {
+        return !holder.dirty()
+                && holder.state() == CubeHolderState.PLACEHOLDER
+                && holder.cube().status() == CubeStatus.EMPTY;
     }
 
     private void unloadHolder(CubeHolder holder, boolean saveDirty) {

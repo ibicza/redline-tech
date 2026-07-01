@@ -583,6 +583,12 @@ public final class RedlineWorldCoreCommands {
     private static int ticketsPlayerProbe(CommandSourceStack source) {
         try {
             ServerPlayer player = source.getPlayerOrException();
+            if (!PlayerCubeTicketUpdater.isCubicTestPlayer(player)) {
+                boolean removed = PlayerCubeTicketUpdater.removePlayerTicket(player);
+                source.sendSuccess(() -> Component.literal("Player is outside cubic_test; player cube ticket removed=" + removed), false);
+                return removed ? 1 : 0;
+            }
+
             CubeTicket ticket = PlayerCubeTicketUpdater.createPlayerTicket(player);
             TICKETS.add(ticket);
             source.sendSuccess(() -> Component.literal("Player cube ticket updated: " + CubeTicketDebugFormatter.formatTicket(ticket)), false);

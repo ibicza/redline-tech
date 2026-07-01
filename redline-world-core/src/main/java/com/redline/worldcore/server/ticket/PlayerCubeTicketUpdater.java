@@ -25,9 +25,22 @@ public final class PlayerCubeTicketUpdater {
             return;
         }
         if (!CubicDimensionKeys.isCubicTest(player.level())) {
+            removePlayerTicket(player);
             return;
         }
         WorldCoreTickets.MANAGER.add(createPlayerTicket(player));
+    }
+
+    /**
+     * Removes the stable player ticket when the player leaves the cubic test dimension.
+     * Player tickets are dimension-scoped runtime requests; they must never keep cubic_test loaded from Overworld.
+     */
+    public static boolean removePlayerTicket(ServerPlayer player) {
+        return WorldCoreTickets.MANAGER.remove(stablePlayerTicketId(player));
+    }
+
+    public static boolean isCubicTestPlayer(ServerPlayer player) {
+        return CubicDimensionKeys.isCubicTest(player.level());
     }
 
     public static CubeTicket createPlayerTicket(ServerPlayer player) {

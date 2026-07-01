@@ -102,13 +102,18 @@ public final class CubeTicketManager {
             if (ticket.isPermanent()) {
                 continue;
             }
-            CubeTicket next = ticket.tickTtl();
-            if (next.expired()) {
-                tickets.remove(ticket.id());
-                removed++;
-            } else {
-                tickets.put(ticket.id(), next);
+
+            // ttl=0 is reserved for intentionally permanent tickets. Temporary tickets must be removed before
+            // they can tick down to zero, otherwise an expired temporary ticket becomes indistinguishable from
+            // a permanent one. This was visible as PLAYER tickets turning into ttl=permanent after leaving cubic_test.
+            if (ticket.ttlTicks() <= 1) {
+                if (tickets.remove(ticket.id()) != null) {
+                    removed++;
+                }
+                continue;
             }
+
+            tickets.put(ticket.id(), ticket.tickTtl());
         }
         return removed;
     }
