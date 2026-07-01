@@ -8,7 +8,16 @@ import com.redline.worldcore.api.dimension.CubicDimensionKeys;
 import com.redline.worldcore.api.generation.CubicDimensionSettings;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.api.pos.Region3DPos;
+import com.redline.worldcore.api.ticket.CubeTicket;
+import com.redline.worldcore.api.ticket.CubeTicketLevel;
+import com.redline.worldcore.api.ticket.CubeTicketShape;
+import com.redline.worldcore.api.ticket.CubeTicketType;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
+import com.redline.worldcore.server.ticket.CubeTicketDebugFormatter;
+import com.redline.worldcore.server.ticket.CubeTicketManager;
+import com.redline.worldcore.server.ticket.CubeTicketSnapshot;
+import com.redline.worldcore.server.ticket.PlayerCubeTicketUpdater;
+import com.redline.worldcore.server.ticket.WorldCoreTickets;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
@@ -22,11 +31,15 @@ import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
+import java.util.List;
+import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 
 public final class RedlineWorldCoreCommands {
     private static final CubicDimensionSettings DEFAULTS = CubicDimensionSettings.defaults();
     private static final CubicTestDimensionService CUBIC_TEST = new CubicTestDimensionService();
+    private static final CubeTicketManager TICKETS = WorldCoreTickets.MANAGER;
 
     public static void register(RegisterCommandsEvent event) {
         register(event.getDispatcher());
@@ -38,12 +51,84 @@ public final class RedlineWorldCoreCommands {
                 .then(Commands.literal("status")
                         .executes(context -> status(context.getSource())))
                 .then(Commands.literal("cube")
-                        .executes(context -> cube(context.getSource())))
+                        .executes(context -> cube(context.getSource()))
+                        .then(Commands.literal("pos")
+                                .executes(context -> cube(context.getSource()))))
                 .then(Commands.literal("selftest")
                         .executes(context -> selfTest(context.getSource())))
                 .then(Commands.literal("storage")
                         .then(Commands.literal("selftest")
                                 .executes(context -> storageSelfTest(context.getSource()))))
+                .then(Commands.literal("tickets")
+                        .then(Commands.literal("status")
+                                .executes(context -> ticketsStatus(context.getSource())))
+                        .then(Commands.literal("list")
+                                .executes(context -> ticketsList(context.getSource())))
+                        .then(Commands.literal("clear")
+                                .executes(context -> ticketsClear(context.getSource())))
+                        .then(Commands.literal("player_probe")
+                                .executes(context -> ticketsPlayerProbe(context.getSource())))
+                        .then(Commands.literal("level_at")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .executes(context -> ticketsLevelAt(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                IntegerArgumentType.getInteger(context, "cubeZ")
+                                                        ))))))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("uuid", StringArgumentType.word())
+                                        .executes(context -> ticketsRemove(
+                                                context.getSource(),
+                                                StringArgumentType.getString(context, "uuid")
+                                        ))))
+                        .then(Commands.literal("add")
+                                .then(Commands.literal("single")
+                                        .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                                .then(Commands.argument("level", StringArgumentType.word())
+                                                                        .executes(context -> ticketsAddSingle(
+                                                                                context.getSource(),
+                                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                                IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                                IntegerArgumentType.getInteger(context, "cubeZ"),
+                                                                                StringArgumentType.getString(context, "level")
+                                                                        )))))))
+                                .then(Commands.literal("cuboid")
+                                        .then(Commands.argument("x1", IntegerArgumentType.integer())
+                                                .then(Commands.argument("y1", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("z1", IntegerArgumentType.integer())
+                                                                .then(Commands.argument("x2", IntegerArgumentType.integer())
+                                                                        .then(Commands.argument("y2", IntegerArgumentType.integer())
+                                                                                .then(Commands.argument("z2", IntegerArgumentType.integer())
+                                                                                        .then(Commands.argument("level", StringArgumentType.word())
+                                                                                                .executes(context -> ticketsAddCuboid(
+                                                                                                        context.getSource(),
+                                                                                                        IntegerArgumentType.getInteger(context, "x1"),
+                                                                                                        IntegerArgumentType.getInteger(context, "y1"),
+                                                                                                        IntegerArgumentType.getInteger(context, "z1"),
+                                                                                                        IntegerArgumentType.getInteger(context, "x2"),
+                                                                                                        IntegerArgumentType.getInteger(context, "y2"),
+                                                                                                        IntegerArgumentType.getInteger(context, "z2"),
+                                                                                                        StringArgumentType.getString(context, "level")
+                                                                                                ))))))))))
+                                .then(Commands.literal("column")
+                                        .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("minCubeY", IntegerArgumentType.integer())
+                                                                .then(Commands.argument("maxCubeY", IntegerArgumentType.integer())
+                                                                        .then(Commands.argument("level", StringArgumentType.word())
+                                                                                .executes(context -> ticketsAddColumn(
+                                                                                        context.getSource(),
+                                                                                        IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                                        IntegerArgumentType.getInteger(context, "cubeZ"),
+                                                                                        IntegerArgumentType.getInteger(context, "minCubeY"),
+                                                                                        IntegerArgumentType.getInteger(context, "maxCubeY"),
+                                                                                        StringArgumentType.getString(context, "level")
+                                                                                ))))))))))
                 .then(Commands.literal("cubic_test")
                         .then(Commands.literal("status")
                                 .executes(context -> cubicTestStatus(context.getSource())))
@@ -332,6 +417,141 @@ public final class RedlineWorldCoreCommands {
         } catch (RuntimeException exception) {
             source.sendFailure(Component.literal("Failed to materialize cubic virtual cube: " + exception.getMessage()));
             return 0;
+        }
+    }
+
+
+    private static int ticketsStatus(CommandSourceStack source) {
+        CubeTicketSnapshot snapshot = TICKETS.snapshot();
+        source.sendSuccess(() -> Component.literal("Cube tickets: total=" + snapshot.totalTickets()
+                + ", permanent=" + snapshot.permanentTickets()
+                + ", temporary=" + snapshot.temporaryTickets()), false);
+        source.sendSuccess(() -> Component.literal("Covered cube requests: " + snapshot.coveredCubeRequests()), false);
+        source.sendSuccess(() -> Component.literal("By type: " + snapshot.byType()), false);
+        source.sendSuccess(() -> Component.literal("By level: " + snapshot.byLevel()), false);
+        return snapshot.totalTickets();
+    }
+
+    private static int ticketsList(CommandSourceStack source) {
+        List<CubeTicket> tickets = TICKETS.sortedTickets();
+        if (tickets.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("Cube tickets: none"), false);
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("Cube tickets list, showing " + Math.min(tickets.size(), 25) + " of " + tickets.size()), false);
+        for (int i = 0; i < Math.min(tickets.size(), 25); i++) {
+            CubeTicket ticket = tickets.get(i);
+            source.sendSuccess(() -> Component.literal(CubeTicketDebugFormatter.formatTicket(ticket)), false);
+        }
+        if (tickets.size() > 25) {
+            source.sendSuccess(() -> Component.literal("More tickets hidden. Use /rwc tickets clear if this is only debug noise."), false);
+        }
+        return tickets.size();
+    }
+
+    private static int ticketsClear(CommandSourceStack source) {
+        int removed = TICKETS.clear();
+        source.sendSuccess(() -> Component.literal("Cube tickets cleared: removed=" + removed), false);
+        return removed;
+    }
+
+    private static int ticketsRemove(CommandSourceStack source, String uuidText) {
+        try {
+            UUID id = UUID.fromString(uuidText);
+            boolean removed = TICKETS.remove(id);
+            if (removed) {
+                source.sendSuccess(() -> Component.literal("Cube ticket removed: " + id), false);
+                return 1;
+            }
+            source.sendFailure(Component.literal("Cube ticket not found: " + id));
+            return 0;
+        } catch (IllegalArgumentException exception) {
+            source.sendFailure(Component.literal("Invalid UUID: " + uuidText));
+            return 0;
+        }
+    }
+
+    private static int ticketsPlayerProbe(CommandSourceStack source) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            CubeTicket ticket = PlayerCubeTicketUpdater.createPlayerTicket(player);
+            TICKETS.add(ticket);
+            source.sendSuccess(() -> Component.literal("Player cube ticket updated: " + CubeTicketDebugFormatter.formatTicket(ticket)), false);
+            return 1;
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal("Failed to create player cube ticket: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int ticketsLevelAt(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
+        CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+        List<CubeTicket> covering = TICKETS.ticketsCovering(cubePos);
+        if (covering.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("No cube tickets cover cube " + formatCube(cubePos)), false);
+            return 0;
+        }
+        CubeTicketLevel strongest = TICKETS.strongestLevelFor(cubePos).orElse(CubeTicketLevel.UNLOADED);
+        source.sendSuccess(() -> Component.literal("Strongest level for cube " + formatCube(cubePos) + ": " + strongest
+                + ", coveringTickets=" + covering.size()), false);
+        for (CubeTicket ticket : covering.stream().limit(10).toList()) {
+            source.sendSuccess(() -> Component.literal(CubeTicketDebugFormatter.formatTicket(ticket)), false);
+        }
+        return covering.size();
+    }
+
+    private static int ticketsAddSingle(CommandSourceStack source, int cubeX, int cubeY, int cubeZ, String levelName) {
+        try {
+            CubeTicket ticket = CubeTicket.permanent(
+                    CubeTicketType.DEBUG,
+                    parseTicketLevel(levelName),
+                    CubeTicketShape.single(new CubePos(cubeX, cubeY, cubeZ)),
+                    "debug:single-command"
+            );
+            TICKETS.add(ticket);
+            source.sendSuccess(() -> Component.literal("Cube ticket added: " + CubeTicketDebugFormatter.formatTicket(ticket)), false);
+            return 1;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to add single cube ticket: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int ticketsAddCuboid(CommandSourceStack source, int x1, int y1, int z1, int x2, int y2, int z2, String levelName) {
+        try {
+            CubeTicketShape shape = CubeTicketShape.cuboid(
+                    new CubePos(Math.min(x1, x2), Math.min(y1, y2), Math.min(z1, z2)),
+                    new CubePos(Math.max(x1, x2), Math.max(y1, y2), Math.max(z1, z2))
+            );
+            CubeTicket ticket = CubeTicket.permanent(CubeTicketType.DEBUG, parseTicketLevel(levelName), shape, "debug:cuboid-command");
+            TICKETS.add(ticket);
+            source.sendSuccess(() -> Component.literal("Cube ticket added: " + CubeTicketDebugFormatter.formatTicket(ticket)), false);
+            return 1;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to add cuboid cube ticket: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int ticketsAddColumn(CommandSourceStack source, int cubeX, int cubeZ, int minCubeY, int maxCubeY, String levelName) {
+        try {
+            CubeTicketShape shape = CubeTicketShape.verticalColumnRange(cubeX, cubeZ, minCubeY, maxCubeY);
+            CubeTicket ticket = CubeTicket.permanent(CubeTicketType.DEBUG, parseTicketLevel(levelName), shape, "debug:column-command");
+            TICKETS.add(ticket);
+            source.sendSuccess(() -> Component.literal("Cube ticket added: " + CubeTicketDebugFormatter.formatTicket(ticket)), false);
+            return 1;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to add vertical column cube ticket: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static CubeTicketLevel parseTicketLevel(String levelName) {
+        try {
+            return CubeTicketLevel.valueOf(levelName.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("Unknown ticket level '" + levelName + "'. Valid levels: "
+                    + String.join(", ", java.util.Arrays.stream(CubeTicketLevel.values()).map(Enum::name).toList()));
         }
     }
 

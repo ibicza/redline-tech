@@ -5,7 +5,7 @@ import com.redline.worldcore.api.pos.CubePos;
 import java.util.Objects;
 import java.util.stream.Stream;
 
-/** Shape of a ticket request. MVP supports single cube and cuboid enumeration. */
+/** Shape of a ticket request. M5 keeps shapes explicit, but only cuboid-like shapes are enumerable for now. */
 public record CubeTicketShape(CubeTicketShapeType type, CubePos min, CubePos max) {
     public CubeTicketShape {
         Objects.requireNonNull(type, "type");
@@ -24,6 +24,16 @@ public record CubeTicketShape(CubeTicketShapeType type, CubePos min, CubePos max
         return new CubeTicketShape(CubeTicketShapeType.CUBOID, min, max);
     }
 
+    public static CubeTicketShape verticalColumnRange(int cubeX, int cubeZ, int minCubeY, int maxCubeY) {
+        int minY = Math.min(minCubeY, maxCubeY);
+        int maxY = Math.max(minCubeY, maxCubeY);
+        return new CubeTicketShape(
+                CubeTicketShapeType.VERTICAL_COLUMN_RANGE,
+                new CubePos(cubeX, minY, cubeZ),
+                new CubePos(cubeX, maxY, cubeZ)
+        );
+    }
+
     public static CubeTicketShape centeredCuboid(CubePos center, int horizontalRadius, int verticalRadius) {
         if (horizontalRadius < 0 || verticalRadius < 0) {
             throw new IllegalArgumentException("Ticket radii must be >= 0");
@@ -40,11 +50,20 @@ public record CubeTicketShape(CubeTicketShapeType type, CubePos min, CubePos max
                 && cubePos.z() >= min.z() && cubePos.z() <= max.z();
     }
 
+    public long sizeX() {
+        return (long) max.x() - min.x() + 1L;
+    }
+
+    public long sizeY() {
+        return (long) max.y() - min.y() + 1L;
+    }
+
+    public long sizeZ() {
+        return (long) max.z() - min.z() + 1L;
+    }
+
     public long cubeCount() {
-        long sizeX = (long) max.x() - min.x() + 1L;
-        long sizeY = (long) max.y() - min.y() + 1L;
-        long sizeZ = (long) max.z() - min.z() + 1L;
-        return sizeX * sizeY * sizeZ;
+        return sizeX() * sizeY() * sizeZ();
     }
 
     public Stream<CubePos> stream() {
