@@ -18,6 +18,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.permissions.Permissions;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
@@ -48,6 +49,10 @@ public final class RedlineWorldCoreCommands {
                                 .executes(context -> cubicTestStatus(context.getSource())))
                         .then(Commands.literal("enter")
                                 .executes(context -> cubicTestEnter(context.getSource())))
+                        .then(Commands.literal("leave")
+                                .executes(context -> cubicTestLeave(context.getSource())))
+                        .then(Commands.literal("check_height")
+                                .executes(context -> cubicTestCheckHeight(context.getSource())))
                         .then(Commands.literal("virtual")
                                 .then(Commands.literal("set")
                                         .then(Commands.argument("x", IntegerArgumentType.integer())
@@ -197,6 +202,50 @@ public final class RedlineWorldCoreCommands {
             source.sendFailure(Component.literal("Failed to enter cubic test dimension: " + exception.getMessage()));
             return 0;
         }
+    }
+
+
+    private static int cubicTestLeave(CommandSourceStack source) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            ServerLevel overworld = source.getServer().overworld();
+            player.teleportTo(overworld, 0.5, 100.0, 0.5, Set.of(), player.getYRot(), player.getXRot(), true);
+            source.sendSuccess(() -> Component.literal("Teleported back to minecraft:overworld"), false);
+            return 1;
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal("Failed to leave cubic test dimension: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int cubicTestCheckHeight(CommandSourceStack source) {
+        ServerLevel current = source.getLevel();
+        ServerLevel cubic = CUBIC_TEST.level(source.getServer()).orElse(null);
+
+        source.sendSuccess(() -> Component.literal("Current dimension: " + current.dimension().identifier()), false);
+        source.sendSuccess(() -> Component.literal("Current vanilla build Y: "
+                + current.getMinY() + ".." + (current.getMaxY() - 1)
+                + " height=" + current.getHeight()), false);
+
+        if (cubic == null) {
+            source.sendFailure(Component.literal("Cubic test dimension is not registered in this world."));
+            return 0;
+        }
+
+        source.sendSuccess(() -> Component.literal("Cubic test dimension: " + cubic.dimension().identifier()), false);
+        source.sendSuccess(() -> Component.literal("Cubic test vanilla shell Y: "
+                + cubic.getMinY() + ".." + (cubic.getMaxY() - 1)
+                + " height=" + cubic.getHeight()), false);
+        source.sendSuccess(() -> Component.literal("Cubic test generator: "
+                + cubic.getChunkSource().getGenerator().getClass().getName()), false);
+        source.sendSuccess(() -> Component.literal("Configured virtual cube storage Y: cubes "
+                + CubicTestDimensionService.SETTINGS.minCubeY() + ".." + CubicTestDimensionService.SETTINGS.maxCubeY()
+                + ", blocks " + CubicTestDimensionService.SETTINGS.minBlockY()
+                + ".." + CubicTestDimensionService.SETTINGS.maxBlockY()), false);
+        source.sendSuccess(() -> Component.literal("Vanilla legal dimension_type Y range in 26.2: "
+                + DimensionType.MIN_Y + ".." + DimensionType.MAX_Y
+                + " maxHeight=" + DimensionType.Y_SIZE), false);
+        return 1;
     }
 
     private static int cubicVirtualSet(CommandSourceStack source, int x, int y, int z, String blockName) {

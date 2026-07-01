@@ -1,19 +1,16 @@
 {
-  "type": "minecraft:overworld",
+  "type": "redline_world_core:cubic_test",
   "generator": {
     "type": "minecraft:flat",
     "settings": {
       "biome": "minecraft:plains",
+      "structure_overrides": [],
       "features": false,
       "lakes": false,
       "layers": [
         {
-          "block": "minecraft:bedrock",
-          "height": 1
-        },
-        {
           "block": "minecraft:stone",
-          "height": 63
+          "height": 2032
         },
         {
           "block": "minecraft:grass_block",
