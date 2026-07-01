@@ -12,6 +12,10 @@ import com.redline.worldcore.api.ticket.CubeTicket;
 import com.redline.worldcore.api.ticket.CubeTicketLevel;
 import com.redline.worldcore.api.ticket.CubeTicketShape;
 import com.redline.worldcore.api.ticket.CubeTicketType;
+import com.redline.worldcore.server.cube.CubeHolder;
+import com.redline.worldcore.server.cube.CubeLoadingSnapshot;
+import com.redline.worldcore.server.cube.ServerCubeCache;
+import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
 import com.redline.worldcore.server.ticket.CubeTicketDebugFormatter;
 import com.redline.worldcore.server.ticket.CubeTicketManager;
@@ -59,6 +63,25 @@ public final class RedlineWorldCoreCommands {
                 .then(Commands.literal("storage")
                         .then(Commands.literal("selftest")
                                 .executes(context -> storageSelfTest(context.getSource()))))
+                .then(Commands.literal("cubes")
+                        .then(Commands.literal("status")
+                                .executes(context -> cubesStatus(context.getSource())))
+                        .then(Commands.literal("list")
+                                .executes(context -> cubesList(context.getSource())))
+                        .then(Commands.literal("inspect")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .executes(context -> cubesInspect(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                IntegerArgumentType.getInteger(context, "cubeZ")
+                                                        ))))))
+                        .then(Commands.literal("save_all")
+                                .executes(context -> cubesSaveAll(context.getSource())))
+                        .then(Commands.literal("unload_all")
+                                .executes(context -> cubesUnloadAll(context.getSource()))))
                 .then(Commands.literal("tickets")
                         .then(Commands.literal("status")
                                 .executes(context -> ticketsStatus(context.getSource())))
@@ -420,6 +443,92 @@ public final class RedlineWorldCoreCommands {
         }
     }
 
+
+
+    private static int cubesStatus(CommandSourceStack source) {
+        ServerCubeCache cache = cubeCache(source);
+        CubeLoadingSnapshot snapshot = cache.snapshot();
+        source.sendSuccess(() -> Component.literal("Cube cache: loaded=" + snapshot.loadedCubes()
+                + ", pending=" + snapshot.pendingLoads()
+                + ", requestedLastTick=" + snapshot.requestedCubes()), false);
+        source.sendSuccess(() -> Component.literal("Last tick: queued=" + snapshot.queuedLastTick()
+                + ", loaded=" + snapshot.loadedLastTick()
+                + ", unloaded=" + snapshot.unloadedLastTick()
+                + ", requestLimitHit=" + snapshot.requestLimitHitLastTick()), false);
+        source.sendSuccess(() -> Component.literal("Totals: loaded=" + snapshot.totalLoaded()
+                + ", unloaded=" + snapshot.totalUnloaded()
+                + ", saved=" + snapshot.totalSaved()), false);
+        source.sendSuccess(() -> Component.literal("By ticket level: " + snapshot.byTicketLevel()), false);
+        source.sendSuccess(() -> Component.literal("By cube status: " + snapshot.byCubeStatus()), false);
+        source.sendSuccess(() -> Component.literal("By holder state: " + snapshot.byHolderState()), false);
+        source.sendSuccess(() -> Component.literal("Storage root: " + cache.storageRoot()), false);
+        return snapshot.loadedCubes();
+    }
+
+    private static int cubesList(CommandSourceStack source) {
+        List<CubeHolder> holders = cubeCache(source).sortedHolders();
+        if (holders.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("Cube cache: no loaded holders"), false);
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("Cube cache holders, showing " + Math.min(holders.size(), 25) + " of " + holders.size()), false);
+        for (int i = 0; i < Math.min(holders.size(), 25); i++) {
+            CubeHolder holder = holders.get(i);
+            source.sendSuccess(() -> Component.literal(formatHolder(holder)), false);
+        }
+        if (holders.size() > 25) {
+            source.sendSuccess(() -> Component.literal("More holders hidden. Use /rwc cubes inspect <cubeX> <cubeY> <cubeZ> for details."), false);
+        }
+        return holders.size();
+    }
+
+    private static int cubesInspect(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
+        CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+        List<CubeTicket> covering = TICKETS.ticketsCovering(cubePos);
+        source.sendSuccess(() -> Component.literal("Cube inspect: " + formatCube(cubePos)
+                + " region=" + cubePos.regionPos().fileName()
+                + " entry=" + Region3DPos.localIndex(cubePos)), false);
+        source.sendSuccess(() -> Component.literal("Tickets covering: " + covering.size()
+                + ", strongest=" + TICKETS.strongestLevelFor(cubePos).orElse(CubeTicketLevel.UNLOADED)), false);
+        for (CubeTicket ticket : covering.stream().limit(8).toList()) {
+            source.sendSuccess(() -> Component.literal("ticket " + CubeTicketDebugFormatter.formatTicket(ticket)), false);
+        }
+        return cubeCache(source).holder(cubePos)
+                .map(holder -> {
+                    source.sendSuccess(() -> Component.literal("Holder loaded: " + formatHolder(holder)), false);
+                    return 1;
+                })
+                .orElseGet(() -> {
+                    source.sendSuccess(() -> Component.literal("Holder is not loaded in M6 cache yet."), false);
+                    return 0;
+                });
+    }
+
+    private static int cubesSaveAll(CommandSourceStack source) {
+        int saved = cubeCache(source).saveAllLoaded();
+        source.sendSuccess(() -> Component.literal("Cube cache saved loaded holders to Region3D: saved=" + saved), false);
+        return saved;
+    }
+
+    private static int cubesUnloadAll(CommandSourceStack source) {
+        int unloaded = cubeCache(source).unloadAllLoaded(true);
+        source.sendSuccess(() -> Component.literal("Cube cache unloaded all holders: unloaded=" + unloaded + ". Active tickets may reload them next tick."), false);
+        return unloaded;
+    }
+
+    private static ServerCubeCache cubeCache(CommandSourceStack source) {
+        return WorldCoreCubeLoading.cubicTestForServer(source.getServer());
+    }
+
+    private static String formatHolder(CubeHolder holder) {
+        return "cube=" + formatCube(holder.cubePos())
+                + " level=" + holder.ticketLevel()
+                + " status=" + holder.cube().status()
+                + " state=" + holder.state()
+                + " dirty=" + holder.dirty()
+                + " loadedAt=" + holder.loadedGameTime()
+                + " lastRequired=" + holder.lastRequiredGameTime();
+    }
 
     private static int ticketsStatus(CommandSourceStack source) {
         CubeTicketSnapshot snapshot = TICKETS.snapshot();

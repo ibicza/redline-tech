@@ -104,6 +104,16 @@ public final class CubeRegionStorage implements CubeStorage {
         return loadedCubes.size();
     }
 
+    /**
+     * Removes a cube only from the in-memory storage cache.
+     *
+     * <p>This is not a disk deletion. M6 ServerCubeCache uses it when a cube holder leaves the runtime cache but should
+     * remain persisted in its Region3D file if it was saved before.</p>
+     */
+    public Optional<LevelCube> unloadFromMemory(CubePos cubePos) {
+        return Optional.ofNullable(loadedCubes.remove(cubePos));
+    }
+
     public int usedEntries(Region3DPos regionPos) {
         try {
             return regionFile(regionPos).usedEntries();
