@@ -23,6 +23,9 @@ public record CubeClientSyncPayload(
         int pendingLoads,
         int requestedCubes,
         long totalGenerated,
+        long totalLightRebuilt,
+        int lightRebuiltLastTick,
+        int lightDirtyQueue,
         int materializedCubes,
         int queuedMaterializations,
         int materializedLastTick,
@@ -56,6 +59,9 @@ public record CubeClientSyncPayload(
         buffer.writeVarInt(pendingLoads);
         buffer.writeVarInt(requestedCubes);
         buffer.writeLong(totalGenerated);
+        buffer.writeLong(totalLightRebuilt);
+        buffer.writeVarInt(lightRebuiltLastTick);
+        buffer.writeVarInt(lightDirtyQueue);
         buffer.writeVarInt(materializedCubes);
         buffer.writeVarInt(queuedMaterializations);
         buffer.writeVarInt(materializedLastTick);
@@ -81,6 +87,9 @@ public record CubeClientSyncPayload(
         int pendingLoads = buffer.readVarInt();
         int requestedCubes = buffer.readVarInt();
         long totalGenerated = buffer.readLong();
+        long totalLightRebuilt = buffer.readLong();
+        int lightRebuiltLastTick = buffer.readVarInt();
+        int lightDirtyQueue = buffer.readVarInt();
         int materializedCubes = buffer.readVarInt();
         int queuedMaterializations = buffer.readVarInt();
         int materializedLastTick = buffer.readVarInt();
@@ -105,6 +114,9 @@ public record CubeClientSyncPayload(
                 pendingLoads,
                 requestedCubes,
                 totalGenerated,
+                totalLightRebuilt,
+                lightRebuiltLastTick,
+                lightDirtyQueue,
                 materializedCubes,
                 queuedMaterializations,
                 materializedLastTick,
@@ -128,6 +140,10 @@ public record CubeClientSyncPayload(
             int holderStateOrdinal,
             int ticketLevelOrdinal,
             long hash,
+            int maxBlockLight,
+            int litBlocks,
+            int emittingBlocks,
+            long lightHash,
             boolean dirty,
             boolean materialized
     ) {
@@ -139,6 +155,10 @@ public record CubeClientSyncPayload(
             buffer.writeVarInt(holderStateOrdinal);
             buffer.writeVarInt(ticketLevelOrdinal);
             buffer.writeLong(hash);
+            buffer.writeVarInt(maxBlockLight);
+            buffer.writeVarInt(litBlocks);
+            buffer.writeVarInt(emittingBlocks);
+            buffer.writeLong(lightHash);
             buffer.writeBoolean(dirty);
             buffer.writeBoolean(materialized);
         }
@@ -148,6 +168,10 @@ public record CubeClientSyncPayload(
                     buffer.readVarInt(),
                     buffer.readVarInt(),
                     buffer.readVarInt(),
+                    buffer.readVarInt(),
+                    buffer.readVarInt(),
+                    buffer.readVarInt(),
+                    buffer.readLong(),
                     buffer.readVarInt(),
                     buffer.readVarInt(),
                     buffer.readVarInt(),

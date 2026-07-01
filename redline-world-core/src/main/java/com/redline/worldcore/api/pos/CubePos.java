@@ -37,6 +37,10 @@ public record CubePos(int x, int y, int z) {
         return localX | (localZ << SIZE_BITS) | (localY << (SIZE_BITS * 2));
     }
 
+    public static boolean isLocal(int value) {
+        return value >= 0 && value < SIZE;
+    }
+
     public static int localIndexFromBlock(int blockX, int blockY, int blockZ) {
         return localIndex(local(blockX), local(blockY), local(blockZ));
     }

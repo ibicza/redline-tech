@@ -23,6 +23,9 @@ import com.redline.worldcore.server.compat.CubicClientSyncBridge;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
 import com.redline.worldcore.server.generation.CubeGenerationHasher;
+import com.redline.worldcore.server.lighting.CubeLightDebug;
+import com.redline.worldcore.server.lighting.StaticBlockLightLayer;
+import com.redline.worldcore.server.lighting.StaticLightSummary;
 import com.redline.worldcore.server.ticket.CubeTicketDebugFormatter;
 import com.redline.worldcore.server.ticket.CubeTicketManager;
 import com.redline.worldcore.server.ticket.CubeTicketSnapshot;
@@ -108,6 +111,58 @@ public final class RedlineWorldCoreCommands {
                                                                 IntegerArgumentType.getInteger(context, "cubeY"),
                                                                 IntegerArgumentType.getInteger(context, "cubeZ")
                                                         )))))))
+                .then(Commands.literal("light")
+                        .then(Commands.literal("status")
+                                .executes(context -> lightStatus(context.getSource())))
+                        .then(Commands.literal("summary")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .executes(context -> lightSummary(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                IntegerArgumentType.getInteger(context, "cubeZ")
+                                                        ))))))
+                        .then(Commands.literal("block")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("localX", IntegerArgumentType.integer(0, 15))
+                                                                .then(Commands.argument("localY", IntegerArgumentType.integer(0, 15))
+                                                                        .then(Commands.argument("localZ", IntegerArgumentType.integer(0, 15))
+                                                                                .executes(context -> lightBlock(
+                                                                                        context.getSource(),
+                                                                                        IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                                        IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                                        IntegerArgumentType.getInteger(context, "cubeZ"),
+                                                                                        IntegerArgumentType.getInteger(context, "localX"),
+                                                                                        IntegerArgumentType.getInteger(context, "localY"),
+                                                                                        IntegerArgumentType.getInteger(context, "localZ")
+                                                                                )))))))))
+                        .then(Commands.literal("rebuild")
+                                .then(Commands.literal("cube")
+                                        .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                                .executes(context -> lightRebuildCube(
+                                                                        context.getSource(),
+                                                                        IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                        IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                        IntegerArgumentType.getInteger(context, "cubeZ")
+                                                                ))))))
+                                .then(Commands.literal("column")
+                                        .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("minCubeY", IntegerArgumentType.integer())
+                                                                .then(Commands.argument("maxCubeY", IntegerArgumentType.integer())
+                                                                        .executes(context -> lightRebuildColumn(
+                                                                                context.getSource(),
+                                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                                IntegerArgumentType.getInteger(context, "cubeZ"),
+                                                                                IntegerArgumentType.getInteger(context, "minCubeY"),
+                                                                                IntegerArgumentType.getInteger(context, "maxCubeY")
+                                                                        )))))))))
                 .then(Commands.literal("gen")
                         .then(Commands.literal("summary")
                                 .then(Commands.argument("cubeX", IntegerArgumentType.integer())
@@ -477,6 +532,110 @@ public final class RedlineWorldCoreCommands {
         }
     }
 
+    private static int lightStatus(CommandSourceStack source) {
+        ServerCubeCache cache = cubeCache(source);
+        CubeLoadingSnapshot snapshot = cache.snapshot();
+        source.sendSuccess(() -> Component.literal("M9 static light: totalRebuilt=" + snapshot.totalLightRebuilt()
+                + ", rebuiltLastTick=" + snapshot.lightRebuiltLastTick()
+                + ", dirtyQueue=" + snapshot.lightDirtyQueue()), false);
+        source.sendSuccess(() -> Component.literal("Cube cache: loaded=" + snapshot.loadedCubes()
+                + ", pending=" + snapshot.pendingLoads()
+                + ", requested=" + snapshot.requestedCubes()), false);
+        source.sendSuccess(() -> Component.literal("MVP scope: cube-local block light only; cross-cube propagation and vanilla visual injection are later work."), false);
+        return snapshot.lightDirtyQueue();
+    }
+
+    private static int lightSummary(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
+        try {
+            CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+            CubeLightDebug.LightSourceCube sourceCube = new CubeLightDebug(cubeCache(source)).cubeForRead(cubePos);
+            StaticLightSummary summary = StaticLightSummary.from(sourceCube.cube());
+            source.sendSuccess(() -> Component.literal("M9 light summary: cube=" + formatCube(cubePos)
+                    + " source=" + sourceCube.source()), false);
+            source.sendSuccess(() -> Component.literal(summary.oneLine()), false);
+            return summary.litBlocks();
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to summarize static light: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int lightBlock(CommandSourceStack source, int cubeX, int cubeY, int cubeZ, int localX, int localY, int localZ) {
+        try {
+            CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+            CubeLightDebug.LightSourceCube sourceCube = new CubeLightDebug(cubeCache(source)).cubeForRead(cubePos);
+            BlockState state = sourceCube.cube().getBlockState(localX, localY, localZ);
+            int blockLight = sourceCube.cube().getBlockLight(localX, localY, localZ);
+            int emission = StaticBlockLightLayer.emission(state);
+            int dampening = StaticBlockLightLayer.lightDrop(state);
+            int worldX = cubePos.minBlockX() + localX;
+            int worldY = cubePos.minBlockY() + localY;
+            int worldZ = cubePos.minBlockZ() + localZ;
+            source.sendSuccess(() -> Component.literal("M9 light block: cube=" + formatCube(cubePos)
+                    + " local=" + localX + " " + localY + " " + localZ
+                    + " source=" + sourceCube.source()), false);
+            source.sendSuccess(() -> Component.literal("World block: " + worldX + " " + worldY + " " + worldZ
+                    + ", state=" + CubeGenerationHasher.blockStateDebugName(state)
+                    + ", blockLight=" + blockLight
+                    + ", emission=" + emission
+                    + ", lightDrop=" + dampening), false);
+            return blockLight;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to inspect static light block: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int lightRebuildCube(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
+        try {
+            CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+            return cubeCache(source).rebuildLight(cubePos, true)
+                    .map(result -> {
+                        source.sendSuccess(() -> Component.literal("M9 static light rebuilt and saved: " + result.oneLine()), false);
+                        return 1;
+                    })
+                    .orElseGet(() -> {
+                        source.sendFailure(Component.literal("Cube is outside cubic settings: " + formatCube(cubePos)));
+                        return 0;
+                    });
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to rebuild static light: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int lightRebuildColumn(CommandSourceStack source, int cubeX, int cubeZ, int minCubeY, int maxCubeY) {
+        try {
+            int minY = Math.min(minCubeY, maxCubeY);
+            int maxY = Math.max(minCubeY, maxCubeY);
+            int count = maxY - minY + 1;
+            if (count > 64) {
+                source.sendFailure(Component.literal("Light rebuild column range is too large: " + count + " cubes. Max is 64."));
+                return 0;
+            }
+
+            ServerCubeCache cache = cubeCache(source);
+            int rebuilt = 0;
+            source.sendSuccess(() -> Component.literal("M9 static light rebuild column: cubeX=" + cubeX
+                    + ", cubeZ=" + cubeZ + ", cubeY=" + minY + ".." + maxY), false);
+            for (int cubeY = minY; cubeY <= maxY; cubeY++) {
+                CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+                StaticBlockLightLayer.RebuildResult result = cache.rebuildLight(cubePos, true).orElse(null);
+                if (result == null) {
+                    continue;
+                }
+                rebuilt++;
+                final int lineCubeY = cubeY;
+                source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
+                        "%4d %s", lineCubeY, result.summary().oneLine())), false);
+            }
+            return rebuilt;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to rebuild static light column: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
     private static int cubicTestStatus(CommandSourceStack source) {
         boolean registered = CUBIC_TEST.isRegistered(source.getServer());
         source.sendSuccess(() -> Component.literal("Redline cubic test dimension: " + CubicDimensionKeys.CUBIC_TEST_ID), false);
@@ -651,10 +810,13 @@ public final class RedlineWorldCoreCommands {
         source.sendSuccess(() -> Component.literal("Last tick: queued=" + snapshot.queuedLastTick()
                 + ", loaded=" + snapshot.loadedLastTick()
                 + ", generated=" + snapshot.generatedLastTick()
+                + ", lightRebuilt=" + snapshot.lightRebuiltLastTick()
+                + ", lightDirtyQueue=" + snapshot.lightDirtyQueue()
                 + ", unloaded=" + snapshot.unloadedLastTick()
                 + ", requestLimitHit=" + snapshot.requestLimitHitLastTick()), false);
         source.sendSuccess(() -> Component.literal("Totals: loaded=" + snapshot.totalLoaded()
                 + ", generated=" + snapshot.totalGenerated()
+                + ", lightRebuilt=" + snapshot.totalLightRebuilt()
                 + ", unloaded=" + snapshot.totalUnloaded()
                 + ", saved=" + snapshot.totalSaved()), false);
         source.sendSuccess(() -> Component.literal("By ticket level: " + snapshot.byTicketLevel()), false);
@@ -696,7 +858,9 @@ public final class RedlineWorldCoreCommands {
                 .map(holder -> {
                     source.sendSuccess(() -> Component.literal("Holder loaded: " + formatHolder(holder)), false);
                     CubeGenerationSummary summary = CubeGenerationSummary.from(holder.cube());
+                    StaticLightSummary light = StaticLightSummary.from(holder.cube());
                     source.sendSuccess(() -> Component.literal("Generation summary: " + summary.oneLine()), false);
+                    source.sendSuccess(() -> Component.literal("Static light summary: " + light.oneLine()), false);
                     return 1;
                 })
                 .orElseGet(() -> {

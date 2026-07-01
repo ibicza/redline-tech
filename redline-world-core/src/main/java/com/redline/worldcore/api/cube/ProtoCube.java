@@ -15,6 +15,7 @@ public final class ProtoCube extends AbstractArrayCube {
             for (int z = 0; z < CubePos.SIZE; z++) {
                 for (int x = 0; x < CubePos.SIZE; x++) {
                     levelCube.setBlockState(x, y, z, getBlockState(x, y, z));
+                    levelCube.setBlockLight(x, y, z, getBlockLight(x, y, z));
                 }
             }
         }

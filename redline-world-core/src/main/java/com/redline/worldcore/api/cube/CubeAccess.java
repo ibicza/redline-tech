@@ -16,12 +16,30 @@ public interface CubeAccess {
 
     void setBlockState(int localX, int localY, int localZ, BlockState state);
 
+    int getBlockLight(int localX, int localY, int localZ);
+
+    void setBlockLight(int localX, int localY, int localZ, int level);
+
+    byte[] copyBlockLight();
+
+    void replaceBlockLight(byte[] light);
+
+    void clearBlockLight();
+
     default BlockState getBlockState(CubeLocalPos localPos) {
         return getBlockState(localPos.x(), localPos.y(), localPos.z());
     }
 
     default void setBlockState(CubeLocalPos localPos, BlockState state) {
         setBlockState(localPos.x(), localPos.y(), localPos.z(), state);
+    }
+
+    default int getBlockLight(CubeLocalPos localPos) {
+        return getBlockLight(localPos.x(), localPos.y(), localPos.z());
+    }
+
+    default void setBlockLight(CubeLocalPos localPos, int level) {
+        setBlockLight(localPos.x(), localPos.y(), localPos.z(), level);
     }
 
     default BlockState getBlockState(BlockPos worldPos) {
@@ -32,6 +50,16 @@ public interface CubeAccess {
     default void setBlockState(BlockPos worldPos, BlockState state) {
         requireContains(worldPos);
         setBlockState(CubePos.local(worldPos.getX()), CubePos.local(worldPos.getY()), CubePos.local(worldPos.getZ()), state);
+    }
+
+    default int getBlockLight(BlockPos worldPos) {
+        requireContains(worldPos);
+        return getBlockLight(CubePos.local(worldPos.getX()), CubePos.local(worldPos.getY()), CubePos.local(worldPos.getZ()));
+    }
+
+    default void setBlockLight(BlockPos worldPos, int level) {
+        requireContains(worldPos);
+        setBlockLight(CubePos.local(worldPos.getX()), CubePos.local(worldPos.getY()), CubePos.local(worldPos.getZ()), level);
     }
 
     default void requireContains(BlockPos worldPos) {

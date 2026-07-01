@@ -7,6 +7,8 @@ import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.api.ticket.CubeTicket;
 import com.redline.worldcore.api.ticket.CubeTicketLevel;
 import com.redline.worldcore.server.generation.CubicWorldgenPipeline;
+import com.redline.worldcore.server.lighting.StaticBlockLightLayer;
+import com.redline.worldcore.server.lighting.StaticLightSummary;
 import com.redline.worldcore.server.storage.CubeRegionStorage;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.state.BlockState;
@@ -18,6 +20,7 @@ import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -41,11 +44,15 @@ public final class ServerCubeCache {
     /** Safety cap for accidental huge debug cuboids before real async distance propagation exists. */
     public static final int MAX_REQUESTED_CUBES_PER_TICK = 32768;
 
+    /** M9 keeps static block-light rebuilds small and predictable during gameplay ticks. */
+    public static final int MAX_LIGHT_REBUILDS_PER_TICK = 32;
+
     private final CubicDimensionSettings settings;
     private final CubeRegionStorage storage;
     private final CubicWorldgenPipeline generator;
     private final Map<CubePos, CubeHolder> holders = new ConcurrentHashMap<>();
     private final LinkedHashMap<CubePos, CubeTicketLevel> pendingLoads = new LinkedHashMap<>();
+    private final LinkedHashSet<CubePos> lightDirtyQueue = new LinkedHashSet<>();
 
     private long gameTime;
     private long totalLoaded;
@@ -58,6 +65,9 @@ public final class ServerCubeCache {
     private int unloadedLastTick;
     private int generatedLastTick;
     private boolean requestLimitHitLastTick;
+    private long totalLightRebuilt;
+    private int lightRebuiltLastTick;
+    private int lightDirtyLastTick;
 
     public ServerCubeCache(Path storageRoot, CubicDimensionSettings settings, long seed) {
         this(new CubeRegionStorage(storageRoot), settings, seed);
@@ -77,7 +87,9 @@ public final class ServerCubeCache {
         if (!settings.containsCubeY(cubePos.y())) {
             throw new IllegalArgumentException("Cube Y is outside cubic dimension settings: " + cubePos);
         }
-        return generator.generate(cubePos);
+        LevelCube generated = generator.generate(cubePos);
+        StaticBlockLightLayer.rebuild(generated);
+        return generated;
     }
 
     public CubicDimensionSettings settings() {
@@ -96,11 +108,14 @@ public final class ServerCubeCache {
         int queuedThisTick = queueMissingAndRefreshLoaded(required.levels());
         int unloadedThisTick = unloadNoLongerRequired(required.levels());
         LoadCounters loadCounters = loadPending(required.levels());
+        int rebuiltLightThisTick = rebuildDirtyLightQueue();
 
         queuedLastTick = queuedThisTick;
         loadedLastTick = loadCounters.loaded();
         generatedLastTick = loadCounters.generated();
         unloadedLastTick = unloadedThisTick;
+        lightRebuiltLastTick = rebuiltLightThisTick;
+        lightDirtyLastTick = lightDirtyQueue.size();
 
         return new CubeLoadingTickResult(gameTime, requestedLastTick, queuedThisTick, loadCounters.loaded(), loadCounters.generated(), unloadedThisTick, requestLimitHitLastTick);
     }
@@ -141,6 +156,8 @@ public final class ServerCubeCache {
         }
 
         holder.cube().setBlockState(worldPos, state);
+        markLightDirty(cubePos);
+        rebuildLightNow(holder);
         holder.markDirty();
         if (saveImmediately) {
             storage.put(holder.cube());
@@ -148,6 +165,55 @@ public final class ServerCubeCache {
             totalSaved++;
         }
         return Optional.of(holder);
+    }
+
+    /** Marks a loaded cube as needing M9 static block-light rebuild. */
+    public synchronized boolean markLightDirty(CubePos cubePos) {
+        if (!settings.containsCubeY(cubePos.y())) {
+            return false;
+        }
+        if (!holders.containsKey(cubePos)) {
+            return false;
+        }
+        lightDirtyQueue.add(cubePos);
+        return true;
+    }
+
+    public synchronized Optional<StaticBlockLightLayer.RebuildResult> rebuildLight(CubePos cubePos, boolean saveImmediately) {
+        if (!settings.containsCubeY(cubePos.y())) {
+            return Optional.empty();
+        }
+        CubeHolder holder = holders.get(cubePos);
+        if (holder == null) {
+            holder = loadHolder(cubePos, CubeTicketLevel.LIGHT_READY);
+            holders.put(cubePos, holder);
+            totalLoaded++;
+            if (holder.state() == CubeHolderState.GENERATED) {
+                totalGenerated++;
+            }
+        }
+        StaticBlockLightLayer.RebuildResult result = rebuildLightNow(holder);
+        holder.markDirty();
+        if (saveImmediately) {
+            storage.put(holder.cube());
+            holder.markSaved(CubeHolderState.REGION3D_SAVED);
+            totalSaved++;
+        }
+        return Optional.of(result);
+    }
+
+    public synchronized StaticLightSummary lightSummary(CubePos cubePos) {
+        Optional<CubeHolder> holder = holder(cubePos);
+        if (holder.isPresent()) {
+            return StaticLightSummary.from(holder.get().cube());
+        }
+        Optional<LevelCube> persisted = readPersisted(cubePos);
+        if (persisted.isPresent()) {
+            return StaticLightSummary.from(persisted.get());
+        }
+        LevelCube generated = generateTemporary(cubePos);
+        StaticBlockLightLayer.rebuild(generated);
+        return StaticLightSummary.from(generated);
     }
 
 
@@ -183,6 +249,9 @@ public final class ServerCubeCache {
                 totalUnloaded,
                 totalSaved,
                 totalGenerated,
+                totalLightRebuilt,
+                lightRebuiltLastTick,
+                lightDirtyLastTick,
                 loadedLastTick,
                 generatedLastTick,
                 unloadedLastTick,
@@ -299,16 +368,25 @@ public final class ServerCubeCache {
     private CubeHolder loadHolder(CubePos cubePos, CubeTicketLevel level) {
         Optional<LevelCube> loaded = storage.get(cubePos);
         if (loaded.isPresent()) {
-            return new CubeHolder(cubePos, loaded.get(), level, CubeHolderState.REGION3D_LOADED, gameTime);
+            LevelCube cube = loaded.get();
+            if (StaticBlockLightLayer.needsBootstrap(cube)) {
+                StaticBlockLightLayer.rebuild(cube);
+                totalLightRebuilt++;
+            }
+            return new CubeHolder(cubePos, cube, level, CubeHolderState.REGION3D_LOADED, gameTime);
         }
 
         if (level.isAtLeast(CubeTicketLevel.GENERATED)) {
             LevelCube generated = generator.generate(cubePos);
+            StaticBlockLightLayer.rebuild(generated);
+            totalLightRebuilt++;
             return new CubeHolder(cubePos, generated, level, CubeHolderState.GENERATED, gameTime);
         }
 
         LevelCube placeholder = new LevelCube(cubePos);
         placeholder.setStatus(CubeStatus.EMPTY);
+        StaticBlockLightLayer.rebuild(placeholder);
+        totalLightRebuilt++;
         return new CubeHolder(cubePos, placeholder, level, CubeHolderState.PLACEHOLDER, gameTime);
     }
 
@@ -340,8 +418,33 @@ public final class ServerCubeCache {
             totalSaved++;
         }
         holders.remove(holder.cubePos());
+        lightDirtyQueue.remove(holder.cubePos());
         storage.unloadFromMemory(holder.cubePos());
         totalUnloaded++;
+    }
+
+    private int rebuildDirtyLightQueue() {
+        int rebuilt = 0;
+        Iterator<CubePos> iterator = lightDirtyQueue.iterator();
+        while (iterator.hasNext() && rebuilt < MAX_LIGHT_REBUILDS_PER_TICK) {
+            CubePos cubePos = iterator.next();
+            CubeHolder holder = holders.get(cubePos);
+            iterator.remove();
+            if (holder == null) {
+                continue;
+            }
+            rebuildLightNow(holder);
+            holder.markDirty();
+            rebuilt++;
+        }
+        return rebuilt;
+    }
+
+    private StaticBlockLightLayer.RebuildResult rebuildLightNow(CubeHolder holder) {
+        StaticBlockLightLayer.RebuildResult result = StaticBlockLightLayer.rebuild(holder.cube());
+        lightDirtyQueue.remove(holder.cubePos());
+        totalLightRebuilt++;
+        return result;
     }
 
     private static CubeTicketLevel strongerLevel(CubeTicketLevel first, CubeTicketLevel second) {

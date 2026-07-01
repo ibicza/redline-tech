@@ -56,6 +56,7 @@ public final class CubeDebugOverlay {
         y += 10;
         draw(graphics, minecraft, x, y, "mat=" + payload.materializedCubes()
                 + " q=" + payload.queuedMaterializations()
+                + " lightQ=" + payload.lightDirtyQueue()
                 + " writes=" + payload.playerWritesSaved(), TEXT);
         y += 10;
         draw(graphics, minecraft, x, y, "stream h=" + payload.streamHorizontalRadius()
@@ -69,10 +70,10 @@ public final class CubeDebugOverlay {
         int y = 6;
         int width = 374;
         int shownEntries = Math.min(8, payload.entries().size());
-        int lines = shownEntries + 7;
+        int lines = shownEntries + 8;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
 
-        draw(graphics, minecraft, x, y, "Redline World Core M8.1 sync", GOOD);
+        draw(graphics, minecraft, x, y, "Redline World Core M9 sync/light", GOOD);
         y += 10;
         draw(graphics, minecraft, x, y, "playerCube=" + payload.playerCubeX() + " " + payload.playerCubeY() + " " + payload.playerCubeZ()
                 + "  cache loaded=" + payload.loadedCubes() + " pending=" + payload.pendingLoads() + " requested=" + payload.requestedCubes(), TEXT);
@@ -81,6 +82,10 @@ public final class CubeDebugOverlay {
                 + "  materialized=" + payload.materializedCubes()
                 + " queue=" + payload.queuedMaterializations()
                 + " lastTick=" + payload.materializedLastTick(), TEXT);
+        y += 10;
+        draw(graphics, minecraft, x, y, "staticLight rebuiltTotal=" + payload.totalLightRebuilt()
+                + " lastTick=" + payload.lightRebuiltLastTick()
+                + " dirtyQ=" + payload.lightDirtyQueue(), TEXT);
         y += 10;
         draw(graphics, minecraft, x, y, "stream h=" + payload.streamHorizontalRadius()
                 + " v=" + payload.streamVerticalRadius()
@@ -92,7 +97,7 @@ public final class CubeDebugOverlay {
                 + " ignoredMat=" + payload.materializerWritesIgnored()
                 + " cmd=" + payload.commandWritesSaved(), MUTED);
         y += 10;
-        draw(graphics, minecraft, x, y, "nearest cube entries: x y z | status/state/ticket | hash | m", MUTED);
+        draw(graphics, minecraft, x, y, "nearest cube entries: x y z | status/state/ticket | hash | Lmax/lit/emit | m", MUTED);
         y += 10;
 
         int shown = 0;
@@ -101,7 +106,7 @@ public final class CubeDebugOverlay {
                 break;
             }
             String line = String.format(
-                    "%d %d %d | %s/%s/%s | %016x | %s%s",
+                    "%d %d %d | %s/%s/%s | %016x | L%d/%d/%d | %s%s",
                     entry.cubeX(),
                     entry.cubeY(),
                     entry.cubeZ(),
@@ -109,6 +114,9 @@ public final class CubeDebugOverlay {
                     enumName(CubeHolderState.values(), entry.holderStateOrdinal()),
                     enumName(CubeTicketLevel.values(), entry.ticketLevelOrdinal()),
                     entry.hash(),
+                    entry.maxBlockLight(),
+                    entry.litBlocks(),
+                    entry.emittingBlocks(),
                     entry.materialized() ? "M" : "-",
                     entry.dirty() ? " dirty" : ""
             );
