@@ -26,7 +26,7 @@ public final class WorldCoreCubeLoading {
     public static synchronized ServerCubeCache cubicTest(Path storageRoot) {
         if (cubicTestCache == null || cubicTestStorageRoot == null || !cubicTestStorageRoot.equals(storageRoot)) {
             cubicTestStorageRoot = storageRoot;
-            cubicTestCache = new ServerCubeCache(storageRoot, CubicDimensionSettings.defaults());
+            cubicTestCache = new ServerCubeCache(storageRoot, CubicDimensionSettings.defaults(), 0L);
         }
         return cubicTestCache;
     }

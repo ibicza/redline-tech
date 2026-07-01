@@ -6,6 +6,7 @@ import com.redline.worldcore.api.generation.CubicDimensionSettings;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.api.ticket.CubeTicket;
 import com.redline.worldcore.api.ticket.CubeTicketLevel;
+import com.redline.worldcore.server.generation.CubicWorldgenPipeline;
 import com.redline.worldcore.server.storage.CubeRegionStorage;
 
 import java.nio.file.Path;
@@ -22,11 +23,11 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * M6 cube-first server cache.
+ * M6/M7 cube-first server cache.
  *
- * <p>This is the first layer that consumes CubeTicket requests and turns them into loaded cube holders. It intentionally
- * does not touch Minecraft's ChunkMap yet: vanilla chunks remain the compatibility shell while this cache proves the
- * cube lifecycle against Region3D storage.</p>
+ * <p>This layer consumes CubeTicket requests and turns them into loaded cube holders. M7 adds cube-first generation when
+ * Region3D has no saved cube yet. It intentionally does not touch Minecraft's ChunkMap yet: vanilla chunks remain the
+ * compatibility shell while this cache proves the cube lifecycle against Region3D storage and the cubic generator.</p>
  */
 public final class ServerCubeCache {
     /** Keep one player ticket from loading in one tick; 3969 player cubes need about 31 ticks with this default. */
@@ -40,6 +41,7 @@ public final class ServerCubeCache {
 
     private final CubicDimensionSettings settings;
     private final CubeRegionStorage storage;
+    private final CubicWorldgenPipeline generator;
     private final Map<CubePos, CubeHolder> holders = new ConcurrentHashMap<>();
     private final LinkedHashMap<CubePos, CubeTicketLevel> pendingLoads = new LinkedHashMap<>();
 
@@ -47,19 +49,22 @@ public final class ServerCubeCache {
     private long totalLoaded;
     private long totalUnloaded;
     private long totalSaved;
+    private long totalGenerated;
     private int requestedLastTick;
     private int queuedLastTick;
     private int loadedLastTick;
     private int unloadedLastTick;
+    private int generatedLastTick;
     private boolean requestLimitHitLastTick;
 
-    public ServerCubeCache(Path storageRoot, CubicDimensionSettings settings) {
-        this(new CubeRegionStorage(storageRoot), settings);
+    public ServerCubeCache(Path storageRoot, CubicDimensionSettings settings, long seed) {
+        this(new CubeRegionStorage(storageRoot), settings, seed);
     }
 
-    public ServerCubeCache(CubeRegionStorage storage, CubicDimensionSettings settings) {
+    public ServerCubeCache(CubeRegionStorage storage, CubicDimensionSettings settings, long seed) {
         this.storage = Objects.requireNonNull(storage, "storage");
         this.settings = Objects.requireNonNull(settings, "settings");
+        this.generator = new CubicWorldgenPipeline(settings, seed);
     }
 
     public Path storageRoot() {
@@ -76,13 +81,14 @@ public final class ServerCubeCache {
         purgePendingNoLongerRequired(required.levels());
         int queuedThisTick = queueMissingAndRefreshLoaded(required.levels());
         int unloadedThisTick = unloadNoLongerRequired(required.levels());
-        int loadedThisTick = loadPending(required.levels());
+        LoadCounters loadCounters = loadPending(required.levels());
 
         queuedLastTick = queuedThisTick;
-        loadedLastTick = loadedThisTick;
+        loadedLastTick = loadCounters.loaded();
+        generatedLastTick = loadCounters.generated();
         unloadedLastTick = unloadedThisTick;
 
-        return new CubeLoadingTickResult(gameTime, requestedLastTick, queuedThisTick, loadedThisTick, unloadedThisTick, requestLimitHitLastTick);
+        return new CubeLoadingTickResult(gameTime, requestedLastTick, queuedThisTick, loadCounters.loaded(), loadCounters.generated(), unloadedThisTick, requestLimitHitLastTick);
     }
 
     public synchronized Optional<CubeHolder> holder(CubePos cubePos) {
@@ -116,7 +122,9 @@ public final class ServerCubeCache {
                 totalLoaded,
                 totalUnloaded,
                 totalSaved,
+                totalGenerated,
                 loadedLastTick,
+                generatedLastTick,
                 unloadedLastTick,
                 queuedLastTick,
                 requestLimitHitLastTick,
@@ -199,8 +207,9 @@ public final class ServerCubeCache {
         return queued;
     }
 
-    private int loadPending(Map<CubePos, CubeTicketLevel> required) {
+    private LoadCounters loadPending(Map<CubePos, CubeTicketLevel> required) {
         int loaded = 0;
+        int generated = 0;
         Iterator<Map.Entry<CubePos, CubeTicketLevel>> iterator = pendingLoads.entrySet().iterator();
         while (iterator.hasNext() && loaded < MAX_LOADS_PER_TICK) {
             Map.Entry<CubePos, CubeTicketLevel> entry = iterator.next();
@@ -219,14 +228,23 @@ public final class ServerCubeCache {
             iterator.remove();
             loaded++;
             totalLoaded++;
+            if (holder.state() == CubeHolderState.GENERATED) {
+                generated++;
+                totalGenerated++;
+            }
         }
-        return loaded;
+        return new LoadCounters(loaded, generated);
     }
 
     private CubeHolder loadHolder(CubePos cubePos, CubeTicketLevel level) {
         Optional<LevelCube> loaded = storage.get(cubePos);
         if (loaded.isPresent()) {
             return new CubeHolder(cubePos, loaded.get(), level, CubeHolderState.REGION3D_LOADED, gameTime);
+        }
+
+        if (level.isAtLeast(CubeTicketLevel.GENERATED)) {
+            LevelCube generated = generator.generate(cubePos);
+            return new CubeHolder(cubePos, generated, level, CubeHolderState.GENERATED, gameTime);
         }
 
         LevelCube placeholder = new LevelCube(cubePos);
@@ -250,9 +268,9 @@ public final class ServerCubeCache {
     }
 
     private static boolean shouldSkipDebugSave(CubeHolder holder) {
-        return !holder.dirty()
-                && holder.state() == CubeHolderState.PLACEHOLDER
-                && holder.cube().status() == CubeStatus.EMPTY;
+        // M7 generated cubes are deterministic and clean by default, so debug save_all should not write thousands of
+        // untouched terrain cubes into Region3D. Later block edits will mark holders dirty and save normally.
+        return !holder.dirty();
     }
 
     private void unloadHolder(CubeHolder holder, boolean saveDirty) {
@@ -271,5 +289,8 @@ public final class ServerCubeCache {
     }
 
     private record RequiredLevels(Map<CubePos, CubeTicketLevel> levels, boolean limitHit) {
+    }
+
+    private record LoadCounters(int loaded, int generated) {
     }
 }

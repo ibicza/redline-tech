@@ -5,6 +5,7 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.redline.worldcore.RedlineWorldCore;
 import com.redline.worldcore.api.dimension.CubicDimensionKeys;
+import com.redline.worldcore.api.cube.LevelCube;
 import com.redline.worldcore.api.generation.CubicDimensionSettings;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.api.pos.Region3DPos;
@@ -30,6 +31,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.permissions.Permissions;
 import net.minecraft.util.Mth;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.phys.Vec3;
@@ -453,9 +455,11 @@ public final class RedlineWorldCoreCommands {
                 + ", requestedLastTick=" + snapshot.requestedCubes()), false);
         source.sendSuccess(() -> Component.literal("Last tick: queued=" + snapshot.queuedLastTick()
                 + ", loaded=" + snapshot.loadedLastTick()
+                + ", generated=" + snapshot.generatedLastTick()
                 + ", unloaded=" + snapshot.unloadedLastTick()
                 + ", requestLimitHit=" + snapshot.requestLimitHitLastTick()), false);
         source.sendSuccess(() -> Component.literal("Totals: loaded=" + snapshot.totalLoaded()
+                + ", generated=" + snapshot.totalGenerated()
                 + ", unloaded=" + snapshot.totalUnloaded()
                 + ", saved=" + snapshot.totalSaved()), false);
         source.sendSuccess(() -> Component.literal("By ticket level: " + snapshot.byTicketLevel()), false);
@@ -496,6 +500,7 @@ public final class RedlineWorldCoreCommands {
         return cubeCache(source).holder(cubePos)
                 .map(holder -> {
                     source.sendSuccess(() -> Component.literal("Holder loaded: " + formatHolder(holder)), false);
+                    source.sendSuccess(() -> Component.literal("Block summary: " + summarizeCubeBlocks(holder.cube())), false);
                     return 1;
                 })
                 .orElseGet(() -> {
@@ -518,6 +523,49 @@ public final class RedlineWorldCoreCommands {
 
     private static ServerCubeCache cubeCache(CommandSourceStack source) {
         return WorldCoreCubeLoading.cubicTestForServer(source.getServer());
+    }
+
+    private static String summarizeCubeBlocks(LevelCube cube) {
+        int air = 0;
+        int grass = 0;
+        int dirt = 0;
+        int stone = 0;
+        int deepslate = 0;
+        int ores = 0;
+        int other = 0;
+
+        for (int y = 0; y < CubePos.SIZE; y++) {
+            for (int z = 0; z < CubePos.SIZE; z++) {
+                for (int x = 0; x < CubePos.SIZE; x++) {
+                    BlockState state = cube.getBlockState(x, y, z);
+                    if (state.isAir()) {
+                        air++;
+                    } else if (state.getBlock() == Blocks.GRASS_BLOCK) {
+                        grass++;
+                    } else if (state.getBlock() == Blocks.DIRT) {
+                        dirt++;
+                    } else if (state.getBlock() == Blocks.STONE) {
+                        stone++;
+                    } else if (state.getBlock() == Blocks.DEEPSLATE) {
+                        deepslate++;
+                    } else if (state.getBlock() == Blocks.COAL_ORE
+                            || state.getBlock() == Blocks.IRON_ORE
+                            || state.getBlock() == Blocks.COPPER_ORE) {
+                        ores++;
+                    } else {
+                        other++;
+                    }
+                }
+            }
+        }
+
+        return "air=" + air
+                + ", grass=" + grass
+                + ", dirt=" + dirt
+                + ", stone=" + stone
+                + ", deepslate=" + deepslate
+                + ", ores=" + ores
+                + ", other=" + other;
     }
 
     private static String formatHolder(CubeHolder holder) {
