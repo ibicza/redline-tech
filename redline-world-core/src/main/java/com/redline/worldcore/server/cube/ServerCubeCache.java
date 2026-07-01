@@ -8,6 +8,8 @@ import com.redline.worldcore.api.ticket.CubeTicket;
 import com.redline.worldcore.api.ticket.CubeTicketLevel;
 import com.redline.worldcore.server.generation.CubicWorldgenPipeline;
 import com.redline.worldcore.server.storage.CubeRegionStorage;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.state.BlockState;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -114,6 +116,38 @@ public final class ServerCubeCache {
                 .thenComparing(holder -> holder.cubePos().y())
                 .thenComparing(holder -> holder.cubePos().z()));
         return result;
+    }
+
+    /**
+     * M8 edit bridge: writes a physical vanilla block change back into the cube backend.
+     *
+     * <p>If the holder is not currently loaded, the cube is loaded from Region3D or regenerated first. This keeps player
+     * edits persistent without forcing the caller to manage tickets.</p>
+     */
+    public synchronized Optional<CubeHolder> writeBlock(BlockPos worldPos, BlockState state, boolean saveImmediately) {
+        CubePos cubePos = CubePos.fromBlock(worldPos.getX(), worldPos.getY(), worldPos.getZ());
+        if (!settings.containsCubeY(cubePos.y())) {
+            return Optional.empty();
+        }
+
+        CubeHolder holder = holders.get(cubePos);
+        if (holder == null) {
+            holder = loadHolder(cubePos, CubeTicketLevel.FULL);
+            holders.put(cubePos, holder);
+            totalLoaded++;
+            if (holder.state() == CubeHolderState.GENERATED) {
+                totalGenerated++;
+            }
+        }
+
+        holder.cube().setBlockState(worldPos, state);
+        holder.markDirty();
+        if (saveImmediately) {
+            storage.put(holder.cube());
+            holder.markSaved(CubeHolderState.REGION3D_SAVED);
+            totalSaved++;
+        }
+        return Optional.of(holder);
     }
 
     public synchronized CubeLoadingSnapshot snapshot() {

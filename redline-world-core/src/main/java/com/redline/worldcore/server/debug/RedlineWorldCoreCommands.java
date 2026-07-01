@@ -19,6 +19,7 @@ import com.redline.worldcore.api.ticket.CubeTicketType;
 import com.redline.worldcore.server.cube.CubeHolder;
 import com.redline.worldcore.server.cube.CubeLoadingSnapshot;
 import com.redline.worldcore.server.cube.ServerCubeCache;
+import com.redline.worldcore.server.compat.CubicClientSyncBridge;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
 import com.redline.worldcore.server.generation.CubeGenerationHasher;
@@ -68,6 +69,11 @@ public final class RedlineWorldCoreCommands {
                 .then(Commands.literal("storage")
                         .then(Commands.literal("selftest")
                                 .executes(context -> storageSelfTest(context.getSource()))))
+                .then(Commands.literal("client_sync")
+                        .then(Commands.literal("status")
+                                .executes(context -> clientSyncStatus(context.getSource())))
+                        .then(Commands.literal("reset")
+                                .executes(context -> clientSyncReset(context.getSource()))))
                 .then(Commands.literal("gen")
                         .then(Commands.literal("summary")
                                 .then(Commands.argument("cubeX", IntegerArgumentType.integer())
@@ -351,6 +357,25 @@ public final class RedlineWorldCoreCommands {
             source.sendFailure(Component.literal("Redline World Core Region3D storage self-test failed: " + exception.getMessage()));
             return 0;
         }
+    }
+
+    private static int clientSyncStatus(CommandSourceStack source) {
+        source.sendSuccess(() -> Component.literal("M8 client sync bridge: trackedPlayers="
+                + CubicClientSyncBridge.trackedPlayers()
+                + ", materializedCubes=" + CubicClientSyncBridge.totalMaterializedCubes()
+                + ", queuedMaterializations=" + CubicClientSyncBridge.totalQueuedMaterializations()), false);
+        source.sendSuccess(() -> Component.literal("M8 stream window: horizontalRadius="
+                + CubicClientSyncBridge.STREAM_HORIZONTAL_RADIUS
+                + ", verticalRadius=" + CubicClientSyncBridge.STREAM_VERTICAL_RADIUS
+                + ", maxMaterializedCubesPerTick=" + CubicClientSyncBridge.MAX_MATERIALIZED_CUBES_PER_TICK
+                + ", syncPacketIntervalTicks=" + CubicClientSyncBridge.SYNC_PACKET_INTERVAL_TICKS), false);
+        return CubicClientSyncBridge.trackedPlayers();
+    }
+
+    private static int clientSyncReset(CommandSourceStack source) {
+        int reset = CubicClientSyncBridge.resetAll();
+        source.sendSuccess(() -> Component.literal("M8 client sync bridge reset: clearedPlayerStates=" + reset), false);
+        return reset;
     }
 
     private static int cubicTestStatus(CommandSourceStack source) {
