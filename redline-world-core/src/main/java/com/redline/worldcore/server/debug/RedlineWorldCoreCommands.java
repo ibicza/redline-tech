@@ -24,6 +24,7 @@ import com.redline.worldcore.server.compat.CubicClientSyncBridge;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
 import com.redline.worldcore.server.entity.EntityCubeTracker;
+import com.redline.worldcore.server.entity.EntityRef;
 import com.redline.worldcore.server.entity.EntityTrackingSnapshot;
 import com.redline.worldcore.server.generation.CubeGenerationHasher;
 import com.redline.worldcore.server.lighting.ColumnSkyIndex;
@@ -77,6 +78,11 @@ public final class RedlineWorldCoreCommands {
                 .then(Commands.literal("entity")
                         .then(Commands.literal("status")
                                 .executes(context -> entityStatus(context.getSource())))
+                        .then(Commands.literal("dump")
+                                .then(Commands.literal("current")
+                                        .executes(context -> entityDumpCurrent(context.getSource())))
+                                .then(Commands.literal("busiest")
+                                        .executes(context -> entityDumpBusiest(context.getSource()))))
                         .then(Commands.literal("reset")
                                 .executes(context -> entityReset(context.getSource()))))
                 .then(Commands.literal("selftest")
@@ -526,43 +532,82 @@ public final class RedlineWorldCoreCommands {
             playerCube = CubePos.fromBlock(source.getEntity().blockPosition());
         }
         EntityTrackingSnapshot snapshot = EntityCubeTracker.snapshot(playerCube);
-        source.sendSuccess(() -> Component.literal("M12 entity tracker: trackedEntities="
+        source.sendSuccess(() -> Component.literal("RWC entity tracker: trackedEntities="
                 + snapshot.trackedEntities()
                 + ", entitySections=" + snapshot.entitySections()
                 + ", scannedLastTick=" + snapshot.scannedLastTick()
                 + ", playerCube=" + snapshot.playerCubeString()
                 + ", entitiesInPlayerCube=" + snapshot.entitiesInPlayerCube()), false);
-        source.sendSuccess(() -> Component.literal("M12 entity movement: addedLastTick="
+        source.sendSuccess(() -> Component.literal("RWC entity kinds: " + snapshot.kindBreakdown()), false);
+        source.sendSuccess(() -> Component.literal("RWC entity perf: " + snapshot.perfLine()), false);
+        source.sendSuccess(() -> Component.literal("RWC entity movement: addedLastTick="
                 + snapshot.addedLastTick()
                 + ", movedLastTick=" + snapshot.movedLastTick()
                 + ", removedLastTick=" + snapshot.removedLastTick()
                 + ", totalAdded=" + snapshot.totalAdded()
                 + ", totalMoved=" + snapshot.totalMoved()
                 + ", totalRemoved=" + snapshot.totalRemoved()), false);
-        source.sendSuccess(() -> Component.literal("M12 busiest entity cube: "
+        source.sendSuccess(() -> Component.literal("RWC busiest entity cube: "
                 + snapshot.busiestCubeString()
                 + ", entities=" + snapshot.busiestCubeEntities()
                 + ", lastTickGameTime=" + snapshot.lastTickGameTime()), false);
         return snapshot.trackedEntities();
     }
 
+    private static int entityDumpCurrent(CommandSourceStack source) {
+        if (source.getEntity() == null) {
+            source.sendFailure(Component.literal("Entity dump current requires an entity/player source."));
+            return 0;
+        }
+        CubePos playerCube = CubePos.fromBlock(source.getEntity().blockPosition());
+        List<EntityRef> refs = EntityCubeTracker.dumpCurrentCube(playerCube);
+        source.sendSuccess(() -> Component.literal("RWC entity dump current cube=" + formatCube(playerCube)
+                + ", shown=" + refs.size()), false);
+        sendEntityRefs(source, refs);
+        return refs.size();
+    }
+
+    private static int entityDumpBusiest(CommandSourceStack source) {
+        List<EntityRef> refs = EntityCubeTracker.dumpBusiestCube();
+        String cube = refs.isEmpty() ? "none" : formatCube(refs.get(0).cubePos());
+        source.sendSuccess(() -> Component.literal("RWC entity dump busiest cube=" + cube
+                + ", shown=" + refs.size()), false);
+        sendEntityRefs(source, refs);
+        return refs.size();
+    }
+
+    private static void sendEntityRefs(CommandSourceStack source, List<EntityRef> refs) {
+        if (refs.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("  no tracked entities in this cube"), false);
+            return;
+        }
+        for (EntityRef ref : refs) {
+            source.sendSuccess(() -> Component.literal("  #" + ref.entityId()
+                    + " " + ref.kind()
+                    + " " + ref.type()
+                    + " cube=" + formatCube(ref.cubePos())
+                    + " pos=" + formatDecimal(ref.x()) + " " + formatDecimal(ref.y()) + " " + formatDecimal(ref.z())
+                    + (ref.alwaysTicking() ? " alwaysTicking" : "")), false);
+        }
+    }
+
     private static int entityReset(CommandSourceStack source) {
         EntityCubeTracker.reset();
-        source.sendSuccess(() -> Component.literal("M12 entity tracker reset."), false);
+        source.sendSuccess(() -> Component.literal("RWC entity tracker reset."), false);
         return 1;
     }
 
     private static int clientSyncStatus(CommandSourceStack source) {
-        source.sendSuccess(() -> Component.literal("M8.1 client sync bridge: trackedPlayers="
+        source.sendSuccess(() -> Component.literal("RWC client sync bridge: trackedPlayers="
                 + CubicClientSyncBridge.trackedPlayers()
                 + ", materializedCubes=" + CubicClientSyncBridge.totalMaterializedCubes()
                 + ", queuedMaterializations=" + CubicClientSyncBridge.totalQueuedMaterializations()), false);
-        source.sendSuccess(() -> Component.literal("M8.1 stream window: horizontalRadius="
+        source.sendSuccess(() -> Component.literal("RWC stream window: horizontalRadius="
                 + CubicClientSyncBridge.streamHorizontalRadius()
                 + ", verticalRadius=" + CubicClientSyncBridge.streamVerticalRadius()
                 + ", maxMaterializedCubesPerTick=" + CubicClientSyncBridge.maxMaterializedCubesPerTick()
                 + ", syncPacketIntervalTicks=" + CubicClientSyncBridge.syncPacketIntervalTicks()), false);
-        source.sendSuccess(() -> Component.literal("M8.1 overlay=" + CubicClientSyncBridge.overlayModeName()
+        source.sendSuccess(() -> Component.literal("RWC overlay=" + CubicClientSyncBridge.overlayModeName()
                 + ", counters: playerWritesSaved=" + CubicClientSyncBridge.playerWritesSaved()
                 + ", materializerWritesIgnored=" + CubicClientSyncBridge.materializerWritesIgnored()
                 + ", commandWritesSaved=" + CubicClientSyncBridge.commandWritesSaved()), false);
@@ -571,25 +616,25 @@ public final class RedlineWorldCoreCommands {
 
     private static int clientSyncReset(CommandSourceStack source) {
         int reset = CubicClientSyncBridge.resetAll();
-        source.sendSuccess(() -> Component.literal("M8.1 client sync bridge reset: clearedPlayerStates=" + reset), false);
+        source.sendSuccess(() -> Component.literal("RWC client sync bridge reset: clearedPlayerStates=" + reset), false);
         return reset;
     }
 
     private static int clientSyncResetCounters(CommandSourceStack source) {
         CubicClientSyncBridge.resetCounters();
-        source.sendSuccess(() -> Component.literal("M8.1 client sync counters reset."), false);
+        source.sendSuccess(() -> Component.literal("RWC client sync counters reset."), false);
         return 1;
     }
 
     private static int clientSyncOverlay(CommandSourceStack source, int mode) {
         CubicClientSyncBridge.setOverlayMode(mode);
-        source.sendSuccess(() -> Component.literal("M8.1 client sync overlay mode: " + CubicClientSyncBridge.overlayModeName()), false);
+        source.sendSuccess(() -> Component.literal("RWC client sync overlay mode: " + CubicClientSyncBridge.overlayModeName()), false);
         return 1;
     }
 
     private static int clientSyncConfigure(CommandSourceStack source, int horizontalRadius, int verticalRadius, int maxPerTick, int syncIntervalTicks) {
         CubicClientSyncBridge.configureStream(horizontalRadius, verticalRadius, maxPerTick, syncIntervalTicks);
-        source.sendSuccess(() -> Component.literal("M8.1 stream configured: horizontalRadius="
+        source.sendSuccess(() -> Component.literal("RWC stream configured: horizontalRadius="
                 + CubicClientSyncBridge.streamHorizontalRadius()
                 + ", verticalRadius=" + CubicClientSyncBridge.streamVerticalRadius()
                 + ", maxMaterializedCubesPerTick=" + CubicClientSyncBridge.maxMaterializedCubesPerTick()
@@ -599,7 +644,7 @@ public final class RedlineWorldCoreCommands {
 
     private static int clientSyncConfigureDefault(CommandSourceStack source) {
         CubicClientSyncBridge.resetStreamConfig();
-        source.sendSuccess(() -> Component.literal("M8.1 stream config reset to defaults."), false);
+        source.sendSuccess(() -> Component.literal("RWC stream config reset to defaults."), false);
         return clientSyncStatus(source);
     }
 
@@ -608,7 +653,7 @@ public final class RedlineWorldCoreCommands {
             CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
             ServerCubeCache cache = cubeCache(source);
             CubeGenerationSummary generated = CubeGenerationSummary.from(cache.generateTemporary(cubePos));
-            source.sendSuccess(() -> Component.literal("M8.1 persistence check: cube=" + formatCube(cubePos)), false);
+            source.sendSuccess(() -> Component.literal("RWC persistence check: cube=" + formatCube(cubePos)), false);
             source.sendSuccess(() -> Component.literal("Generated baseline: " + generated.oneLine()), false);
 
             cache.holder(cubePos).ifPresentOrElse(holder -> {
@@ -631,7 +676,7 @@ public final class RedlineWorldCoreCommands {
                         return 0;
                     });
         } catch (RuntimeException exception) {
-            source.sendFailure(Component.literal("Failed to run M8.1 persistence check: " + exception.getMessage()));
+            source.sendFailure(Component.literal("Failed to run RWC persistence check: " + exception.getMessage()));
             return 0;
         }
     }
@@ -1434,6 +1479,10 @@ public final class RedlineWorldCoreCommands {
 
     private static String formatCube(CubePos cubePos) {
         return cubePos.x() + " " + cubePos.y() + " " + cubePos.z();
+    }
+
+    private static String formatDecimal(double value) {
+        return String.format(Locale.ROOT, "%.2f", value);
     }
 
     private RedlineWorldCoreCommands() {

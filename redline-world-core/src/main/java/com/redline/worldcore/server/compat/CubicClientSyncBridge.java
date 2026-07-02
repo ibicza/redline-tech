@@ -38,7 +38,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * M8/M8.1 vanilla-client bridge for the cubic test dimension.
+ * RWC vanilla-client bridge for the cubic test dimension.
  *
  * <p>The final project will eventually stream cube sections through a real client chunk compatibility layer. This MVP is
  * intentionally safer: it keeps vanilla columns as the temporary shell, mirrors a small cube window around the player
@@ -379,6 +379,14 @@ public final class CubicClientSyncBridge {
                 busiestEntityCube == null ? 0 : busiestEntityCube.y(),
                 busiestEntityCube == null ? 0 : busiestEntityCube.z(),
                 entitySnapshot.busiestCubeEntities(),
+                entitySnapshot.playerEntities(),
+                entitySnapshot.mobEntities(),
+                entitySnapshot.itemEntities(),
+                entitySnapshot.projectileEntities(),
+                entitySnapshot.otherEntities(),
+                entitySnapshot.scanMicrosLastTick(),
+                entitySnapshot.scanMicrosAverage(),
+                entitySnapshot.scanMicrosMax(),
                 entries
         );
     }

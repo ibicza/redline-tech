@@ -12,7 +12,7 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.network.chat.Component;
 import net.neoforged.neoforge.client.event.RenderGuiEvent;
 
-/** M8/M8.1 HUD overlay fed by the server cube sync payload. */
+/** RWC HUD overlay fed by the server cube sync payload. */
 public final class CubeDebugOverlay {
     private static final int BACKGROUND = 0x88000000;
     private static final int TEXT = 0xFFE6F7FF;
@@ -47,8 +47,8 @@ public final class CubeDebugOverlay {
     private static void renderCompact(GuiGraphicsExtractor graphics, Minecraft minecraft, CubeClientSyncPayload payload) {
         int x = 6;
         int y = 6;
-        int width = 272;
-        int lines = 6;
+        int width = 320;
+        int lines = 7;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
         draw(graphics, minecraft, x, y, "RWC M12 compact", GOOD);
         y += 10;
@@ -76,14 +76,21 @@ public final class CubeDebugOverlay {
                 + " here=" + payload.entitiesInPlayerCube()
                 + " sections=" + payload.entitySections()
                 + " moved=" + payload.entityMovedLastTick(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "entityKinds p=" + payload.playerEntityCount()
+                + " m=" + payload.mobEntityCount()
+                + " i=" + payload.itemEntityCount()
+                + " pr=" + payload.projectileEntityCount()
+                + " o=" + payload.otherEntityCount()
+                + " scanUs=" + payload.entityScanMicrosLastTick(), MUTED);
     }
 
     private static void renderFull(GuiGraphicsExtractor graphics, Minecraft minecraft, CubeClientSyncPayload payload) {
         int x = 6;
         int y = 6;
-        int width = 374;
+        int width = 430;
         int shownEntries = Math.min(8, payload.entries().size());
-        int lines = shownEntries + 12;
+        int lines = shownEntries + 14;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
 
         draw(graphics, minecraft, x, y, "Redline World Core M12 sync/light/entity", GOOD);
@@ -126,7 +133,18 @@ public final class CubeDebugOverlay {
                 + " scanned=" + payload.entityScannedLastTick()
                 + " +" + payload.entityAddedLastTick()
                 + " move=" + payload.entityMovedLastTick()
-                + " -" + payload.entityRemovedLastTick()
+                + " -" + payload.entityRemovedLastTick(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "entityKinds players=" + payload.playerEntityCount()
+                + " mobs=" + payload.mobEntityCount()
+                + " items=" + payload.itemEntityCount()
+                + " projectiles=" + payload.projectileEntityCount()
+                + " other=" + payload.otherEntityCount(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "entityPerf scanUs=" + payload.entityScanMicrosLastTick()
+                + " avg=" + payload.entityScanMicrosAverage()
+                + " max=" + payload.entityScanMicrosMax()
+                + " totalMoves=" + payload.totalEntityMoves()
                 + " busiest=" + payload.busiestEntityCubeX() + " " + payload.busiestEntityCubeY() + " " + payload.busiestEntityCubeZ()
                 + "/" + payload.busiestEntityCubeEntities(), MUTED);
         y += 10;

@@ -9,6 +9,7 @@ public record EntityRef(
         int entityId,
         UUID uuid,
         String type,
+        String kind,
         CubePos cubePos,
         double x,
         double y,
@@ -16,6 +17,6 @@ public record EntityRef(
         boolean alwaysTicking
 ) {
     public EntityRef withCube(CubePos newCubePos, double newX, double newY, double newZ, boolean newAlwaysTicking) {
-        return new EntityRef(entityId, uuid, type, newCubePos, newX, newY, newZ, newAlwaysTicking);
+        return new EntityRef(entityId, uuid, type, kind, newCubePos, newX, newY, newZ, newAlwaysTicking);
     }
 }

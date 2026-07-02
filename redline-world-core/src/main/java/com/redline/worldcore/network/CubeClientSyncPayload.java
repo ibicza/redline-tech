@@ -10,7 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * M8/M8.1 client-bound debug/sync payload for the cubic test dimension.
+ * RWC client-bound debug/sync payload for the cubic test dimension.
  *
  * <p>This is intentionally metadata-first: it gives the client a stable view of the cube backend before the later risky
  * packet/mixin work starts replacing vanilla chunk packets. The vanilla column shell is still the compatibility boundary.</p>
@@ -62,6 +62,14 @@ public record CubeClientSyncPayload(
         int busiestEntityCubeY,
         int busiestEntityCubeZ,
         int busiestEntityCubeEntities,
+        int playerEntityCount,
+        int mobEntityCount,
+        int itemEntityCount,
+        int projectileEntityCount,
+        int otherEntityCount,
+        long entityScanMicrosLastTick,
+        long entityScanMicrosAverage,
+        long entityScanMicrosMax,
         List<Entry> entries
 ) implements CustomPacketPayload {
     public static final Type<CubeClientSyncPayload> TYPE = new Type<>(Identifier.fromNamespaceAndPath(RedlineWorldCore.MOD_ID, "cube_client_sync"));
@@ -123,6 +131,14 @@ public record CubeClientSyncPayload(
         buffer.writeVarInt(busiestEntityCubeY);
         buffer.writeVarInt(busiestEntityCubeZ);
         buffer.writeVarInt(busiestEntityCubeEntities);
+        buffer.writeVarInt(playerEntityCount);
+        buffer.writeVarInt(mobEntityCount);
+        buffer.writeVarInt(itemEntityCount);
+        buffer.writeVarInt(projectileEntityCount);
+        buffer.writeVarInt(otherEntityCount);
+        buffer.writeLong(entityScanMicrosLastTick);
+        buffer.writeLong(entityScanMicrosAverage);
+        buffer.writeLong(entityScanMicrosMax);
         buffer.writeVarInt(entries.size());
         for (Entry entry : entries) {
             entry.write(buffer);
@@ -176,6 +192,14 @@ public record CubeClientSyncPayload(
         int busiestEntityCubeY = buffer.readVarInt();
         int busiestEntityCubeZ = buffer.readVarInt();
         int busiestEntityCubeEntities = buffer.readVarInt();
+        int playerEntityCount = buffer.readVarInt();
+        int mobEntityCount = buffer.readVarInt();
+        int itemEntityCount = buffer.readVarInt();
+        int projectileEntityCount = buffer.readVarInt();
+        int otherEntityCount = buffer.readVarInt();
+        long entityScanMicrosLastTick = buffer.readLong();
+        long entityScanMicrosAverage = buffer.readLong();
+        long entityScanMicrosMax = buffer.readLong();
         int count = buffer.readVarInt();
         List<Entry> entries = new ArrayList<>(Math.min(count, 256));
         for (int i = 0; i < count; i++) {
@@ -228,6 +252,14 @@ public record CubeClientSyncPayload(
                 busiestEntityCubeY,
                 busiestEntityCubeZ,
                 busiestEntityCubeEntities,
+                playerEntityCount,
+                mobEntityCount,
+                itemEntityCount,
+                projectileEntityCount,
+                otherEntityCount,
+                entityScanMicrosLastTick,
+                entityScanMicrosAverage,
+                entityScanMicrosMax,
                 entries
         );
     }
