@@ -26,6 +26,16 @@ public interface CubeAccess {
 
     void clearBlockLight();
 
+    int getSkyLight(int localX, int localY, int localZ);
+
+    void setSkyLight(int localX, int localY, int localZ, int level);
+
+    byte[] copySkyLight();
+
+    void replaceSkyLight(byte[] light);
+
+    void clearSkyLight();
+
     default BlockState getBlockState(CubeLocalPos localPos) {
         return getBlockState(localPos.x(), localPos.y(), localPos.z());
     }
@@ -40,6 +50,14 @@ public interface CubeAccess {
 
     default void setBlockLight(CubeLocalPos localPos, int level) {
         setBlockLight(localPos.x(), localPos.y(), localPos.z(), level);
+    }
+
+    default int getSkyLight(CubeLocalPos localPos) {
+        return getSkyLight(localPos.x(), localPos.y(), localPos.z());
+    }
+
+    default void setSkyLight(CubeLocalPos localPos, int level) {
+        setSkyLight(localPos.x(), localPos.y(), localPos.z(), level);
     }
 
     default BlockState getBlockState(BlockPos worldPos) {
@@ -60,6 +78,16 @@ public interface CubeAccess {
     default void setBlockLight(BlockPos worldPos, int level) {
         requireContains(worldPos);
         setBlockLight(CubePos.local(worldPos.getX()), CubePos.local(worldPos.getY()), CubePos.local(worldPos.getZ()), level);
+    }
+
+    default int getSkyLight(BlockPos worldPos) {
+        requireContains(worldPos);
+        return getSkyLight(CubePos.local(worldPos.getX()), CubePos.local(worldPos.getY()), CubePos.local(worldPos.getZ()));
+    }
+
+    default void setSkyLight(BlockPos worldPos, int level) {
+        requireContains(worldPos);
+        setSkyLight(CubePos.local(worldPos.getX()), CubePos.local(worldPos.getY()), CubePos.local(worldPos.getZ()), level);
     }
 
     default void requireContains(BlockPos worldPos) {

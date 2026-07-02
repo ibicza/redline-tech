@@ -19,7 +19,7 @@ import java.util.Optional;
 
 /** Serializes one cube into the MVP CubeNBT format used by Region3D files. */
 public final class CubeSerializer {
-    public static final int FORMAT_VERSION = 2;
+    public static final int FORMAT_VERSION = 3;
 
     private static final String TAG_DATA_VERSION = "DataVersion";
     private static final String TAG_FORMAT_VERSION = "RedlineCubeFormat";
@@ -30,6 +30,7 @@ public final class CubeSerializer {
     private static final String TAG_BLOCK_PALETTE = "BlockPalette";
     private static final String TAG_BLOCK_INDICES = "BlockIndices";
     private static final String TAG_BLOCK_LIGHT = "BlockLight";
+    private static final String TAG_SKY_LIGHT = "SkyLight";
     private static final String TAG_CONTENT_FLAGS = "ContentFlags";
     private static final String TAG_CUSTOM_DATA = "CustomData";
 
@@ -51,6 +52,7 @@ public final class CubeSerializer {
         tag.put(TAG_BLOCK_PALETTE, palette.paletteTag());
         tag.putIntArray(TAG_BLOCK_INDICES, palette.indices());
         tag.putByteArray(TAG_BLOCK_LIGHT, cube.copyBlockLight());
+        tag.putByteArray(TAG_SKY_LIGHT, cube.copySkyLight());
 
         // Reserved for M4+ migration. The field exists now so old files keep a stable shape.
         tag.putInt(TAG_CONTENT_FLAGS, 0);
@@ -74,6 +76,7 @@ public final class CubeSerializer {
         if (paletteTag.isEmpty() || indices.length == 0) {
             cube.fill(Blocks.AIR.defaultBlockState());
             cube.replaceBlockLight(tag.getByteArray(TAG_BLOCK_LIGHT).orElse(new byte[0]));
+            cube.replaceSkyLight(tag.getByteArray(TAG_SKY_LIGHT).orElse(new byte[0]));
             return cube;
         }
 
@@ -94,6 +97,7 @@ public final class CubeSerializer {
         }
 
         cube.replaceBlockLight(tag.getByteArray(TAG_BLOCK_LIGHT).orElse(new byte[0]));
+        cube.replaceSkyLight(tag.getByteArray(TAG_SKY_LIGHT).orElse(new byte[0]));
         return cube;
     }
 

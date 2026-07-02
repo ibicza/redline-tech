@@ -3,10 +3,14 @@ package com.redline.worldcore.server.cube;
 import com.redline.worldcore.api.cube.CubeStatus;
 import com.redline.worldcore.api.cube.LevelCube;
 import com.redline.worldcore.api.generation.CubicDimensionSettings;
+import com.redline.worldcore.api.pos.ColumnPos;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.api.ticket.CubeTicket;
 import com.redline.worldcore.api.ticket.CubeTicketLevel;
 import com.redline.worldcore.server.generation.CubicWorldgenPipeline;
+import com.redline.worldcore.server.lighting.ColumnSkyIndex;
+import com.redline.worldcore.server.lighting.SkyLightLayer;
+import com.redline.worldcore.server.lighting.SkyLightSummary;
 import com.redline.worldcore.server.lighting.StaticBlockLightLayer;
 import com.redline.worldcore.server.lighting.StaticLightSummary;
 import com.redline.worldcore.server.storage.CubeRegionStorage;
@@ -47,12 +51,16 @@ public final class ServerCubeCache {
     /** M9 keeps static block-light rebuilds small and predictable during gameplay ticks. */
     public static final int MAX_LIGHT_REBUILDS_PER_TICK = 32;
 
+    /** M10 keeps vertical sky-light column rebuilds bounded while the player is loading a 3D cube window. */
+    public static final int MAX_SKY_LIGHT_COLUMNS_PER_TICK = 8;
+
     private final CubicDimensionSettings settings;
     private final CubeRegionStorage storage;
     private final CubicWorldgenPipeline generator;
     private final Map<CubePos, CubeHolder> holders = new ConcurrentHashMap<>();
     private final LinkedHashMap<CubePos, CubeTicketLevel> pendingLoads = new LinkedHashMap<>();
     private final LinkedHashSet<CubePos> lightDirtyQueue = new LinkedHashSet<>();
+    private final LinkedHashSet<ColumnPos> skyLightDirtyColumns = new LinkedHashSet<>();
 
     private long gameTime;
     private long totalLoaded;
@@ -68,6 +76,9 @@ public final class ServerCubeCache {
     private long totalLightRebuilt;
     private int lightRebuiltLastTick;
     private int lightDirtyLastTick;
+    private long totalSkyLightRebuilt;
+    private int skyLightColumnsLastTick;
+    private int skyLightDirtyLastTick;
 
     public ServerCubeCache(Path storageRoot, CubicDimensionSettings settings, long seed) {
         this(new CubeRegionStorage(storageRoot), settings, seed);
@@ -89,6 +100,7 @@ public final class ServerCubeCache {
         }
         LevelCube generated = generator.generate(cubePos);
         StaticBlockLightLayer.rebuild(generated);
+        SkyLightLayer.rebuildSingleCubeFromOpenSky(generated);
         return generated;
     }
 
@@ -109,6 +121,7 @@ public final class ServerCubeCache {
         int unloadedThisTick = unloadNoLongerRequired(required.levels());
         LoadCounters loadCounters = loadPending(required.levels());
         int rebuiltLightThisTick = rebuildDirtyLightQueue();
+        int rebuiltSkyColumnsThisTick = rebuildDirtySkyLightColumns();
 
         queuedLastTick = queuedThisTick;
         loadedLastTick = loadCounters.loaded();
@@ -116,6 +129,8 @@ public final class ServerCubeCache {
         unloadedLastTick = unloadedThisTick;
         lightRebuiltLastTick = rebuiltLightThisTick;
         lightDirtyLastTick = lightDirtyQueue.size();
+        skyLightColumnsLastTick = rebuiltSkyColumnsThisTick;
+        skyLightDirtyLastTick = skyLightDirtyColumns.size();
 
         return new CubeLoadingTickResult(gameTime, requestedLastTick, queuedThisTick, loadCounters.loaded(), loadCounters.generated(), unloadedThisTick, requestLimitHitLastTick);
     }
@@ -158,11 +173,15 @@ public final class ServerCubeCache {
         holder.cube().setBlockState(worldPos, state);
         markLightDirty(cubePos);
         rebuildLightNow(holder);
+        rebuildSkyLightColumnLoaded(cubePos.columnPos(), false);
         holder.markDirty();
         if (saveImmediately) {
-            storage.put(holder.cube());
-            holder.markSaved(CubeHolderState.REGION3D_SAVED);
-            totalSaved++;
+            int saved = saveDirtyLoadedColumn(cubePos.columnPos());
+            if (saved == 0) {
+                storage.put(holder.cube());
+                holder.markSaved(CubeHolderState.REGION3D_SAVED);
+                totalSaved++;
+            }
         }
         return Optional.of(holder);
     }
@@ -176,6 +195,16 @@ public final class ServerCubeCache {
             return false;
         }
         lightDirtyQueue.add(cubePos);
+        return true;
+    }
+
+    /** Marks an X/Z column as needing M10 vertical sky-light rebuild. */
+    public synchronized boolean markSkyLightDirty(ColumnPos columnPos) {
+        boolean hasLoadedCube = holders.keySet().stream().anyMatch(cubePos -> cubePos.x() == columnPos.x() && cubePos.z() == columnPos.z());
+        if (!hasLoadedCube) {
+            return false;
+        }
+        skyLightDirtyColumns.add(columnPos);
         return true;
     }
 
@@ -200,6 +229,108 @@ public final class ServerCubeCache {
             totalSaved++;
         }
         return Optional.of(result);
+    }
+
+    public synchronized Optional<SkyLightLayer.CubeRebuildResult> rebuildSkyLightCube(CubePos cubePos, boolean saveImmediately) {
+        if (!settings.containsCubeY(cubePos.y())) {
+            return Optional.empty();
+        }
+        CubeHolder holder = holders.get(cubePos);
+        if (holder == null) {
+            holder = loadHolder(cubePos, CubeTicketLevel.LIGHT_READY);
+            holders.put(cubePos, holder);
+            totalLoaded++;
+            if (holder.state() == CubeHolderState.GENERATED) {
+                totalGenerated++;
+            }
+        }
+        SkyLightLayer.CubeRebuildResult result = SkyLightLayer.rebuildSingleCubeFromOpenSky(holder.cube());
+        holder.markDirty();
+        totalSkyLightRebuilt++;
+        if (saveImmediately) {
+            storage.put(holder.cube());
+            holder.markSaved(CubeHolderState.REGION3D_SAVED);
+            totalSaved++;
+        }
+        return Optional.of(result);
+    }
+
+    public synchronized Optional<SkyLightLayer.ColumnRebuildResult> rebuildSkyLightColumn(ColumnPos columnPos, int minCubeY, int maxCubeY, boolean saveImmediately) {
+        int minY = Math.max(settings.minCubeY(), Math.min(minCubeY, maxCubeY));
+        int maxY = Math.min(settings.maxCubeY(), Math.max(minCubeY, maxCubeY));
+        if (minY > maxY) {
+            return Optional.empty();
+        }
+
+        for (int cubeY = minY; cubeY <= maxY; cubeY++) {
+            CubePos cubePos = new CubePos(columnPos.x(), cubeY, columnPos.z());
+            CubeHolder holder = holders.get(cubePos);
+            if (holder != null) {
+                continue;
+            }
+            holder = loadHolder(cubePos, CubeTicketLevel.LIGHT_READY);
+            holders.put(cubePos, holder);
+            totalLoaded++;
+            if (holder.state() == CubeHolderState.GENERATED) {
+                totalGenerated++;
+            }
+        }
+
+        return rebuildSkyLightColumnLoaded(columnPos, saveImmediately);
+    }
+
+    public synchronized Optional<SkyLightLayer.ColumnRebuildResult> rebuildSkyLightColumnLoaded(ColumnPos columnPos, boolean saveImmediately) {
+        List<CubeHolder> columnHolders = loadedColumnHolders(columnPos);
+        if (columnHolders.isEmpty()) {
+            skyLightDirtyColumns.remove(columnPos);
+            return Optional.empty();
+        }
+
+        List<LevelCube> cubes = columnHolders.stream()
+                .map(CubeHolder::cube)
+                .toList();
+        SkyLightLayer.ColumnRebuildResult result = SkyLightLayer.rebuildColumn(cubes);
+        for (CubeHolder holder : columnHolders) {
+            holder.markDirty();
+        }
+        totalSkyLightRebuilt += result.rebuiltCubes();
+        skyLightDirtyColumns.remove(columnPos);
+
+        if (saveImmediately) {
+            int saved = 0;
+            for (CubeHolder holder : columnHolders) {
+                if (!holder.dirty()) {
+                    continue;
+                }
+                storage.put(holder.cube());
+                holder.markSaved(CubeHolderState.REGION3D_SAVED);
+                saved++;
+            }
+            totalSaved += saved;
+        }
+        return Optional.of(result);
+    }
+
+    public synchronized SkyLightSummary skyLightSummary(CubePos cubePos) {
+        Optional<CubeHolder> holder = holder(cubePos);
+        if (holder.isPresent()) {
+            return SkyLightSummary.from(holder.get().cube());
+        }
+        Optional<LevelCube> persisted = readPersisted(cubePos);
+        if (persisted.isPresent()) {
+            return SkyLightSummary.from(persisted.get());
+        }
+        LevelCube generated = generateTemporary(cubePos);
+        SkyLightLayer.rebuildSingleCubeFromOpenSky(generated);
+        return SkyLightSummary.from(generated);
+    }
+
+    public synchronized Optional<ColumnSkyIndex> columnSkyIndex(ColumnPos columnPos) {
+        List<CubeHolder> columnHolders = loadedColumnHolders(columnPos);
+        if (columnHolders.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(ColumnSkyIndex.build(columnPos, columnHolders));
     }
 
     public synchronized StaticLightSummary lightSummary(CubePos cubePos) {
@@ -252,6 +383,9 @@ public final class ServerCubeCache {
                 totalLightRebuilt,
                 lightRebuiltLastTick,
                 lightDirtyLastTick,
+                totalSkyLightRebuilt,
+                skyLightColumnsLastTick,
+                skyLightDirtyLastTick,
                 loadedLastTick,
                 generatedLastTick,
                 unloadedLastTick,
@@ -284,6 +418,7 @@ public final class ServerCubeCache {
             unloaded++;
         }
         pendingLoads.clear();
+        skyLightDirtyColumns.clear();
         return unloaded;
     }
 
@@ -354,6 +489,7 @@ public final class ServerCubeCache {
 
             CubeHolder holder = loadHolder(entry.getKey(), strongerLevel(entry.getValue(), requiredLevel));
             holders.put(holder.cubePos(), holder);
+            markSkyLightDirty(holder.cubePos().columnPos());
             iterator.remove();
             loaded++;
             totalLoaded++;
@@ -379,14 +515,18 @@ public final class ServerCubeCache {
         if (level.isAtLeast(CubeTicketLevel.GENERATED)) {
             LevelCube generated = generator.generate(cubePos);
             StaticBlockLightLayer.rebuild(generated);
+            SkyLightLayer.rebuildSingleCubeFromOpenSky(generated);
             totalLightRebuilt++;
+            totalSkyLightRebuilt++;
             return new CubeHolder(cubePos, generated, level, CubeHolderState.GENERATED, gameTime);
         }
 
         LevelCube placeholder = new LevelCube(cubePos);
         placeholder.setStatus(CubeStatus.EMPTY);
         StaticBlockLightLayer.rebuild(placeholder);
+        SkyLightLayer.rebuildSingleCubeFromOpenSky(placeholder);
         totalLightRebuilt++;
+        totalSkyLightRebuilt++;
         return new CubeHolder(cubePos, placeholder, level, CubeHolderState.PLACEHOLDER, gameTime);
     }
 
@@ -419,6 +559,9 @@ public final class ServerCubeCache {
         }
         holders.remove(holder.cubePos());
         lightDirtyQueue.remove(holder.cubePos());
+        if (loadedColumnHolders(holder.cubePos().columnPos()).isEmpty()) {
+            skyLightDirtyColumns.remove(holder.cubePos().columnPos());
+        }
         storage.unloadFromMemory(holder.cubePos());
         totalUnloaded++;
     }
@@ -438,6 +581,41 @@ public final class ServerCubeCache {
             rebuilt++;
         }
         return rebuilt;
+    }
+
+    private int rebuildDirtySkyLightColumns() {
+        int rebuilt = 0;
+        Iterator<ColumnPos> iterator = skyLightDirtyColumns.iterator();
+        while (iterator.hasNext() && rebuilt < MAX_SKY_LIGHT_COLUMNS_PER_TICK) {
+            ColumnPos columnPos = iterator.next();
+            iterator.remove();
+            Optional<SkyLightLayer.ColumnRebuildResult> result = rebuildSkyLightColumnLoaded(columnPos, false);
+            if (result.isPresent()) {
+                rebuilt++;
+            }
+        }
+        return rebuilt;
+    }
+
+    private int saveDirtyLoadedColumn(ColumnPos columnPos) {
+        int saved = 0;
+        for (CubeHolder holder : loadedColumnHolders(columnPos)) {
+            if (!holder.dirty()) {
+                continue;
+            }
+            storage.put(holder.cube());
+            holder.markSaved(CubeHolderState.REGION3D_SAVED);
+            saved++;
+        }
+        totalSaved += saved;
+        return saved;
+    }
+
+    private List<CubeHolder> loadedColumnHolders(ColumnPos columnPos) {
+        return holders.values().stream()
+                .filter(holder -> holder.cubePos().x() == columnPos.x() && holder.cubePos().z() == columnPos.z())
+                .sorted(Comparator.comparingInt((CubeHolder holder) -> holder.cubePos().y()).reversed())
+                .toList();
     }
 
     private StaticBlockLightLayer.RebuildResult rebuildLightNow(CubeHolder holder) {

@@ -49,7 +49,7 @@ public final class CubeDebugOverlay {
         int width = 272;
         int lines = 4;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
-        draw(graphics, minecraft, x, y, "RWC M8.1 compact", GOOD);
+        draw(graphics, minecraft, x, y, "RWC M10 compact", GOOD);
         y += 10;
         draw(graphics, minecraft, x, y, "cube=" + payload.playerCubeX() + " " + payload.playerCubeY() + " " + payload.playerCubeZ()
                 + " loaded=" + payload.loadedCubes() + "/" + payload.requestedCubes(), TEXT);
@@ -57,6 +57,7 @@ public final class CubeDebugOverlay {
         draw(graphics, minecraft, x, y, "mat=" + payload.materializedCubes()
                 + " q=" + payload.queuedMaterializations()
                 + " lightQ=" + payload.lightDirtyQueue()
+                + " skyQ=" + payload.skyLightDirtyColumns()
                 + " writes=" + payload.playerWritesSaved(), TEXT);
         y += 10;
         draw(graphics, minecraft, x, y, "stream h=" + payload.streamHorizontalRadius()
@@ -70,10 +71,10 @@ public final class CubeDebugOverlay {
         int y = 6;
         int width = 374;
         int shownEntries = Math.min(8, payload.entries().size());
-        int lines = shownEntries + 8;
+        int lines = shownEntries + 9;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
 
-        draw(graphics, minecraft, x, y, "Redline World Core M9 sync/light", GOOD);
+        draw(graphics, minecraft, x, y, "Redline World Core M10 sync/light", GOOD);
         y += 10;
         draw(graphics, minecraft, x, y, "playerCube=" + payload.playerCubeX() + " " + payload.playerCubeY() + " " + payload.playerCubeZ()
                 + "  cache loaded=" + payload.loadedCubes() + " pending=" + payload.pendingLoads() + " requested=" + payload.requestedCubes(), TEXT);
@@ -87,6 +88,10 @@ public final class CubeDebugOverlay {
                 + " lastTick=" + payload.lightRebuiltLastTick()
                 + " dirtyQ=" + payload.lightDirtyQueue(), TEXT);
         y += 10;
+        draw(graphics, minecraft, x, y, "skyLight rebuiltCubes=" + payload.totalSkyLightRebuilt()
+                + " columnsLastTick=" + payload.skyLightColumnsLastTick()
+                + " dirtyColumns=" + payload.skyLightDirtyColumns(), TEXT);
+        y += 10;
         draw(graphics, minecraft, x, y, "stream h=" + payload.streamHorizontalRadius()
                 + " v=" + payload.streamVerticalRadius()
                 + " speed=" + payload.maxMaterializedCubesPerTick()
@@ -97,7 +102,7 @@ public final class CubeDebugOverlay {
                 + " ignoredMat=" + payload.materializerWritesIgnored()
                 + " cmd=" + payload.commandWritesSaved(), MUTED);
         y += 10;
-        draw(graphics, minecraft, x, y, "nearest cube entries: x y z | status/state/ticket | hash | Lmax/lit/emit | m", MUTED);
+        draw(graphics, minecraft, x, y, "nearest cube entries: x y z | status/state/ticket | hash | BL/SKY | m", MUTED);
         y += 10;
 
         int shown = 0;
@@ -106,7 +111,7 @@ public final class CubeDebugOverlay {
                 break;
             }
             String line = String.format(
-                    "%d %d %d | %s/%s/%s | %016x | L%d/%d/%d | %s%s",
+                    "%d %d %d | %s/%s/%s | %016x | B%d/%d/%d S%d/%d/%d | %s%s",
                     entry.cubeX(),
                     entry.cubeY(),
                     entry.cubeZ(),
@@ -117,6 +122,9 @@ public final class CubeDebugOverlay {
                     entry.maxBlockLight(),
                     entry.litBlocks(),
                     entry.emittingBlocks(),
+                    entry.maxSkyLight(),
+                    entry.skyLitBlocks(),
+                    entry.bottomSkyLitBlocks(),
                     entry.materialized() ? "M" : "-",
                     entry.dirty() ? " dirty" : ""
             );

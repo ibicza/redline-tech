@@ -10,6 +10,7 @@ import com.redline.worldcore.server.cube.ServerCubeCache;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
 import com.redline.worldcore.server.generation.CubeGenerationSummary;
+import com.redline.worldcore.server.lighting.SkyLightSummary;
 import com.redline.worldcore.server.lighting.StaticLightSummary;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -305,6 +306,7 @@ public final class CubicClientSyncBridge {
             long hash = CubeGenerationSummary.from(holder.cube()).hash();
             boolean materialized = state.materializedHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash;
             StaticLightSummary light = StaticLightSummary.from(holder.cube());
+            SkyLightSummary sky = SkyLightSummary.from(holder.cube());
             entries.add(new CubeClientSyncPayload.Entry(
                     cubePos.x(),
                     cubePos.y(),
@@ -317,6 +319,10 @@ public final class CubicClientSyncBridge {
                     light.litBlocks(),
                     light.emittingBlocks(),
                     light.hash(),
+                    sky.maxLight(),
+                    sky.litBlocks(),
+                    sky.bottomLitBlocks(),
+                    sky.hash(),
                     holder.dirty(),
                     materialized
             ));
@@ -333,6 +339,9 @@ public final class CubicClientSyncBridge {
                 snapshot.totalLightRebuilt(),
                 snapshot.lightRebuiltLastTick(),
                 snapshot.lightDirtyQueue(),
+                snapshot.totalSkyLightRebuilt(),
+                snapshot.skyLightColumnsLastTick(),
+                snapshot.skyLightDirtyColumns(),
                 state.materializedHashes.size(),
                 state.materializationQueue.size(),
                 state.materializedLastTick,

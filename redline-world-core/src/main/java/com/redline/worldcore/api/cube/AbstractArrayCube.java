@@ -12,6 +12,7 @@ abstract class AbstractArrayCube implements CubeAccess {
     private final CubePos cubePos;
     private final BlockState[] states = new BlockState[CubePos.BLOCK_COUNT];
     private final byte[] blockLight = new byte[CubePos.BLOCK_COUNT];
+    private final byte[] skyLight = new byte[CubePos.BLOCK_COUNT];
     private CubeStatus status;
 
     protected AbstractArrayCube(CubePos cubePos, CubeStatus status) {
@@ -75,6 +76,38 @@ abstract class AbstractArrayCube implements CubeAccess {
     @Override
     public void clearBlockLight() {
         Arrays.fill(blockLight, (byte) 0);
+    }
+
+    @Override
+    public int getSkyLight(int localX, int localY, int localZ) {
+        return Byte.toUnsignedInt(skyLight[CubePos.localIndex(localX, localY, localZ)]);
+    }
+
+    @Override
+    public void setSkyLight(int localX, int localY, int localZ, int level) {
+        skyLight[CubePos.localIndex(localX, localY, localZ)] = (byte) Mth.clamp(level, 0, 15);
+    }
+
+    @Override
+    public byte[] copySkyLight() {
+        return skyLight.clone();
+    }
+
+    @Override
+    public void replaceSkyLight(byte[] light) {
+        Arrays.fill(skyLight, (byte) 0);
+        if (light == null) {
+            return;
+        }
+        int count = Math.min(skyLight.length, light.length);
+        for (int index = 0; index < count; index++) {
+            skyLight[index] = (byte) Mth.clamp(Byte.toUnsignedInt(light[index]), 0, 15);
+        }
+    }
+
+    @Override
+    public void clearSkyLight() {
+        Arrays.fill(skyLight, (byte) 0);
     }
 
     public void fill(BlockState state) {

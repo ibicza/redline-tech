@@ -26,6 +26,9 @@ public record CubeClientSyncPayload(
         long totalLightRebuilt,
         int lightRebuiltLastTick,
         int lightDirtyQueue,
+        long totalSkyLightRebuilt,
+        int skyLightColumnsLastTick,
+        int skyLightDirtyColumns,
         int materializedCubes,
         int queuedMaterializations,
         int materializedLastTick,
@@ -62,6 +65,9 @@ public record CubeClientSyncPayload(
         buffer.writeLong(totalLightRebuilt);
         buffer.writeVarInt(lightRebuiltLastTick);
         buffer.writeVarInt(lightDirtyQueue);
+        buffer.writeLong(totalSkyLightRebuilt);
+        buffer.writeVarInt(skyLightColumnsLastTick);
+        buffer.writeVarInt(skyLightDirtyColumns);
         buffer.writeVarInt(materializedCubes);
         buffer.writeVarInt(queuedMaterializations);
         buffer.writeVarInt(materializedLastTick);
@@ -90,6 +96,9 @@ public record CubeClientSyncPayload(
         long totalLightRebuilt = buffer.readLong();
         int lightRebuiltLastTick = buffer.readVarInt();
         int lightDirtyQueue = buffer.readVarInt();
+        long totalSkyLightRebuilt = buffer.readLong();
+        int skyLightColumnsLastTick = buffer.readVarInt();
+        int skyLightDirtyColumns = buffer.readVarInt();
         int materializedCubes = buffer.readVarInt();
         int queuedMaterializations = buffer.readVarInt();
         int materializedLastTick = buffer.readVarInt();
@@ -117,6 +126,9 @@ public record CubeClientSyncPayload(
                 totalLightRebuilt,
                 lightRebuiltLastTick,
                 lightDirtyQueue,
+                totalSkyLightRebuilt,
+                skyLightColumnsLastTick,
+                skyLightDirtyColumns,
                 materializedCubes,
                 queuedMaterializations,
                 materializedLastTick,
@@ -144,6 +156,10 @@ public record CubeClientSyncPayload(
             int litBlocks,
             int emittingBlocks,
             long lightHash,
+            int maxSkyLight,
+            int skyLitBlocks,
+            int bottomSkyLitBlocks,
+            long skyLightHash,
             boolean dirty,
             boolean materialized
     ) {
@@ -159,6 +175,10 @@ public record CubeClientSyncPayload(
             buffer.writeVarInt(litBlocks);
             buffer.writeVarInt(emittingBlocks);
             buffer.writeLong(lightHash);
+            buffer.writeVarInt(maxSkyLight);
+            buffer.writeVarInt(skyLitBlocks);
+            buffer.writeVarInt(bottomSkyLitBlocks);
+            buffer.writeLong(skyLightHash);
             buffer.writeBoolean(dirty);
             buffer.writeBoolean(materialized);
         }
@@ -168,6 +188,10 @@ public record CubeClientSyncPayload(
                     buffer.readVarInt(),
                     buffer.readVarInt(),
                     buffer.readVarInt(),
+                    buffer.readVarInt(),
+                    buffer.readVarInt(),
+                    buffer.readVarInt(),
+                    buffer.readLong(),
                     buffer.readVarInt(),
                     buffer.readVarInt(),
                     buffer.readVarInt(),

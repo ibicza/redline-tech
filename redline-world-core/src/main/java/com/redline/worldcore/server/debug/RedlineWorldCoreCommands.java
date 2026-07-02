@@ -10,6 +10,7 @@ import com.redline.worldcore.api.generation.CubicDimensionSettings;
 import com.redline.worldcore.server.generation.CubeGenerationDebug;
 import com.redline.worldcore.server.generation.CubeGenerationProfiler;
 import com.redline.worldcore.server.generation.CubeGenerationSummary;
+import com.redline.worldcore.api.pos.ColumnPos;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.api.pos.Region3DPos;
 import com.redline.worldcore.api.ticket.CubeTicket;
@@ -23,7 +24,11 @@ import com.redline.worldcore.server.compat.CubicClientSyncBridge;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
 import com.redline.worldcore.server.generation.CubeGenerationHasher;
+import com.redline.worldcore.server.lighting.ColumnSkyIndex;
 import com.redline.worldcore.server.lighting.CubeLightDebug;
+import com.redline.worldcore.server.lighting.SkyLightLayer;
+import com.redline.worldcore.server.lighting.SkyLightSummary;
+import com.redline.worldcore.server.lighting.SkyLightTransferData;
 import com.redline.worldcore.server.lighting.StaticBlockLightLayer;
 import com.redline.worldcore.server.lighting.StaticLightSummary;
 import com.redline.worldcore.server.ticket.CubeTicketDebugFormatter;
@@ -157,6 +162,66 @@ public final class RedlineWorldCoreCommands {
                                                         .then(Commands.argument("minCubeY", IntegerArgumentType.integer())
                                                                 .then(Commands.argument("maxCubeY", IntegerArgumentType.integer())
                                                                         .executes(context -> lightRebuildColumn(
+                                                                                context.getSource(),
+                                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                                IntegerArgumentType.getInteger(context, "cubeZ"),
+                                                                                IntegerArgumentType.getInteger(context, "minCubeY"),
+                                                                                IntegerArgumentType.getInteger(context, "maxCubeY")
+                                                                        )))))))))
+                .then(Commands.literal("skylight")
+                        .then(Commands.literal("status")
+                                .executes(context -> skylightStatus(context.getSource())))
+                        .then(Commands.literal("summary")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .executes(context -> skylightSummary(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                IntegerArgumentType.getInteger(context, "cubeZ")
+                                                        ))))))
+                        .then(Commands.literal("block")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("localX", IntegerArgumentType.integer(0, 15))
+                                                                .then(Commands.argument("localY", IntegerArgumentType.integer(0, 15))
+                                                                        .then(Commands.argument("localZ", IntegerArgumentType.integer(0, 15))
+                                                                                .executes(context -> skylightBlock(
+                                                                                        context.getSource(),
+                                                                                        IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                                        IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                                        IntegerArgumentType.getInteger(context, "cubeZ"),
+                                                                                        IntegerArgumentType.getInteger(context, "localX"),
+                                                                                        IntegerArgumentType.getInteger(context, "localY"),
+                                                                                        IntegerArgumentType.getInteger(context, "localZ")
+                                                                                )))))))))
+                        .then(Commands.literal("column")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                .executes(context -> skylightColumn(
+                                                        context.getSource(),
+                                                        IntegerArgumentType.getInteger(context, "cubeX"),
+                                                        IntegerArgumentType.getInteger(context, "cubeZ")
+                                                )))))
+                        .then(Commands.literal("rebuild")
+                                .then(Commands.literal("cube")
+                                        .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                                .executes(context -> skylightRebuildCube(
+                                                                        context.getSource(),
+                                                                        IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                        IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                        IntegerArgumentType.getInteger(context, "cubeZ")
+                                                                ))))))
+                                .then(Commands.literal("column")
+                                        .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("minCubeY", IntegerArgumentType.integer())
+                                                                .then(Commands.argument("maxCubeY", IntegerArgumentType.integer())
+                                                                        .executes(context -> skylightRebuildColumn(
                                                                                 context.getSource(),
                                                                                 IntegerArgumentType.getInteger(context, "cubeX"),
                                                                                 IntegerArgumentType.getInteger(context, "cubeZ"),
@@ -636,6 +701,139 @@ public final class RedlineWorldCoreCommands {
         }
     }
 
+
+    private static int skylightStatus(CommandSourceStack source) {
+        ServerCubeCache cache = cubeCache(source);
+        CubeLoadingSnapshot snapshot = cache.snapshot();
+        source.sendSuccess(() -> Component.literal("M10 sky light: totalRebuiltCubes=" + snapshot.totalSkyLightRebuilt()
+                + ", rebuiltColumnsLastTick=" + snapshot.skyLightColumnsLastTick()
+                + ", dirtyColumns=" + snapshot.skyLightDirtyColumns()), false);
+        source.sendSuccess(() -> Component.literal("Cube cache: loaded=" + snapshot.loadedCubes()
+                + ", pending=" + snapshot.pendingLoads()
+                + ", requested=" + snapshot.requestedCubes()), false);
+        source.sendSuccess(() -> Component.literal("MVP scope: finite-top vertical sky light over loaded columns; side tunnels and vanilla visual injection are later work."), false);
+        return snapshot.skyLightDirtyColumns();
+    }
+
+    private static int skylightSummary(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
+        try {
+            CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+            CubeLightDebug.LightSourceCube sourceCube = new CubeLightDebug(cubeCache(source)).cubeForRead(cubePos);
+            SkyLightSummary summary = SkyLightSummary.from(sourceCube.cube());
+            SkyLightTransferData transfer = SkyLightTransferData.fromCube(sourceCube.cube());
+            source.sendSuccess(() -> Component.literal("M10 sky light summary: cube=" + formatCube(cubePos)
+                    + " source=" + sourceCube.source()), false);
+            source.sendSuccess(() -> Component.literal(summary.oneLine()), false);
+            source.sendSuccess(() -> Component.literal("Sky transfer: " + transfer.oneLine()), false);
+            return summary.litBlocks();
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to summarize sky light: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int skylightBlock(CommandSourceStack source, int cubeX, int cubeY, int cubeZ, int localX, int localY, int localZ) {
+        try {
+            CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+            CubeLightDebug.LightSourceCube sourceCube = new CubeLightDebug(cubeCache(source)).cubeForRead(cubePos);
+            BlockState state = sourceCube.cube().getBlockState(localX, localY, localZ);
+            int skyLight = sourceCube.cube().getSkyLight(localX, localY, localZ);
+            int skyDrop = SkyLightLayer.skyDrop(state);
+            int worldX = cubePos.minBlockX() + localX;
+            int worldY = cubePos.minBlockY() + localY;
+            int worldZ = cubePos.minBlockZ() + localZ;
+            source.sendSuccess(() -> Component.literal("M10 sky light block: cube=" + formatCube(cubePos)
+                    + " local=" + localX + " " + localY + " " + localZ
+                    + " source=" + sourceCube.source()), false);
+            source.sendSuccess(() -> Component.literal("World block: " + worldX + " " + worldY + " " + worldZ
+                    + ", state=" + CubeGenerationHasher.blockStateDebugName(state)
+                    + ", skyLight=" + skyLight
+                    + ", skyDrop=" + skyDrop
+                    + ", skyOpaque=" + SkyLightLayer.skyOpaque(state)), false);
+            return skyLight;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to inspect sky light block: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int skylightColumn(CommandSourceStack source, int cubeX, int cubeZ) {
+        try {
+            ColumnPos columnPos = new ColumnPos(cubeX, cubeZ);
+            return cubeCache(source).columnSkyIndex(columnPos)
+                    .map(index -> {
+                        source.sendSuccess(() -> Component.literal("M10 ColumnSkyIndex: " + index.oneLine()), false);
+                        source.sendSuccess(() -> Component.literal("Sample local 8 8: topOpaqueWorldY=" + formatOptionalWorldY(index.topOpaqueWorldY(8, 8))
+                                + ", firstBlockedCubeY=" + formatOptionalCubeY(index.firstSkyBlockedCubeY(8, 8))
+                                + ", bottomSky=" + index.bottomSkyLevel(8, 8)), false);
+                        return index.indexedCubes();
+                    })
+                    .orElseGet(() -> {
+                        source.sendFailure(Component.literal("No loaded cubes in sky column " + cubeX + " " + cubeZ));
+                        return 0;
+                    });
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to build ColumnSkyIndex: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int skylightRebuildCube(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
+        try {
+            CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+            return cubeCache(source).rebuildSkyLightCube(cubePos, true)
+                    .map(result -> {
+                        source.sendSuccess(() -> Component.literal("M10 sky light rebuilt and saved as single open-sky cube: " + result.oneLine()), false);
+                        return 1;
+                    })
+                    .orElseGet(() -> {
+                        source.sendFailure(Component.literal("Cube is outside cubic settings: " + formatCube(cubePos)));
+                        return 0;
+                    });
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to rebuild sky light cube: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int skylightRebuildColumn(CommandSourceStack source, int cubeX, int cubeZ, int minCubeY, int maxCubeY) {
+        try {
+            int minY = Math.min(minCubeY, maxCubeY);
+            int maxY = Math.max(minCubeY, maxCubeY);
+            int count = maxY - minY + 1;
+            if (count > 96) {
+                source.sendFailure(Component.literal("Sky light rebuild column range is too large: " + count + " cubes. Max is 96."));
+                return 0;
+            }
+
+            ColumnPos columnPos = new ColumnPos(cubeX, cubeZ);
+            return cubeCache(source).rebuildSkyLightColumn(columnPos, minY, maxY, true)
+                    .map(result -> {
+                        source.sendSuccess(() -> Component.literal("M10 sky light rebuilt and saved column: cubeX=" + cubeX
+                                + ", cubeZ=" + cubeZ + ", cubeY=" + minY + ".." + maxY), false);
+                        source.sendSuccess(() -> Component.literal(result.oneLine()), false);
+                        cubeCache(source).columnSkyIndex(columnPos).ifPresent(index ->
+                                source.sendSuccess(() -> Component.literal("ColumnSkyIndex: " + index.oneLine()), false));
+                        return result.rebuiltCubes();
+                    })
+                    .orElseGet(() -> {
+                        source.sendFailure(Component.literal("No cubes rebuilt for sky column " + cubeX + " " + cubeZ));
+                        return 0;
+                    });
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to rebuild sky light column: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static String formatOptionalWorldY(int worldY) {
+        return worldY == ColumnSkyIndex.NO_WORLD_Y ? "none" : Integer.toString(worldY);
+    }
+
+    private static String formatOptionalCubeY(int cubeY) {
+        return cubeY == ColumnSkyIndex.NO_CUBE_Y ? "none" : Integer.toString(cubeY);
+    }
+
     private static int cubicTestStatus(CommandSourceStack source) {
         boolean registered = CUBIC_TEST.isRegistered(source.getServer());
         source.sendSuccess(() -> Component.literal("Redline cubic test dimension: " + CubicDimensionKeys.CUBIC_TEST_ID), false);
@@ -812,11 +1010,14 @@ public final class RedlineWorldCoreCommands {
                 + ", generated=" + snapshot.generatedLastTick()
                 + ", lightRebuilt=" + snapshot.lightRebuiltLastTick()
                 + ", lightDirtyQueue=" + snapshot.lightDirtyQueue()
+                + ", skyColumns=" + snapshot.skyLightColumnsLastTick()
+                + ", skyDirtyColumns=" + snapshot.skyLightDirtyColumns()
                 + ", unloaded=" + snapshot.unloadedLastTick()
                 + ", requestLimitHit=" + snapshot.requestLimitHitLastTick()), false);
         source.sendSuccess(() -> Component.literal("Totals: loaded=" + snapshot.totalLoaded()
                 + ", generated=" + snapshot.totalGenerated()
                 + ", lightRebuilt=" + snapshot.totalLightRebuilt()
+                + ", skyRebuiltCubes=" + snapshot.totalSkyLightRebuilt()
                 + ", unloaded=" + snapshot.totalUnloaded()
                 + ", saved=" + snapshot.totalSaved()), false);
         source.sendSuccess(() -> Component.literal("By ticket level: " + snapshot.byTicketLevel()), false);
@@ -859,8 +1060,10 @@ public final class RedlineWorldCoreCommands {
                     source.sendSuccess(() -> Component.literal("Holder loaded: " + formatHolder(holder)), false);
                     CubeGenerationSummary summary = CubeGenerationSummary.from(holder.cube());
                     StaticLightSummary light = StaticLightSummary.from(holder.cube());
+                    SkyLightSummary sky = SkyLightSummary.from(holder.cube());
                     source.sendSuccess(() -> Component.literal("Generation summary: " + summary.oneLine()), false);
                     source.sendSuccess(() -> Component.literal("Static light summary: " + light.oneLine()), false);
+                    source.sendSuccess(() -> Component.literal("Sky light summary: " + sky.oneLine()), false);
                     return 1;
                 })
                 .orElseGet(() -> {
