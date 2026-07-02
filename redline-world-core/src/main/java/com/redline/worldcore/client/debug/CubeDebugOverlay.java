@@ -2,6 +2,7 @@ package com.redline.worldcore.client.debug;
 
 import com.redline.worldcore.api.cube.CubeStatus;
 import com.redline.worldcore.api.ticket.CubeTicketLevel;
+import com.redline.worldcore.client.lighting.ClientDynamicLightLayer;
 import com.redline.worldcore.client.sync.ClientCubeSyncState;
 import com.redline.worldcore.network.CubeClientSyncPayload;
 import com.redline.worldcore.server.compat.CubicClientSyncBridge;
@@ -47,9 +48,9 @@ public final class CubeDebugOverlay {
         int x = 6;
         int y = 6;
         int width = 272;
-        int lines = 4;
+        int lines = 5;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
-        draw(graphics, minecraft, x, y, "RWC M10.1 compact", GOOD);
+        draw(graphics, minecraft, x, y, "RWC M11 compact", GOOD);
         y += 10;
         draw(graphics, minecraft, x, y, "cube=" + payload.playerCubeX() + " " + payload.playerCubeY() + " " + payload.playerCubeZ()
                 + " loaded=" + payload.loadedCubes() + "/" + payload.requestedCubes(), TEXT);
@@ -65,6 +66,11 @@ public final class CubeDebugOverlay {
                 + " v=" + payload.streamVerticalRadius()
                 + " speed=" + payload.maxMaterializedCubesPerTick()
                 + "/t", MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "dynLight src=" + ClientDynamicLightLayer.activeSources()
+                + " lvl=" + ClientDynamicLightLayer.activeLightLevel()
+                + " blocks=" + ClientDynamicLightLayer.appliedBlocks()
+                + " cube=" + ClientDynamicLightLayer.activeCubeString(), MUTED);
     }
 
     private static void renderFull(GuiGraphicsExtractor graphics, Minecraft minecraft, CubeClientSyncPayload payload) {
@@ -72,10 +78,10 @@ public final class CubeDebugOverlay {
         int y = 6;
         int width = 374;
         int shownEntries = Math.min(8, payload.entries().size());
-        int lines = shownEntries + 10;
+        int lines = shownEntries + 11;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
 
-        draw(graphics, minecraft, x, y, "Redline World Core M10.1 sync/light", GOOD);
+        draw(graphics, minecraft, x, y, "Redline World Core M11 sync/light", GOOD);
         y += 10;
         draw(graphics, minecraft, x, y, "playerCube=" + payload.playerCubeX() + " " + payload.playerCubeY() + " " + payload.playerCubeZ()
                 + "  cache loaded=" + payload.loadedCubes() + " pending=" + payload.pendingLoads() + " requested=" + payload.requestedCubes(), TEXT);
@@ -100,6 +106,14 @@ public final class CubeDebugOverlay {
                 + " us=" + payload.skyLightRebuildMicrosLastTick()
                 + " budget=" + payload.skyLightAutoColumnsPerTick()
                 + "/t delay=" + payload.skyLightDirtyDelayTicks() + "t", MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "dynamicLight src=" + ClientDynamicLightLayer.activeSources()
+                + " lvl=" + ClientDynamicLightLayer.activeLightLevel()
+                + " blocks=" + ClientDynamicLightLayer.appliedBlocks()
+                + " changed=" + ClientDynamicLightLayer.changedBlocksLastTick()
+                + " cube=" + ClientDynamicLightLayer.activeCubeString()
+                + " item=" + ClientDynamicLightLayer.activeItem()
+                + " reason=" + ClientDynamicLightLayer.lastReason(), MUTED);
         y += 10;
         draw(graphics, minecraft, x, y, "stream h=" + payload.streamHorizontalRadius()
                 + " v=" + payload.streamVerticalRadius()

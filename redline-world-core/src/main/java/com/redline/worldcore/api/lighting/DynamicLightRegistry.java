@@ -6,13 +6,23 @@ import net.minecraft.world.level.block.state.BlockState;
 
 /** Resolves vanilla/block-item light emission for dynamic light MVP. */
 public final class DynamicLightRegistry {
+    public static final int MAX_LIGHT_LEVEL = 15;
+
     public static int resolveItemLight(ItemStack stack) {
         if (stack.isEmpty() || !(stack.getItem() instanceof BlockItem blockItem)) {
             return 0;
         }
 
         BlockState state = blockItem.getBlock().defaultBlockState();
-        return Math.max(0, Math.min(15, state.getLightEmission()));
+        return clampLightLevel(state.getLightEmission());
+    }
+
+    public static int clampLightLevel(int level) {
+        return Math.max(0, Math.min(MAX_LIGHT_LEVEL, level));
+    }
+
+    public static double radiusForLightLevel(int level) {
+        return clampLightLevel(level);
     }
 
     private DynamicLightRegistry() {
