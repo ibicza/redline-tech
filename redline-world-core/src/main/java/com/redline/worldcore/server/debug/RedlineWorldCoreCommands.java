@@ -6,6 +6,8 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.redline.worldcore.RedlineWorldCore;
 import com.redline.worldcore.api.dimension.CubicDimensionKeys;
 import com.redline.worldcore.api.cube.LevelCube;
+import com.redline.worldcore.api.cube.CubeScheduledTickData;
+import com.redline.worldcore.api.cube.CubeScheduledTickKind;
 import com.redline.worldcore.api.cube.CubeStatus;
 import com.redline.worldcore.api.generation.CubicDimensionSettings;
 import com.redline.worldcore.server.generation.CubeGenerationDebug;
@@ -26,7 +28,10 @@ import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.cube.access.CubeMutationContext;
 import com.redline.worldcore.server.cube.access.CubeMutationResult;
 import com.redline.worldcore.server.cube.access.CubeMutationSnapshot;
+import com.redline.worldcore.server.cube.blockentity.CubeBlockEntityRef;
+import com.redline.worldcore.server.cube.blockentity.CubeBlockEntitySnapshot;
 import com.redline.worldcore.server.cube.dirty.CubeDirtySnapshot;
+import com.redline.worldcore.server.cube.tick.CubeScheduledTickSnapshot;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
 import com.redline.worldcore.server.entity.EntityCubeTracker;
 import com.redline.worldcore.server.entity.EntityRef;
@@ -58,6 +63,7 @@ import com.redline.worldcore.server.ticket.WorldCoreTickets;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -69,6 +75,7 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
@@ -381,6 +388,92 @@ public final class RedlineWorldCoreCommands {
                                                                         IntegerArgumentType.getInteger(context, "z"),
                                                                         StringArgumentType.getString(context, "block")
                                                                 ))))))))
+                .then(Commands.literal("block_entities")
+                        .then(Commands.literal("status")
+                                .executes(context -> blockEntitiesStatus(context.getSource())))
+                        .then(Commands.literal("get")
+                                .then(Commands.argument("x", IntegerArgumentType.integer())
+                                        .then(Commands.argument("y", IntegerArgumentType.integer())
+                                                .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                        .executes(context -> blockEntitiesGet(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "x"),
+                                                                IntegerArgumentType.getInteger(context, "y"),
+                                                                IntegerArgumentType.getInteger(context, "z")
+                                                        ))))))
+                        .then(Commands.literal("capture")
+                                .then(Commands.argument("x", IntegerArgumentType.integer())
+                                        .then(Commands.argument("y", IntegerArgumentType.integer())
+                                                .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                        .executes(context -> blockEntitiesCapture(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "x"),
+                                                                IntegerArgumentType.getInteger(context, "y"),
+                                                                IntegerArgumentType.getInteger(context, "z")
+                                                        ))))))
+                        .then(Commands.literal("dump_cube")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .executes(context -> blockEntitiesDumpCube(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                IntegerArgumentType.getInteger(context, "cubeZ")
+                                                        )))))))
+                .then(Commands.literal("scheduled_ticks")
+                        .then(Commands.literal("status")
+                                .executes(context -> scheduledTicksStatus(context.getSource())))
+                        .then(Commands.literal("dump_cube")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .executes(context -> scheduledTicksDumpCube(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                IntegerArgumentType.getInteger(context, "cubeZ")
+                                                        ))))))
+                        .then(Commands.literal("clear_cube")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .executes(context -> scheduledTicksClearCube(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                IntegerArgumentType.getInteger(context, "cubeZ")
+                                                        ))))))
+                        .then(Commands.literal("add_block")
+                                .then(Commands.argument("x", IntegerArgumentType.integer())
+                                        .then(Commands.argument("y", IntegerArgumentType.integer())
+                                                .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("target", StringArgumentType.word())
+                                                                .then(Commands.argument("delayTicks", IntegerArgumentType.integer(0, 72000))
+                                                                        .executes(context -> scheduledTicksAdd(
+                                                                                context.getSource(),
+                                                                                CubeScheduledTickKind.BLOCK,
+                                                                                IntegerArgumentType.getInteger(context, "x"),
+                                                                                IntegerArgumentType.getInteger(context, "y"),
+                                                                                IntegerArgumentType.getInteger(context, "z"),
+                                                                                StringArgumentType.getString(context, "target"),
+                                                                                IntegerArgumentType.getInteger(context, "delayTicks")
+                                                                        ))))))))
+                        .then(Commands.literal("add_fluid")
+                                .then(Commands.argument("x", IntegerArgumentType.integer())
+                                        .then(Commands.argument("y", IntegerArgumentType.integer())
+                                                .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("target", StringArgumentType.word())
+                                                                .then(Commands.argument("delayTicks", IntegerArgumentType.integer(0, 72000))
+                                                                        .executes(context -> scheduledTicksAdd(
+                                                                                context.getSource(),
+                                                                                CubeScheduledTickKind.FLUID,
+                                                                                IntegerArgumentType.getInteger(context, "x"),
+                                                                                IntegerArgumentType.getInteger(context, "y"),
+                                                                                IntegerArgumentType.getInteger(context, "z"),
+                                                                                StringArgumentType.getString(context, "target"),
+                                                                                IntegerArgumentType.getInteger(context, "delayTicks")
+                                                                        )))))))))
                 .then(Commands.literal("tickets")
                         .then(Commands.literal("status")
                                 .executes(context -> ticketsStatus(context.getSource())))
@@ -1568,6 +1661,8 @@ public final class RedlineWorldCoreCommands {
         CubeDirtySnapshot dirty = cubeCache(source).snapshot().dirtySnapshot();
         source.sendSuccess(() -> Component.literal(formatDirtySnapshot("RWC dirty pipeline", dirty)), false);
         source.sendSuccess(() -> Component.literal(formatDirtyTotals("RWC dirty totals", dirty)), false);
+        source.sendSuccess(() -> Component.literal(formatBlockEntitySnapshot("RWC cube block entities", cubeCache(source).blockEntitySnapshot())), false);
+        source.sendSuccess(() -> Component.literal(formatScheduledTickSnapshot("RWC scheduled ticks", cubeCache(source).scheduledTickSnapshot())), false);
         return (int) Math.min(Integer.MAX_VALUE, snapshot.totalMutations());
     }
 
@@ -1649,6 +1744,8 @@ public final class RedlineWorldCoreCommands {
         source.sendSuccess(() -> Component.literal(formatMutationSnapshot("Cube access", snapshot.mutationSnapshot())), false);
         source.sendSuccess(() -> Component.literal(formatDirtySnapshot("Dirty pipeline", snapshot.dirtySnapshot())), false);
         source.sendSuccess(() -> Component.literal(formatDirtyTotals("Dirty totals", snapshot.dirtySnapshot())), false);
+        source.sendSuccess(() -> Component.literal(formatBlockEntitySnapshot("Block entities", snapshot.blockEntitySnapshot())), false);
+        source.sendSuccess(() -> Component.literal(formatScheduledTickSnapshot("Scheduled ticks", snapshot.scheduledTickSnapshot())), false);
         source.sendSuccess(() -> Component.literal("Totals: loaded=" + snapshot.totalLoaded()
                 + ", generated=" + snapshot.totalGenerated()
                 + ", lightRebuilt=" + snapshot.totalLightRebuilt()
@@ -1878,6 +1975,135 @@ public final class RedlineWorldCoreCommands {
                 + " lastRequired=" + holder.lastRequiredGameTime();
     }
 
+
+    private static int blockEntitiesStatus(CommandSourceStack source) {
+        CubeBlockEntitySnapshot snapshot = cubeCache(source).blockEntitySnapshot();
+        source.sendSuccess(() -> Component.literal(formatBlockEntitySnapshot("RWC cube block entities", snapshot)), false);
+        return snapshot.trackedBlockEntities();
+    }
+
+    private static int blockEntitiesGet(CommandSourceStack source, int x, int y, int z) {
+        BlockPos pos = new BlockPos(x, y, z);
+        Optional<CubeBlockEntityRef> ref = cubeCache(source).blockEntityAt(pos);
+        if (ref.isEmpty()) {
+            source.sendFailure(Component.literal("RWC cube block entity: none at pos=" + formatBlock(pos)
+                    + ", cube=" + formatCube(CubePos.fromBlock(pos))));
+            return 0;
+        }
+        CubeBlockEntityRef value = ref.get();
+        source.sendSuccess(() -> Component.literal("RWC cube block entity: pos=" + formatBlock(pos)
+                + ", cube=" + formatCube(value.cubePos())
+                + ", local=" + value.localPos().x() + " " + value.localPos().y() + " " + value.localPos().z()
+                + ", localIndex=" + value.localIndex()
+                + ", block=" + value.blockId()
+                + ", beId=" + value.blockEntityId()
+                + ", placeholder=" + value.placeholder()
+                + ", realNbt=" + value.realNbt()
+                + ", tickingAllowed=" + value.tickingAllowed()), false);
+        return 1;
+    }
+
+    private static int blockEntitiesCapture(CommandSourceStack source, int x, int y, int z) {
+        BlockPos pos = new BlockPos(x, y, z);
+        ServerLevel level = CUBIC_TEST.level(source.getServer()).orElse(source.getLevel());
+        boolean captured = cubeCache(source).captureBlockEntityFromVanilla(level, pos, "command_capture");
+        if (!captured) {
+            source.sendFailure(Component.literal("RWC cube block entity capture: no vanilla BlockEntity NBT at pos="
+                    + formatBlock(pos) + ", cube=" + formatCube(CubePos.fromBlock(pos))));
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("RWC cube block entity capture: captured real vanilla NBT at pos="
+                + formatBlock(pos) + ", cube=" + formatCube(CubePos.fromBlock(pos))), false);
+        return 1;
+    }
+
+    private static int blockEntitiesDumpCube(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
+        CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+        Optional<Map<Integer, CompoundTag>> tags = cubeCache(source).blockEntityTags(cubePos);
+        if (tags.isEmpty() || tags.get().isEmpty()) {
+            source.sendSuccess(() -> Component.literal("RWC cube block entities: none in cube=" + formatCube(cubePos)), false);
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("RWC cube block entities in cube=" + formatCube(cubePos)
+                + ", count=" + tags.get().size()), false);
+        int shown = 0;
+        for (Map.Entry<Integer, CompoundTag> entry : tags.get().entrySet()) {
+            if (shown++ >= 12) {
+                source.sendSuccess(() -> Component.literal("RWC cube block entities: more hidden"), false);
+                break;
+            }
+            CompoundTag tag = entry.getValue();
+            int localIndex = entry.getKey();
+            int localX = localIndex & CubePos.MASK;
+            int localZ = (localIndex >> CubePos.SIZE_BITS) & CubePos.MASK;
+            int localY = (localIndex >> (CubePos.SIZE_BITS * 2)) & CubePos.MASK;
+            source.sendSuccess(() -> Component.literal("BE local=" + localX + " " + localY + " " + localZ
+                    + ", index=" + localIndex
+                    + ", id=" + tag.getStringOr("id", "missing")
+                    + ", placeholder=" + tag.getBooleanOr("redlinePlaceholder", false)
+                    + ", realNbt=" + tag.getBooleanOr("redlineRealNbt", false)
+                    + ", keys=" + tag.keySet()), false);
+        }
+        return tags.get().size();
+    }
+
+    private static int scheduledTicksStatus(CommandSourceStack source) {
+        CubeScheduledTickSnapshot snapshot = cubeCache(source).scheduledTickSnapshot();
+        source.sendSuccess(() -> Component.literal(formatScheduledTickSnapshot("RWC scheduled ticks", snapshot)), false);
+        return snapshot.blockTicks() + snapshot.fluidTicks();
+    }
+
+    private static int scheduledTicksAdd(CommandSourceStack source, CubeScheduledTickKind kind, int x, int y, int z, String target, int delayTicks) {
+        BlockPos pos = new BlockPos(x, y, z);
+        boolean added = cubeCache(source).addScheduledTick(pos, kind, normalizeTargetId(target), delayTicks, 0, "command_add_" + kind.name().toLowerCase(Locale.ROOT));
+        if (!added) {
+            source.sendFailure(Component.literal("RWC scheduled tick add failed: pos=" + formatBlock(pos)
+                    + ", cube=" + formatCube(CubePos.fromBlock(pos))));
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("RWC scheduled tick added: kind=" + kind
+                + ", pos=" + formatBlock(pos)
+                + ", cube=" + formatCube(CubePos.fromBlock(pos))
+                + ", target=" + normalizeTargetId(target)
+                + ", delayTicks=" + delayTicks), false);
+        return 1;
+    }
+
+    private static int scheduledTicksDumpCube(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
+        CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+        List<CubeScheduledTickData> ticks = cubeCache(source).scheduledTicks(cubePos);
+        if (ticks.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("RWC scheduled ticks: none in cube=" + formatCube(cubePos)), false);
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("RWC scheduled ticks in cube=" + formatCube(cubePos)
+                + ", count=" + ticks.size()), false);
+        for (CubeScheduledTickData tick : ticks.stream().limit(16).toList()) {
+            source.sendSuccess(() -> Component.literal("tick kind=" + tick.kind()
+                    + ", local=" + tick.localPos().x() + " " + tick.localPos().y() + " " + tick.localPos().z()
+                    + ", target=" + tick.targetId()
+                    + ", trigger=" + tick.triggerGameTime()
+                    + ", priority=" + tick.priority()
+                    + ", reason=" + tick.reason()), false);
+        }
+        if (ticks.size() > 16) {
+            source.sendSuccess(() -> Component.literal("RWC scheduled ticks: more hidden"), false);
+        }
+        return ticks.size();
+    }
+
+    private static int scheduledTicksClearCube(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
+        CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+        int removed = cubeCache(source).clearScheduledTicks(cubePos);
+        source.sendSuccess(() -> Component.literal("RWC scheduled ticks cleared: cube=" + formatCube(cubePos)
+                + ", removed=" + removed), false);
+        return removed;
+    }
+
+    private static String normalizeTargetId(String raw) {
+        return raw == null || raw.isBlank() ? "minecraft:air" : (raw.contains(":") ? raw : "minecraft:" + raw);
+    }
+
     private static int ticketsStatus(CommandSourceStack source) {
         CubeTicketSnapshot snapshot = TICKETS.snapshot();
         source.sendSuccess(() -> Component.literal("Cube tickets: total=" + snapshot.totalTickets()
@@ -2032,26 +2258,73 @@ public final class RedlineWorldCoreCommands {
         return prefix + ": dirty=" + snapshot.dirtyCubes()
                 + ", contentQ=" + snapshot.contentQueue()
                 + ", saveQ=" + snapshot.saveQueue()
+                + ", inFlight=" + snapshot.saveInFlight()
                 + ", contentLast=" + snapshot.contentRebuiltLastTick()
-                + ", savedLast=" + snapshot.savedLastTick()
+                + ", savedDone=" + snapshot.savedLastTick()
+                + ", submitted=" + snapshot.saveSubmittedLastTick()
+                + ", failed=" + snapshot.saveFailedLastTick()
                 + ", contentUs=" + snapshot.contentMicrosLastTick()
                 + ", saveUs=" + snapshot.saveMicrosLastTick()
                 + ", saveBudgetHit=" + snapshot.saveBudgetHitLastTick()
+                + ", idleSkip=" + snapshot.saveIdleSkipLastTick()
+                + ", cooldown=" + snapshot.saveCooldownTicks()
+                + ", reason=" + snapshot.saveLastReason()
                 + ", lastDirty=" + formatNullableCube(snapshot.lastDirtyCube())
+                + ", lastSubmitted=" + formatNullableCube(snapshot.lastSubmittedCube())
                 + ", lastSaved=" + formatNullableCube(snapshot.lastSavedCube());
     }
 
     private static String formatDirtyTotals(String prefix, CubeDirtySnapshot snapshot) {
         return prefix + ": marked=" + snapshot.totalMarked()
                 + ", contentRebuilt=" + snapshot.totalContentRebuilt()
-                + ", saved=" + snapshot.totalSaved()
+                + ", savedDone=" + snapshot.totalSaved()
+                + ", submitted=" + snapshot.totalSaveSubmitted()
+                + ", failed=" + snapshot.totalSaveFailed()
                 + ", maxContentUs=" + snapshot.contentMicrosMax()
                 + ", maxSaveUs=" + snapshot.saveMicrosMax()
                 + ", budget=content " + snapshot.maxContentPerTick()
-                + "/t save " + snapshot.maxSavesPerTick()
+                + "/t saveSubmit " + snapshot.maxSavesPerTick()
                 + "/t " + snapshot.maxSaveMicrosPerTick() + "us"
                 + ", lastContent=" + formatNullableCube(snapshot.lastContentCube())
                 + " " + snapshot.lastContentSummary().compact();
+    }
+
+    private static String formatBlockEntitySnapshot(String prefix, CubeBlockEntitySnapshot snapshot) {
+        return prefix + ": tracked=" + snapshot.trackedBlockEntities()
+                + ", sections=" + snapshot.sections()
+                + ", real=" + snapshot.realNbtBlockEntities()
+                + ", placeholders=" + snapshot.placeholderBlockEntities()
+                + ", tickingAllowed=" + snapshot.tickingAllowedBlockEntities()
+                + ", tickingBlocked=" + snapshot.tickingBlockedBlockEntities()
+                + ", addedLast=" + snapshot.addedLastTick()
+                + ", updatedLast=" + snapshot.updatedLastTick()
+                + ", capturedLast=" + snapshot.realNbtCapturedLastTick()
+                + ", removedLast=" + snapshot.removedLastTick()
+                + ", rebuiltLast=" + snapshot.rebuiltCubesLastTick()
+                + ", totalAdded=" + snapshot.totalAdded()
+                + ", totalUpdated=" + snapshot.totalUpdated()
+                + ", totalCaptured=" + snapshot.totalRealNbtCaptured()
+                + ", totalRemoved=" + snapshot.totalRemoved()
+                + ", totalRebuilt=" + snapshot.totalRebuiltCubes()
+                + ", lastCube=" + formatNullableCube(snapshot.lastCube())
+                + ", reason=" + snapshot.lastReason();
+    }
+
+    private static String formatScheduledTickSnapshot(String prefix, CubeScheduledTickSnapshot snapshot) {
+        return prefix + ": cubes=" + snapshot.loadedCubesWithTicks()
+                + ", block=" + snapshot.blockTicks()
+                + ", fluid=" + snapshot.fluidTicks()
+                + ", due=" + snapshot.dueTicks()
+                + ", dueAllowed=" + snapshot.dueAllowed()
+                + ", dueBlocked=" + snapshot.dueBlocked()
+                + ", addedLast=" + snapshot.addedLastTick()
+                + ", removedLast=" + snapshot.removedLastTick()
+                + ", evaluatedLast=" + snapshot.evaluatedLastTick()
+                + ", totalAdded=" + snapshot.totalAdded()
+                + ", totalRemoved=" + snapshot.totalRemoved()
+                + ", totalEvaluated=" + snapshot.totalEvaluated()
+                + ", lastCube=" + formatNullableCube(snapshot.lastCube())
+                + ", reason=" + snapshot.lastReason();
     }
 
     private static String formatMutationSnapshot(String prefix, CubeMutationSnapshot snapshot) {

@@ -20,7 +20,7 @@ public final class WorldCoreCubeLoading {
         cubicTest(event.getServer().getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT)
                 .resolve(com.redline.worldcore.RedlineWorldCore.MOD_ID)
                 .resolve("cubic_test"))
-                .tick(WorldCoreTickets.MANAGER.allTickets());
+                .tick(WorldCoreTickets.MANAGER.allTickets(), event.getServer().getLevel(com.redline.worldcore.api.dimension.CubicDimensionKeys.CUBIC_TEST_LEVEL));
     }
 
     public static synchronized ServerCubeCache cubicTest(Path storageRoot) {

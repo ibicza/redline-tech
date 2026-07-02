@@ -9,11 +9,16 @@ public record CubeDirtySnapshot(
         int dirtyCubes,
         int contentQueue,
         int saveQueue,
+        int saveInFlight,
         long totalMarked,
         long totalContentRebuilt,
         long totalSaved,
+        long totalSaveSubmitted,
+        long totalSaveFailed,
         int contentRebuiltLastTick,
         int savedLastTick,
+        int saveSubmittedLastTick,
+        int saveFailedLastTick,
         long contentMicrosLastTick,
         long contentMicrosMax,
         long saveMicrosLastTick,
@@ -22,15 +27,25 @@ public record CubeDirtySnapshot(
         int maxSavesPerTick,
         int maxSaveMicrosPerTick,
         boolean saveBudgetHitLastTick,
+        boolean saveIdleSkipLastTick,
+        int saveCooldownTicks,
+        String saveLastReason,
         CubePos lastDirtyCube,
         Set<CubeDirtyFlag> lastDirtyFlags,
         CubePos lastContentCube,
         CubeContentSummary lastContentSummary,
-        CubePos lastSavedCube
+        CubePos lastSavedCube,
+        CubePos lastSubmittedCube,
+        CubePos lastFailedCube
 ) {
+    public CubeDirtySnapshot {
+        saveLastReason = saveLastReason == null ? "none" : saveLastReason;
+        lastDirtyFlags = lastDirtyFlags == null ? Set.of() : Set.copyOf(lastDirtyFlags);
+    }
+
     public static CubeDirtySnapshot empty(int maxContentPerTick, int maxSavesPerTick, int maxSaveMicrosPerTick) {
-        return new CubeDirtySnapshot(0, 0, 0, 0L, 0L, 0L, 0, 0, 0L, 0L, 0L, 0L,
-                maxContentPerTick, maxSavesPerTick, maxSaveMicrosPerTick, false, null, Set.of(), null,
-                CubeContentSummary.empty(), null);
+        return new CubeDirtySnapshot(0, 0, 0, 0, 0L, 0L, 0L, 0L, 0L, 0, 0, 0, 0,
+                0L, 0L, 0L, 0L, maxContentPerTick, maxSavesPerTick, maxSaveMicrosPerTick, false, false, 0,
+                "none", null, Set.of(), null, CubeContentSummary.empty(), null, null, null);
     }
 }

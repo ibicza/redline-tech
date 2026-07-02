@@ -13,14 +13,17 @@ public record CubeContentSummary(
         int nonAirBlocks,
         int emittingBlocks,
         int blockLitBlocks,
-        int skyLitBlocks
+        int skyLitBlocks,
+        int blockEntities,
+        int scheduledBlockTicks,
+        int scheduledFluidTicks
 ) {
     public CubeContentSummary {
         flags = flags.isEmpty() ? Set.of() : Set.copyOf(flags);
     }
 
     public static CubeContentSummary empty() {
-        return new CubeContentSummary(Set.of(CubeContentFlag.EMPTY), 0, 0, 0, 0);
+        return new CubeContentSummary(Set.of(CubeContentFlag.EMPTY), 0, 0, 0, 0, 0, 0, 0);
     }
 
     public static CubeContentSummary from(LevelCube cube) {
@@ -28,6 +31,9 @@ public record CubeContentSummary(
         int emitters = 0;
         int blockLit = 0;
         int skyLit = 0;
+        int blockEntities = cube.blockEntityCount();
+        int scheduledBlockTicks = cube.scheduledBlockTickCount();
+        int scheduledFluidTicks = cube.scheduledFluidTickCount();
 
         for (int y = 0; y < CubePos.SIZE; y++) {
             for (int z = 0; z < CubePos.SIZE; z++) {
@@ -64,7 +70,16 @@ public record CubeContentSummary(
         if (skyLit > 0) {
             flags.add(CubeContentFlag.HAS_SKY_LIGHT);
         }
-        return new CubeContentSummary(flags, nonAir, emitters, blockLit, skyLit);
+        if (blockEntities > 0) {
+            flags.add(CubeContentFlag.HAS_BLOCK_ENTITIES);
+        }
+        if (scheduledBlockTicks > 0) {
+            flags.add(CubeContentFlag.HAS_SCHEDULED_BLOCK_TICKS);
+        }
+        if (scheduledFluidTicks > 0) {
+            flags.add(CubeContentFlag.HAS_SCHEDULED_FLUID_TICKS);
+        }
+        return new CubeContentSummary(flags, nonAir, emitters, blockLit, skyLit, blockEntities, scheduledBlockTicks, scheduledFluidTicks);
     }
 
     public String compact() {
@@ -72,6 +87,9 @@ public record CubeContentSummary(
                 + " emit=" + emittingBlocks
                 + " blockLit=" + blockLitBlocks
                 + " skyLit=" + skyLitBlocks
+                + " be=" + blockEntities
+                + " blockTicks=" + scheduledBlockTicks
+                + " fluidTicks=" + scheduledFluidTicks
                 + " flags=" + flags;
     }
 }

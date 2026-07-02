@@ -1,8 +1,11 @@
 package com.redline.worldcore.server.storage;
 
+import com.redline.worldcore.api.cube.CubeScheduledTickData;
+import com.redline.worldcore.api.cube.CubeScheduledTickKind;
 import com.redline.worldcore.api.cube.CubeStatus;
 import com.redline.worldcore.api.cube.LevelCube;
 import com.redline.worldcore.api.pos.CubePos;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -13,6 +16,8 @@ import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.resources.Identifier;
 
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -31,6 +36,10 @@ public final class CubeSerializer {
     private static final String TAG_BLOCK_INDICES = "BlockIndices";
     private static final String TAG_BLOCK_LIGHT = "BlockLight";
     private static final String TAG_SKY_LIGHT = "SkyLight";
+    private static final String TAG_BLOCK_ENTITIES = "BlockEntities";
+    private static final String TAG_BLOCK_TICKS = "BlockTicks";
+    private static final String TAG_FLUID_TICKS = "FluidTicks";
+    private static final String TAG_BLOCK_ENTITY_LOCAL_INDEX = "LocalIndex";
     private static final String TAG_CONTENT_FLAGS = "ContentFlags";
     private static final String TAG_CUSTOM_DATA = "CustomData";
 
@@ -53,6 +62,9 @@ public final class CubeSerializer {
         tag.putIntArray(TAG_BLOCK_INDICES, palette.indices());
         tag.putByteArray(TAG_BLOCK_LIGHT, cube.copyBlockLight());
         tag.putByteArray(TAG_SKY_LIGHT, cube.copySkyLight());
+        tag.put(TAG_BLOCK_ENTITIES, writeBlockEntities(cube));
+        tag.put(TAG_BLOCK_TICKS, writeScheduledTicks(cube.copyScheduledBlockTicks()));
+        tag.put(TAG_FLUID_TICKS, writeScheduledTicks(cube.copyScheduledFluidTicks()));
 
         // Reserved for M4+ migration. The field exists now so old files keep a stable shape.
         tag.putInt(TAG_CONTENT_FLAGS, 0);
@@ -77,6 +89,8 @@ public final class CubeSerializer {
             cube.fill(Blocks.AIR.defaultBlockState());
             cube.replaceBlockLight(tag.getByteArray(TAG_BLOCK_LIGHT).orElse(new byte[0]));
             cube.replaceSkyLight(tag.getByteArray(TAG_SKY_LIGHT).orElse(new byte[0]));
+            readBlockEntities(tag, cube);
+            readScheduledTicks(tag, cube);
             return cube;
         }
 
@@ -98,7 +112,88 @@ public final class CubeSerializer {
 
         cube.replaceBlockLight(tag.getByteArray(TAG_BLOCK_LIGHT).orElse(new byte[0]));
         cube.replaceSkyLight(tag.getByteArray(TAG_SKY_LIGHT).orElse(new byte[0]));
+        readBlockEntities(tag, cube);
+        readScheduledTicks(tag, cube);
         return cube;
+    }
+
+    private ListTag writeBlockEntities(LevelCube cube) {
+        ListTag list = new ListTag();
+        for (Map.Entry<Integer, CompoundTag> entry : cube.copyBlockEntityData().entrySet()) {
+            CompoundTag tag = entry.getValue().copy();
+            tag.putInt(TAG_BLOCK_ENTITY_LOCAL_INDEX, entry.getKey());
+            list.add(tag);
+        }
+        return list;
+    }
+
+    private void readBlockEntities(CompoundTag tag, LevelCube cube) {
+        ListTag list = tag.getListOrEmpty(TAG_BLOCK_ENTITIES);
+        if (list.isEmpty()) {
+            return;
+        }
+        for (int index = 0; index < list.size(); index++) {
+            CompoundTag blockEntityTag = list.getCompoundOrEmpty(index);
+            int localIndex = blockEntityTag.getIntOr(TAG_BLOCK_ENTITY_LOCAL_INDEX, -1);
+            if (localIndex < 0 || localIndex >= CubePos.BLOCK_COUNT) {
+                int localX = CubePos.local(blockEntityTag.getIntOr("x", cube.cubePos().minBlockX()));
+                int localY = CubePos.local(blockEntityTag.getIntOr("y", cube.cubePos().minBlockY()));
+                int localZ = CubePos.local(blockEntityTag.getIntOr("z", cube.cubePos().minBlockZ()));
+                localIndex = CubePos.localIndex(localX, localY, localZ);
+            }
+            cube.setBlockEntityTag(localIndex, blockEntityTag);
+        }
+    }
+
+
+    private ListTag writeScheduledTicks(List<CubeScheduledTickData> ticks) {
+        ListTag list = new ListTag();
+        for (CubeScheduledTickData tick : ticks) {
+            CompoundTag tag = new CompoundTag();
+            tag.putString("Kind", tick.kind().name());
+            tag.putInt("LocalIndex", tick.localIndex());
+            tag.putInt("x", tick.worldPos().getX());
+            tag.putInt("y", tick.worldPos().getY());
+            tag.putInt("z", tick.worldPos().getZ());
+            tag.putString("Target", tick.targetId());
+            tag.putLong("TriggerGameTime", tick.triggerGameTime());
+            tag.putInt("Priority", tick.priority());
+            tag.putString("Reason", tick.reason());
+            list.add(tag);
+        }
+        return list;
+    }
+
+    private void readScheduledTicks(CompoundTag tag, LevelCube cube) {
+        List<CubeScheduledTickData> blockTicks = readScheduledTickList(tag.getListOrEmpty(TAG_BLOCK_TICKS), CubeScheduledTickKind.BLOCK, cube);
+        List<CubeScheduledTickData> fluidTicks = readScheduledTickList(tag.getListOrEmpty(TAG_FLUID_TICKS), CubeScheduledTickKind.FLUID, cube);
+        cube.replaceScheduledTicks(blockTicks, fluidTicks);
+    }
+
+    private List<CubeScheduledTickData> readScheduledTickList(ListTag list, CubeScheduledTickKind expectedKind, LevelCube cube) {
+        List<CubeScheduledTickData> ticks = new ArrayList<>();
+        for (int index = 0; index < list.size(); index++) {
+            CompoundTag tag = list.getCompoundOrEmpty(index);
+            CubeScheduledTickKind kind = readTickKind(tag.getStringOr("Kind", expectedKind.name()), expectedKind);
+            int worldX = tag.getIntOr("x", cube.cubePos().minBlockX());
+            int worldY = tag.getIntOr("y", cube.cubePos().minBlockY());
+            int worldZ = tag.getIntOr("z", cube.cubePos().minBlockZ());
+            BlockPos worldPos = new BlockPos(worldX, worldY, worldZ);
+            String target = tag.getStringOr("Target", "minecraft:air");
+            long trigger = tag.getLongOr("TriggerGameTime", 0L);
+            int priority = tag.getIntOr("Priority", 0);
+            String reason = tag.getStringOr("Reason", "loaded_from_cube_nbt");
+            ticks.add(CubeScheduledTickData.create(kind, cube.cubePos(), worldPos, target, trigger, priority, reason));
+        }
+        return ticks;
+    }
+
+    private CubeScheduledTickKind readTickKind(String raw, CubeScheduledTickKind fallback) {
+        try {
+            return CubeScheduledTickKind.valueOf(raw);
+        } catch (IllegalArgumentException exception) {
+            return fallback;
+        }
     }
 
     private PaletteWriteResult writePalette(LevelCube cube) {

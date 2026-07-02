@@ -1,5 +1,7 @@
 package com.redline.worldcore.server.cube;
 
+import com.redline.worldcore.api.cube.CubeScheduledTickData;
+import com.redline.worldcore.api.cube.CubeScheduledTickKind;
 import com.redline.worldcore.api.cube.CubeStatus;
 import com.redline.worldcore.api.cube.LevelCube;
 import com.redline.worldcore.api.generation.CubicDimensionSettings;
@@ -13,9 +15,16 @@ import com.redline.worldcore.server.cube.access.CubeMutationContext;
 import com.redline.worldcore.server.cube.access.CubeMutationResult;
 import com.redline.worldcore.server.cube.access.CubeMutationSnapshot;
 import com.redline.worldcore.server.cube.access.CubicLevelAccess;
+import com.redline.worldcore.server.cube.blockentity.CubeBlockEntityRef;
+import com.redline.worldcore.server.cube.blockentity.CubeBlockEntitySnapshot;
+import com.redline.worldcore.server.cube.blockentity.CubeBlockEntityTracker;
+import com.redline.worldcore.server.cube.dirty.CubeAsyncSaveWorker;
 import com.redline.worldcore.server.cube.dirty.CubeContentSummary;
 import com.redline.worldcore.server.cube.dirty.CubeDirtyFlag;
 import com.redline.worldcore.server.cube.dirty.CubeDirtyTracker;
+import com.redline.worldcore.server.cube.dirty.CubeSaveWork;
+import com.redline.worldcore.server.cube.tick.CubeScheduledTickSnapshot;
+import com.redline.worldcore.server.cube.tick.CubeScheduledTickTracker;
 import com.redline.worldcore.server.generation.CubicWorldgenPipeline;
 import com.redline.worldcore.server.lighting.ColumnSkyIndex;
 import com.redline.worldcore.server.lighting.SkyLightLayer;
@@ -24,6 +33,7 @@ import com.redline.worldcore.server.lighting.StaticBlockLightLayer;
 import com.redline.worldcore.server.lighting.StaticLightSummary;
 import com.redline.worldcore.server.storage.CubeRegionStorage;
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.nio.file.Path;
@@ -79,8 +89,17 @@ public final class ServerCubeCache {
     /** M14.1 saves dirty cubes in batches instead of synchronously writing every block edit. */
     public static final int MAX_DIRTY_SAVES_PER_TICK = 4;
 
-    /** Soft M14.1 save flush budget; one expensive Region3D write may exceed it, then the queue stops. */
+    /** Soft M14.1 save submit budget. Actual Region3D IO is done by the M14.1.1 worker. */
     public static final int MAX_DIRTY_SAVE_MICROS_PER_TICK = 4_000;
+
+    /** If a finished async write took longer than this, idle save submission cools down. */
+    public static final int EXPENSIVE_DIRTY_SAVE_MICROS = 20_000;
+
+    /** Cooldown after an expensive Region3D write, measured in server ticks. */
+    public static final int DIRTY_SAVE_COOLDOWN_TICKS = 20;
+
+    /** Maximum async Region3D writes allowed in flight from the gameplay dirty pipeline. */
+    public static final int MAX_ASYNC_DIRTY_SAVES_IN_FLIGHT = 2;
 
     /** M10.1 keeps automatic vertical sky-light rebuilds tiny; manual commands may still rebuild large ranges immediately. */
     public static final int MAX_SKY_LIGHT_COLUMNS_PER_TICK = 1;
@@ -101,6 +120,9 @@ public final class ServerCubeCache {
             MAX_DIRTY_SAVE_MICROS_PER_TICK
     );
     private final CubeBlockUpdatePipeline blockUpdatePipeline = new CubeBlockUpdatePipeline();
+    private final CubeAsyncSaveWorker dirtySaveWorker = new CubeAsyncSaveWorker("RedlineWorldCore-DirtyCubeIO");
+    private final CubeBlockEntityTracker blockEntityTracker = new CubeBlockEntityTracker();
+    private final CubeScheduledTickTracker scheduledTickTracker = new CubeScheduledTickTracker();
 
     private long gameTime;
     private long totalLoaded;
@@ -169,14 +191,108 @@ public final class ServerCubeCache {
         return blockUpdatePipeline.snapshot();
     }
 
+    public synchronized CubeBlockEntitySnapshot blockEntitySnapshot() {
+        return blockEntityTracker.snapshot();
+    }
+
+    public synchronized CubeScheduledTickSnapshot scheduledTickSnapshot() {
+        return scheduledTickTracker.snapshot();
+    }
+
+    public synchronized Optional<CubeBlockEntityRef> blockEntityAt(BlockPos worldPos) {
+        CubePos cubePos = CubePos.fromBlock(worldPos.getX(), worldPos.getY(), worldPos.getZ());
+        int localIndex = CubePos.localIndex(CubePos.local(worldPos.getX()), CubePos.local(worldPos.getY()), CubePos.local(worldPos.getZ()));
+        return blockEntityTracker.get(cubePos, localIndex);
+    }
+
+    public synchronized boolean captureBlockEntityFromVanilla(ServerLevel level, BlockPos worldPos, String reason) {
+        Objects.requireNonNull(worldPos, "worldPos");
+        CubePos cubePos = CubePos.fromBlock(worldPos.getX(), worldPos.getY(), worldPos.getZ());
+        CubeHolder holder = holders.get(cubePos);
+        if (holder == null) {
+            return false;
+        }
+        boolean captured = blockEntityTracker.captureVanilla(holder.cube(), level, worldPos, reason);
+        if (captured) {
+            holder.markDirty();
+            dirtyTracker.mark(cubePos, CubeDirtyFlag.CONTENT_FLAGS, CubeDirtyFlag.STORAGE, CubeDirtyFlag.CLIENT_SYNC);
+        }
+        return captured;
+    }
+
+    public synchronized Optional<Map<Integer, net.minecraft.nbt.CompoundTag>> blockEntityTags(CubePos cubePos) {
+        CubeHolder holder = holders.get(cubePos);
+        if (holder != null) {
+            return Optional.of(holder.cube().copyBlockEntityData());
+        }
+        Optional<LevelCube> persisted = readPersisted(cubePos);
+        return persisted.map(LevelCube::copyBlockEntityData);
+    }
+
+    public synchronized boolean addScheduledTick(BlockPos worldPos, CubeScheduledTickKind kind, String targetId, int delayTicks, int priority, String reason) {
+        Objects.requireNonNull(worldPos, "worldPos");
+        Objects.requireNonNull(kind, "kind");
+        CubePos cubePos = CubePos.fromBlock(worldPos.getX(), worldPos.getY(), worldPos.getZ());
+        if (!settings.containsCubeY(cubePos.y())) {
+            return false;
+        }
+        CubeHolder holder = holders.get(cubePos);
+        if (holder == null) {
+            holder = loadHolder(cubePos, CubeTicketLevel.BLOCK_TICKING);
+            holders.put(cubePos, holder);
+            totalLoaded++;
+            if (holder.state() == CubeHolderState.GENERATED) {
+                totalGenerated++;
+            }
+        }
+        CubeScheduledTickData tick = CubeScheduledTickData.create(kind, cubePos, worldPos, targetId, gameTime + Math.max(0, delayTicks), priority, reason);
+        holder.cube().addScheduledTick(tick);
+        holder.markDirty();
+        dirtyTracker.mark(cubePos, CubeDirtyFlag.CONTENT_FLAGS, CubeDirtyFlag.STORAGE, CubeDirtyFlag.CLIENT_SYNC);
+        scheduledTickTracker.recordAdded(cubePos, kind, reason);
+        return true;
+    }
+
+    public synchronized int clearScheduledTicks(CubePos cubePos) {
+        CubeHolder holder = holders.get(cubePos);
+        if (holder == null) {
+            return 0;
+        }
+        int removed = holder.cube().clearScheduledTicks();
+        if (removed > 0) {
+            holder.markDirty();
+            dirtyTracker.mark(cubePos, CubeDirtyFlag.CONTENT_FLAGS, CubeDirtyFlag.STORAGE, CubeDirtyFlag.CLIENT_SYNC);
+            scheduledTickTracker.recordRemoved(cubePos, removed, "clear_cube");
+        }
+        return removed;
+    }
+
+    public synchronized List<CubeScheduledTickData> scheduledTicks(CubePos cubePos) {
+        CubeHolder holder = holders.get(cubePos);
+        if (holder == null) {
+            return List.of();
+        }
+        List<CubeScheduledTickData> ticks = new ArrayList<>();
+        ticks.addAll(holder.cube().copyScheduledBlockTicks());
+        ticks.addAll(holder.cube().copyScheduledFluidTicks());
+        return ticks;
+    }
+
     public synchronized void resetMutationCounters() {
         blockUpdatePipeline.reset();
     }
 
 
     public synchronized CubeLoadingTickResult tick(Collection<CubeTicket> tickets) {
+        return tick(tickets, null);
+    }
+
+    public synchronized CubeLoadingTickResult tick(Collection<CubeTicket> tickets, ServerLevel level) {
         gameTime++;
         dirtyTracker.beginTick();
+        blockEntityTracker.beginTick();
+        scheduledTickTracker.beginTick();
+        drainAsyncDirtySaveCompletions();
 
         RequiredLevels required = collectRequiredLevels(tickets);
         requestedLastTick = required.levels().size();
@@ -186,10 +302,16 @@ public final class ServerCubeCache {
         int queuedThisTick = queueMissingAndRefreshLoaded(required.levels());
         int unloadedThisTick = unloadNoLongerRequired(required.levels());
         LoadCounters loadCounters = loadPending(required.levels());
+        int capturedBlockEntities = captureVanillaBlockEntities(level);
+        if (capturedBlockEntities > 0) {
+            // Capturing real vanilla NBT changes CubeNBT-owned BE data and must be persisted/indexed.
+        }
+        updateBlockEntityTickGates();
+        updateScheduledTickGates();
         int rebuiltContentThisTick = rebuildDirtyContentQueue();
         int rebuiltLightThisTick = rebuildDirtyLightQueue();
         SkyLightQueueCounters skyCounters = rebuildDirtySkyLightColumns();
-        int savedDirtyThisTick = flushDirtySaveQueue();
+        int savedDirtyThisTick = flushDirtySaveQueue(loadCounters, rebuiltContentThisTick, rebuiltLightThisTick, skyCounters);
 
         queuedLastTick = queuedThisTick;
         loadedLastTick = loadCounters.loaded();
@@ -321,6 +443,7 @@ public final class ServerCubeCache {
         boolean statusPromoted = !holder.cube().status().isAtLeast(CubeStatus.FULL);
         if (changed) {
             holder.cube().setBlockState(worldPos, state);
+            blockEntityTracker.observeMutation(holder.cube(), worldPos, previous, state, context.reason());
         }
         if (statusPromoted) {
             holder.cube().setStatus(CubeStatus.FULL);
@@ -658,6 +781,7 @@ public final class ServerCubeCache {
             CubeHolder replacement = new CubeHolder(cubePos, prepared, existing.ticketLevel(), CubeHolderState.REGION3D_SAVED, gameTime);
             replacement.markRequired(existing.ticketLevel(), gameTime);
             holders.put(cubePos, replacement);
+            blockEntityTracker.rebuildCube(prepared, "pregen_replace");
         } else {
             storage.unloadFromMemory(cubePos);
         }
@@ -713,6 +837,8 @@ public final class ServerCubeCache {
                 requestLimitHitLastTick,
                 mutationSnapshot(),
                 dirtyTracker.snapshot(),
+                blockEntityTracker.snapshot(),
+                scheduledTickTracker.snapshot(),
                 Map.copyOf(byTicketLevel),
                 Map.copyOf(byCubeStatus),
                 Map.copyOf(byHolderState)
@@ -720,13 +846,16 @@ public final class ServerCubeCache {
     }
 
     public synchronized int saveAllLoaded() {
+        drainAsyncDirtySaveCompletions();
         int saved = 0;
         for (CubeHolder holder : holders.values()) {
             if (shouldSkipDebugSave(holder)) {
                 continue;
             }
+            long startNanos = System.nanoTime();
             storage.put(holder.cube());
             holder.markSaved(CubeHolderState.REGION3D_SAVED);
+            dirtyTracker.recordSaved(new CubeSaveWork(holder.cubePos(), Long.MAX_VALUE), Math.max(1L, (System.nanoTime() - startNanos) / 1_000L));
             saved++;
         }
         totalSaved += saved;
@@ -855,7 +984,9 @@ public final class ServerCubeCache {
                 StaticBlockLightLayer.rebuild(cube);
                 totalLightRebuilt++;
             }
-            return new CubeHolder(cubePos, cube, level, CubeHolderState.REGION3D_LOADED, gameTime);
+            CubeHolder holder = new CubeHolder(cubePos, cube, level, CubeHolderState.REGION3D_LOADED, gameTime);
+            blockEntityTracker.rebuildCube(cube, "holder_loaded");
+            return holder;
         }
 
         if (level.isAtLeast(CubeTicketLevel.GENERATED)) {
@@ -864,7 +995,9 @@ public final class ServerCubeCache {
             // M10.1: do not rebuild sky per cube while the loading window streams in.
             // The delayed column queue will compute correct finite-top skylight once the column settles.
             totalLightRebuilt++;
-            return new CubeHolder(cubePos, generated, level, CubeHolderState.GENERATED, gameTime);
+            CubeHolder holder = new CubeHolder(cubePos, generated, level, CubeHolderState.GENERATED, gameTime);
+            blockEntityTracker.rebuildCube(generated, "holder_generated");
+            return holder;
         }
 
         LevelCube placeholder = new LevelCube(cubePos);
@@ -872,7 +1005,9 @@ public final class ServerCubeCache {
         StaticBlockLightLayer.rebuild(placeholder);
         // M10.1: placeholders also wait for the delayed column queue instead of doing per-cube open-sky work.
         totalLightRebuilt++;
-        return new CubeHolder(cubePos, placeholder, level, CubeHolderState.PLACEHOLDER, gameTime);
+        CubeHolder holder = new CubeHolder(cubePos, placeholder, level, CubeHolderState.PLACEHOLDER, gameTime);
+        blockEntityTracker.rebuildCube(placeholder, "holder_placeholder");
+        return holder;
     }
 
     private int unloadNoLongerRequired(Map<CubePos, CubeTicketLevel> required) {
@@ -898,13 +1033,16 @@ public final class ServerCubeCache {
 
     private void unloadHolder(CubeHolder holder, boolean saveDirty) {
         if (saveDirty && holder.dirty()) {
+            long startNanos = System.nanoTime();
             storage.put(holder.cube());
             holder.markSaved(CubeHolderState.REGION3D_SAVED);
+            dirtyTracker.recordSaved(new CubeSaveWork(holder.cubePos(), Long.MAX_VALUE), Math.max(1L, (System.nanoTime() - startNanos) / 1_000L));
             totalSaved++;
         }
         holders.remove(holder.cubePos());
         lightDirtyQueue.remove(holder.cubePos());
         dirtyTracker.remove(holder.cubePos());
+        blockEntityTracker.removeCube(holder.cubePos());
         if (loadedColumnHolders(holder.cubePos().columnPos()).isEmpty()) {
             skyLightDirtyColumns.remove(holder.cubePos().columnPos());
         }
@@ -960,6 +1098,44 @@ public final class ServerCubeCache {
     }
 
 
+    private int captureVanillaBlockEntities(ServerLevel level) {
+        if (level == null) {
+            return 0;
+        }
+        Map<CubePos, LevelCube> loaded = new LinkedHashMap<>();
+        for (CubeHolder holder : holders.values()) {
+            loaded.put(holder.cubePos(), holder.cube());
+        }
+        int captured = blockEntityTracker.captureVanillaForLoaded(level, loaded);
+        if (captured > 0) {
+            for (CubeHolder holder : holders.values()) {
+                if (holder.cube().blockEntityCount() > 0) {
+                    holder.markDirty();
+                    dirtyTracker.mark(holder.cubePos(), CubeDirtyFlag.CONTENT_FLAGS, CubeDirtyFlag.STORAGE, CubeDirtyFlag.CLIENT_SYNC);
+                }
+            }
+        }
+        return captured;
+    }
+
+    private void updateBlockEntityTickGates() {
+        Map<CubePos, CubeTicketLevel> levels = new LinkedHashMap<>();
+        for (CubeHolder holder : holders.values()) {
+            levels.put(holder.cubePos(), holder.ticketLevel());
+        }
+        blockEntityTracker.evaluateTicking(levels);
+    }
+
+    private void updateScheduledTickGates() {
+        Map<CubePos, LevelCube> cubes = new LinkedHashMap<>();
+        Map<CubePos, CubeTicketLevel> levels = new LinkedHashMap<>();
+        for (CubeHolder holder : holders.values()) {
+            cubes.put(holder.cubePos(), holder.cube());
+            levels.put(holder.cubePos(), holder.ticketLevel());
+        }
+        scheduledTickTracker.evaluate(cubes, levels, gameTime);
+    }
+
     private int rebuildDirtyContentQueue() {
         int rebuilt = 0;
         for (CubePos cubePos : dirtyTracker.pollContentWork()) {
@@ -977,35 +1153,112 @@ public final class ServerCubeCache {
         return rebuilt;
     }
 
-    private int flushDirtySaveQueue() {
-        int saved = 0;
+    private int flushDirtySaveQueue(LoadCounters loadCounters, int rebuiltContentThisTick, int rebuiltLightThisTick, SkyLightQueueCounters skyCounters) {
+        drainAsyncDirtySaveCompletions();
+
+        if (dirtyTracker.saveCooldownActive()) {
+            dirtyTracker.recordSaveIdleSkip("save_cooldown");
+            return 0;
+        }
+        if (dirtySaveWorker.inFlight() >= MAX_ASYNC_DIRTY_SAVES_IN_FLIGHT) {
+            dirtyTracker.recordSaveIdleSkip("async_inflight_full");
+            return 0;
+        }
+        if (loadCounters.generated() > 0) {
+            dirtyTracker.recordSaveIdleSkip("generated_this_tick");
+            return 0;
+        }
+        if (loadCounters.elapsedMicros() >= MAX_LOAD_MICROS_PER_TICK) {
+            dirtyTracker.recordSaveIdleSkip("load_budget_busy");
+            return 0;
+        }
+        if (rebuiltLightThisTick > 0 || skyCounters.rebuiltColumns() > 0) {
+            dirtyTracker.recordSaveIdleSkip("light_busy");
+            return 0;
+        }
+
         long startNanos = System.nanoTime();
-        List<CubePos> batch = dirtyTracker.pollSaveWork(0L);
+        int submitted = 0;
+        List<CubeSaveWork> batch = dirtyTracker.pollSaveWork(0L);
         for (int index = 0; index < batch.size(); index++) {
-            CubePos cubePos = batch.get(index);
+            CubeSaveWork work = batch.get(index);
+            CubePos cubePos = work.cubePos();
             CubeHolder holder = holders.get(cubePos);
             if (holder == null) {
+                dirtyTracker.cancelSaveWork(work);
                 dirtyTracker.remove(cubePos);
                 continue;
             }
             if (!holder.dirty()) {
+                dirtyTracker.cancelSaveWork(work);
                 dirtyTracker.clean(cubePos, CubeDirtyFlag.STORAGE);
                 continue;
             }
-            long saveStartNanos = System.nanoTime();
-            storage.put(holder.cube());
-            holder.markSaved(CubeHolderState.REGION3D_SAVED);
-            long saveMicros = Math.max(1L, (System.nanoTime() - saveStartNanos) / 1_000L);
-            totalSaved++;
-            dirtyTracker.recordSaved(cubePos, saveMicros);
-            saved++;
+            LevelCube snapshot = holder.cube().copy();
+            dirtySaveWorker.submit(storage, work, snapshot);
+            dirtyTracker.recordSaveSubmitted(work);
+            submitted++;
 
             long elapsedMicros = Math.max(1L, (System.nanoTime() - startNanos) / 1_000L);
-            if (dirtyTracker.shouldStopSaving(elapsedMicros, saved)) {
+            if (dirtyTracker.shouldStopSaving(elapsedMicros, submitted)
+                    || dirtySaveWorker.inFlight() >= MAX_ASYNC_DIRTY_SAVES_IN_FLIGHT) {
                 for (int remaining = index + 1; remaining < batch.size(); remaining++) {
                     dirtyTracker.requeueSave(batch.get(remaining));
                 }
                 break;
+            }
+        }
+        return 0;
+    }
+
+    private void drainAsyncDirtySaveCompletions() {
+        CubeAsyncSaveWorker.Completion completion;
+        while ((completion = dirtySaveWorker.pollCompletion()) != null) {
+            CubeSaveWork work = completion.work();
+            if (!completion.success()) {
+                dirtyTracker.recordSaveFailed(work, completion.error());
+                continue;
+            }
+            totalSaved++;
+            boolean clean = dirtyTracker.recordSaved(work, completion.elapsedMicros());
+            CubeHolder holder = holders.get(work.cubePos());
+            if (holder != null && clean) {
+                holder.markSaved(CubeHolderState.REGION3D_SAVED);
+            }
+            if (completion.elapsedMicros() >= EXPENSIVE_DIRTY_SAVE_MICROS) {
+                dirtyTracker.startSaveCooldown(DIRTY_SAVE_COOLDOWN_TICKS, "expensive_async_save");
+            }
+        }
+    }
+
+    private int forceFlushDirtySaveQueue() {
+        drainAsyncDirtySaveCompletions();
+        int saved = 0;
+        int guard = 0;
+        while (guard++ < 100000) {
+            List<CubeSaveWork> batch = dirtyTracker.pollSaveWork(0L);
+            if (batch.isEmpty()) {
+                break;
+            }
+            for (CubeSaveWork work : batch) {
+                CubeHolder holder = holders.get(work.cubePos());
+                if (holder == null) {
+                    dirtyTracker.cancelSaveWork(work);
+                    dirtyTracker.remove(work.cubePos());
+                    continue;
+                }
+                if (!holder.dirty()) {
+                    dirtyTracker.cancelSaveWork(work);
+                    dirtyTracker.clean(work.cubePos(), CubeDirtyFlag.STORAGE);
+                    continue;
+                }
+                long startNanos = System.nanoTime();
+                storage.put(holder.cube());
+                holder.markSaved(CubeHolderState.REGION3D_SAVED);
+                long saveMicros = Math.max(1L, (System.nanoTime() - startNanos) / 1_000L);
+                totalSaved++;
+                dirtyTracker.recordSaved(work, saveMicros);
+                saved++;
             }
         }
         return saved;
@@ -1017,8 +1270,10 @@ public final class ServerCubeCache {
             if (!holder.dirty()) {
                 continue;
             }
+            long startNanos = System.nanoTime();
             storage.put(holder.cube());
             holder.markSaved(CubeHolderState.REGION3D_SAVED);
+            dirtyTracker.recordSaved(new CubeSaveWork(holder.cubePos(), Long.MAX_VALUE), Math.max(1L, (System.nanoTime() - startNanos) / 1_000L));
             saved++;
         }
         totalSaved += saved;

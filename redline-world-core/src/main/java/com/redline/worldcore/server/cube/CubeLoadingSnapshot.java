@@ -4,6 +4,8 @@ import com.redline.worldcore.api.cube.CubeStatus;
 import com.redline.worldcore.api.ticket.CubeTicketLevel;
 import com.redline.worldcore.server.cube.access.CubeMutationSnapshot;
 import com.redline.worldcore.server.cube.dirty.CubeDirtySnapshot;
+import com.redline.worldcore.server.cube.blockentity.CubeBlockEntitySnapshot;
+import com.redline.worldcore.server.cube.tick.CubeScheduledTickSnapshot;
 
 import java.util.Map;
 
@@ -46,6 +48,8 @@ public record CubeLoadingSnapshot(
         boolean requestLimitHitLastTick,
         CubeMutationSnapshot mutationSnapshot,
         CubeDirtySnapshot dirtySnapshot,
+        CubeBlockEntitySnapshot blockEntitySnapshot,
+        CubeScheduledTickSnapshot scheduledTickSnapshot,
         Map<CubeTicketLevel, Integer> byTicketLevel,
         Map<CubeStatus, Integer> byCubeStatus,
         Map<CubeHolderState, Integer> byHolderState

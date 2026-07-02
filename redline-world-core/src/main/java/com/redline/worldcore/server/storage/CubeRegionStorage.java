@@ -76,6 +76,11 @@ public final class CubeRegionStorage implements CubeStorage {
     }
 
     public void flush(LevelCube cube) {
+        flushOnly(cube);
+    }
+
+    /** Writes a detached cube snapshot to Region3D without replacing the live storage memory cache. */
+    public void flushOnly(LevelCube cube) {
         try {
             regionFile(cube.cubePos().regionPos()).writeCube(cube);
         } catch (IOException exception) {
