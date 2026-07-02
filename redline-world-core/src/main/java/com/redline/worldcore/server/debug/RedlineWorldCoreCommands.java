@@ -26,6 +26,7 @@ import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.cube.access.CubeMutationContext;
 import com.redline.worldcore.server.cube.access.CubeMutationResult;
 import com.redline.worldcore.server.cube.access.CubeMutationSnapshot;
+import com.redline.worldcore.server.cube.dirty.CubeDirtySnapshot;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
 import com.redline.worldcore.server.entity.EntityCubeTracker;
 import com.redline.worldcore.server.entity.EntityRef;
@@ -1560,10 +1561,13 @@ public final class RedlineWorldCoreCommands {
         source.sendSuccess(() -> Component.literal("RWC cube access totals: statusPromoted=" + snapshot.totalStatusPromoted()
                 + ", holderLoaded=" + snapshot.totalHolderLoaded()
                 + ", holderGenerated=" + snapshot.totalHolderGenerated()
-                + ", saved=" + snapshot.totalSaved()
-                + ", staticLight=" + snapshot.totalStaticLightRebuilt()
+                + ", savedImmediate=" + snapshot.totalSaved()
+                + ", staticLightImmediate=" + snapshot.totalStaticLightRebuilt()
                 + ", skyQueued=" + snapshot.totalSkyLightQueued()
-                + ", skyRebuilt=" + snapshot.totalSkyLightRebuilt()), false);
+                + ", skyRebuiltImmediate=" + snapshot.totalSkyLightRebuilt()), false);
+        CubeDirtySnapshot dirty = cubeCache(source).snapshot().dirtySnapshot();
+        source.sendSuccess(() -> Component.literal(formatDirtySnapshot("RWC dirty pipeline", dirty)), false);
+        source.sendSuccess(() -> Component.literal(formatDirtyTotals("RWC dirty totals", dirty)), false);
         return (int) Math.min(Integer.MAX_VALUE, snapshot.totalMutations());
     }
 
@@ -1606,7 +1610,7 @@ public final class RedlineWorldCoreCommands {
                     state,
                     CubeMutationContext.command(true).withReason("cube_access_set_command")
             );
-            if (result.saved()) {
+            if (result.applied() && (result.changed() || result.statusPromoted())) {
                 CubicClientSyncBridge.recordCommandWriteSaved();
             }
             source.sendSuccess(() -> Component.literal(formatMutationResult("RWC cube access set", result)), false);
@@ -1643,6 +1647,8 @@ public final class RedlineWorldCoreCommands {
                 + ", generatedBudgetHit=" + snapshot.loadGeneratedBudgetHitLastTick()
                 + ", timeBudgetHit=" + snapshot.loadTimeBudgetHitLastTick()), false);
         source.sendSuccess(() -> Component.literal(formatMutationSnapshot("Cube access", snapshot.mutationSnapshot())), false);
+        source.sendSuccess(() -> Component.literal(formatDirtySnapshot("Dirty pipeline", snapshot.dirtySnapshot())), false);
+        source.sendSuccess(() -> Component.literal(formatDirtyTotals("Dirty totals", snapshot.dirtySnapshot())), false);
         source.sendSuccess(() -> Component.literal("Totals: loaded=" + snapshot.totalLoaded()
                 + ", generated=" + snapshot.totalGenerated()
                 + ", lightRebuilt=" + snapshot.totalLightRebuilt()
@@ -2022,6 +2028,32 @@ public final class RedlineWorldCoreCommands {
         }
     }
 
+    private static String formatDirtySnapshot(String prefix, CubeDirtySnapshot snapshot) {
+        return prefix + ": dirty=" + snapshot.dirtyCubes()
+                + ", contentQ=" + snapshot.contentQueue()
+                + ", saveQ=" + snapshot.saveQueue()
+                + ", contentLast=" + snapshot.contentRebuiltLastTick()
+                + ", savedLast=" + snapshot.savedLastTick()
+                + ", contentUs=" + snapshot.contentMicrosLastTick()
+                + ", saveUs=" + snapshot.saveMicrosLastTick()
+                + ", saveBudgetHit=" + snapshot.saveBudgetHitLastTick()
+                + ", lastDirty=" + formatNullableCube(snapshot.lastDirtyCube())
+                + ", lastSaved=" + formatNullableCube(snapshot.lastSavedCube());
+    }
+
+    private static String formatDirtyTotals(String prefix, CubeDirtySnapshot snapshot) {
+        return prefix + ": marked=" + snapshot.totalMarked()
+                + ", contentRebuilt=" + snapshot.totalContentRebuilt()
+                + ", saved=" + snapshot.totalSaved()
+                + ", maxContentUs=" + snapshot.contentMicrosMax()
+                + ", maxSaveUs=" + snapshot.saveMicrosMax()
+                + ", budget=content " + snapshot.maxContentPerTick()
+                + "/t save " + snapshot.maxSavesPerTick()
+                + "/t " + snapshot.maxSaveMicrosPerTick() + "us"
+                + ", lastContent=" + formatNullableCube(snapshot.lastContentCube())
+                + " " + snapshot.lastContentSummary().compact();
+    }
+
     private static String formatMutationSnapshot(String prefix, CubeMutationSnapshot snapshot) {
         String lastCube = snapshot.lastCube() == null ? "none" : formatCube(snapshot.lastCube());
         String lastLocal = snapshot.lastLocal() == null ? "none" : snapshot.lastLocal().x() + " " + snapshot.lastLocal().y() + " " + snapshot.lastLocal().z();
@@ -2064,6 +2096,10 @@ public final class RedlineWorldCoreCommands {
 
     private static String formatCube(CubePos cubePos) {
         return cubePos.x() + " " + cubePos.y() + " " + cubePos.z();
+    }
+
+    private static String formatNullableCube(CubePos cubePos) {
+        return cubePos == null ? "none" : formatCube(cubePos);
     }
 
     private static String formatDecimal(double value) {

@@ -13,6 +13,9 @@ import com.redline.worldcore.server.cube.access.CubeMutationContext;
 import com.redline.worldcore.server.cube.access.CubeMutationResult;
 import com.redline.worldcore.server.cube.access.CubeMutationSnapshot;
 import com.redline.worldcore.server.cube.access.CubicLevelAccess;
+import com.redline.worldcore.server.cube.dirty.CubeContentSummary;
+import com.redline.worldcore.server.cube.dirty.CubeDirtyFlag;
+import com.redline.worldcore.server.cube.dirty.CubeDirtyTracker;
 import com.redline.worldcore.server.generation.CubicWorldgenPipeline;
 import com.redline.worldcore.server.lighting.ColumnSkyIndex;
 import com.redline.worldcore.server.lighting.SkyLightLayer;
@@ -70,6 +73,15 @@ public final class ServerCubeCache {
     /** M9 keeps static block-light rebuilds small and predictable during gameplay ticks. */
     public static final int MAX_LIGHT_REBUILDS_PER_TICK = 32;
 
+    /** M14.1 scans content/index summaries in small batches after block mutation. */
+    public static final int MAX_DIRTY_CONTENT_REBUILDS_PER_TICK = 8;
+
+    /** M14.1 saves dirty cubes in batches instead of synchronously writing every block edit. */
+    public static final int MAX_DIRTY_SAVES_PER_TICK = 4;
+
+    /** Soft M14.1 save flush budget; one expensive Region3D write may exceed it, then the queue stops. */
+    public static final int MAX_DIRTY_SAVE_MICROS_PER_TICK = 4_000;
+
     /** M10.1 keeps automatic vertical sky-light rebuilds tiny; manual commands may still rebuild large ranges immediately. */
     public static final int MAX_SKY_LIGHT_COLUMNS_PER_TICK = 1;
 
@@ -83,6 +95,11 @@ public final class ServerCubeCache {
     private final LinkedHashMap<CubePos, CubeTicketLevel> pendingLoads = new LinkedHashMap<>();
     private final LinkedHashSet<CubePos> lightDirtyQueue = new LinkedHashSet<>();
     private final LinkedHashMap<ColumnPos, Long> skyLightDirtyColumns = new LinkedHashMap<>();
+    private final CubeDirtyTracker dirtyTracker = new CubeDirtyTracker(
+            MAX_DIRTY_CONTENT_REBUILDS_PER_TICK,
+            MAX_DIRTY_SAVES_PER_TICK,
+            MAX_DIRTY_SAVE_MICROS_PER_TICK
+    );
     private final CubeBlockUpdatePipeline blockUpdatePipeline = new CubeBlockUpdatePipeline();
 
     private long gameTime;
@@ -159,6 +176,7 @@ public final class ServerCubeCache {
 
     public synchronized CubeLoadingTickResult tick(Collection<CubeTicket> tickets) {
         gameTime++;
+        dirtyTracker.beginTick();
 
         RequiredLevels required = collectRequiredLevels(tickets);
         requestedLastTick = required.levels().size();
@@ -168,8 +186,10 @@ public final class ServerCubeCache {
         int queuedThisTick = queueMissingAndRefreshLoaded(required.levels());
         int unloadedThisTick = unloadNoLongerRequired(required.levels());
         LoadCounters loadCounters = loadPending(required.levels());
+        int rebuiltContentThisTick = rebuildDirtyContentQueue();
         int rebuiltLightThisTick = rebuildDirtyLightQueue();
         SkyLightQueueCounters skyCounters = rebuildDirtySkyLightColumns();
+        int savedDirtyThisTick = flushDirtySaveQueue();
 
         queuedLastTick = queuedThisTick;
         loadedLastTick = loadCounters.loaded();
@@ -314,23 +334,21 @@ public final class ServerCubeCache {
 
         if (dirty) {
             holder.markDirty();
+            dirtyTracker.mark(cubePos,
+                    CubeDirtyFlag.BLOCKS,
+                    CubeDirtyFlag.CONTENT_FLAGS,
+                    CubeDirtyFlag.COLUMN_INDEX,
+                    CubeDirtyFlag.STATIC_LIGHT,
+                    CubeDirtyFlag.STORAGE,
+                    CubeDirtyFlag.CLIENT_SYNC
+            );
             markLightDirty(cubePos);
-            if (context.rebuildStaticLightNow()) {
-                rebuildLightNow(holder);
-                holder.markDirty();
-                staticLightRebuilt = true;
-            }
-            if (context.rebuildSkyLightColumnNow()) {
-                skyLightRebuilt = rebuildSkyLightColumnLoaded(cubePos.columnPos(), false, true).isPresent();
-            } else if (context.markSkyLightDirty()) {
+            if (context.rebuildSkyLightColumnNow() || context.markSkyLightDirty()) {
+                dirtyTracker.mark(cubePos, CubeDirtyFlag.SKY_LIGHT);
                 skyLightQueued = markSkyLightDirty(cubePos.columnPos());
             }
-            if (context.saveImmediately()) {
-                storage.put(holder.cube());
-                holder.markSaved(CubeHolderState.REGION3D_SAVED);
-                totalSaved++;
-                saved = true;
-            }
+            // M14.1: even if the caller asks for immediate save/light, gameplay mutations only enqueue the work here.
+            // Static light, content flags, column indexes and Region3D save are budgeted later in the server tick.
         }
 
         CubeMutationResult result = new CubeMutationResult(true, changed, statusPromoted, holderLoaded, holderGenerated, saved,
@@ -353,6 +371,7 @@ public final class ServerCubeCache {
             return false;
         }
         lightDirtyQueue.add(cubePos);
+        dirtyTracker.mark(cubePos, CubeDirtyFlag.STATIC_LIGHT, CubeDirtyFlag.STORAGE);
         return true;
     }
 
@@ -475,6 +494,7 @@ public final class ServerCubeCache {
             changed++;
             if (markDirtyChanged) {
                 holder.markDirty();
+                dirtyTracker.mark(holder.cubePos(), CubeDirtyFlag.SKY_LIGHT, CubeDirtyFlag.STORAGE, CubeDirtyFlag.CLIENT_SYNC);
             }
         }
 
@@ -486,6 +506,7 @@ public final class ServerCubeCache {
                 }
                 storage.put(holder.cube());
                 holder.markSaved(CubeHolderState.REGION3D_SAVED);
+                dirtyTracker.recordSaved(holder.cubePos(), 0L);
                 saved++;
             }
             totalSaved += saved;
@@ -691,6 +712,7 @@ public final class ServerCubeCache {
                 loadTimeBudgetHitLastTick,
                 requestLimitHitLastTick,
                 mutationSnapshot(),
+                dirtyTracker.snapshot(),
                 Map.copyOf(byTicketLevel),
                 Map.copyOf(byCubeStatus),
                 Map.copyOf(byHolderState)
@@ -719,6 +741,7 @@ public final class ServerCubeCache {
         }
         pendingLoads.clear();
         skyLightDirtyColumns.clear();
+        dirtyTracker.clearQueues();
         return unloaded;
     }
 
@@ -881,6 +904,7 @@ public final class ServerCubeCache {
         }
         holders.remove(holder.cubePos());
         lightDirtyQueue.remove(holder.cubePos());
+        dirtyTracker.remove(holder.cubePos());
         if (loadedColumnHolders(holder.cubePos().columnPos()).isEmpty()) {
             skyLightDirtyColumns.remove(holder.cubePos().columnPos());
         }
@@ -920,7 +944,7 @@ public final class ServerCubeCache {
             }
             ColumnPos columnPos = entry.getKey();
             iterator.remove();
-            Optional<SkyLightLayer.ColumnRebuildResult> result = rebuildSkyLightColumnLoaded(columnPos, false, false);
+            Optional<SkyLightLayer.ColumnRebuildResult> result = rebuildSkyLightColumnLoaded(columnPos, false, true);
             if (result.isEmpty()) {
                 continue;
             }
@@ -933,6 +957,58 @@ public final class ServerCubeCache {
         }
 
         return new SkyLightQueueCounters(rebuiltColumns, changedCubes, skippedUnchangedCubes, savedChangedCubes, elapsedMicros);
+    }
+
+
+    private int rebuildDirtyContentQueue() {
+        int rebuilt = 0;
+        for (CubePos cubePos : dirtyTracker.pollContentWork()) {
+            CubeHolder holder = holders.get(cubePos);
+            if (holder == null) {
+                dirtyTracker.remove(cubePos);
+                continue;
+            }
+            long startNanos = System.nanoTime();
+            CubeContentSummary summary = CubeContentSummary.from(holder.cube());
+            long elapsedMicros = Math.max(1L, (System.nanoTime() - startNanos) / 1_000L);
+            dirtyTracker.recordContent(cubePos, summary, elapsedMicros);
+            rebuilt++;
+        }
+        return rebuilt;
+    }
+
+    private int flushDirtySaveQueue() {
+        int saved = 0;
+        long startNanos = System.nanoTime();
+        List<CubePos> batch = dirtyTracker.pollSaveWork(0L);
+        for (int index = 0; index < batch.size(); index++) {
+            CubePos cubePos = batch.get(index);
+            CubeHolder holder = holders.get(cubePos);
+            if (holder == null) {
+                dirtyTracker.remove(cubePos);
+                continue;
+            }
+            if (!holder.dirty()) {
+                dirtyTracker.clean(cubePos, CubeDirtyFlag.STORAGE);
+                continue;
+            }
+            long saveStartNanos = System.nanoTime();
+            storage.put(holder.cube());
+            holder.markSaved(CubeHolderState.REGION3D_SAVED);
+            long saveMicros = Math.max(1L, (System.nanoTime() - saveStartNanos) / 1_000L);
+            totalSaved++;
+            dirtyTracker.recordSaved(cubePos, saveMicros);
+            saved++;
+
+            long elapsedMicros = Math.max(1L, (System.nanoTime() - startNanos) / 1_000L);
+            if (dirtyTracker.shouldStopSaving(elapsedMicros, saved)) {
+                for (int remaining = index + 1; remaining < batch.size(); remaining++) {
+                    dirtyTracker.requeueSave(batch.get(remaining));
+                }
+                break;
+            }
+        }
+        return saved;
     }
 
     private int saveDirtyLoadedColumn(ColumnPos columnPos) {
@@ -968,6 +1044,7 @@ public final class ServerCubeCache {
     private StaticBlockLightLayer.RebuildResult rebuildLightNow(CubeHolder holder) {
         StaticBlockLightLayer.RebuildResult result = StaticBlockLightLayer.rebuild(holder.cube());
         lightDirtyQueue.remove(holder.cubePos());
+        dirtyTracker.clean(holder.cubePos(), CubeDirtyFlag.STATIC_LIGHT);
         totalLightRebuilt++;
         return result;
     }

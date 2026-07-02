@@ -50,7 +50,7 @@ public final class CubeDebugOverlay {
         int width = 340;
         int lines = 11;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
-        draw(graphics, minecraft, x, y, "RWC M13.1 compact", GOOD);
+        draw(graphics, minecraft, x, y, "RWC compact", GOOD);
         y += 10;
         draw(graphics, minecraft, x, y, "cube=" + payload.playerCubeX() + " " + payload.playerCubeY() + " " + payload.playerCubeZ()
                 + " loaded=" + payload.loadedCubes() + "/" + payload.requestedCubes(), TEXT);
