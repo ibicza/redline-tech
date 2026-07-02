@@ -48,7 +48,7 @@ public final class CubeDebugOverlay {
         int x = 6;
         int y = 6;
         int width = 320;
-        int lines = 7;
+        int lines = 8;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
         draw(graphics, minecraft, x, y, "RWC M12 compact", GOOD);
         y += 10;
@@ -83,6 +83,12 @@ public final class CubeDebugOverlay {
                 + " pr=" + payload.projectileEntityCount()
                 + " o=" + payload.otherEntityCount()
                 + " scanUs=" + payload.entityScanMicrosLastTick(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "pregen " + pregenState(payload)
+                + " q=" + payload.pregenQueuedCubes()
+                + " tick=" + payload.pregenLastTickProcessed()
+                + "/" + payload.pregenMaxCubesPerTick()
+                + " us=" + payload.pregenLastTickMicros(), MUTED);
     }
 
     private static void renderFull(GuiGraphicsExtractor graphics, Minecraft minecraft, CubeClientSyncPayload payload) {
@@ -90,10 +96,10 @@ public final class CubeDebugOverlay {
         int y = 6;
         int width = 430;
         int shownEntries = Math.min(8, payload.entries().size());
-        int lines = shownEntries + 14;
+        int lines = shownEntries + 16;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
 
-        draw(graphics, minecraft, x, y, "Redline World Core M12 sync/light/entity", GOOD);
+        draw(graphics, minecraft, x, y, "Redline World Core debug overlay", GOOD);
         y += 10;
         draw(graphics, minecraft, x, y, "playerCube=" + payload.playerCubeX() + " " + payload.playerCubeY() + " " + payload.playerCubeZ()
                 + "  cache loaded=" + payload.loadedCubes() + " pending=" + payload.pendingLoads() + " requested=" + payload.requestedCubes(), TEXT);
@@ -148,6 +154,20 @@ public final class CubeDebugOverlay {
                 + " busiest=" + payload.busiestEntityCubeX() + " " + payload.busiestEntityCubeY() + " " + payload.busiestEntityCubeZ()
                 + "/" + payload.busiestEntityCubeEntities(), MUTED);
         y += 10;
+        draw(graphics, minecraft, x, y, "pregen " + pregenState(payload)
+                + " job=" + payload.pregenActiveJobId()
+                + " target=" + enumName(CubeStatus.values(), payload.pregenTargetStatusOrdinal())
+                + " q=" + payload.pregenQueuedCubes()
+                + " done=" + payload.pregenActiveProcessedCubes() + "/" + payload.pregenActiveTotalCubes(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "pregenTick processed=" + payload.pregenLastTickProcessed()
+                + " gen=" + payload.pregenLastTickGenerated()
+                + " skip=" + payload.pregenLastTickSkipped()
+                + " fail=" + payload.pregenLastTickFailed()
+                + " us=" + payload.pregenLastTickMicros()
+                + " max=" + payload.pregenMaxTickMicros()
+                + " budget=" + payload.pregenMaxCubesPerTick() + "/t " + payload.pregenMaxMillisPerTick() + "ms", MUTED);
+        y += 10;
         draw(graphics, minecraft, x, y, "stream h=" + payload.streamHorizontalRadius()
                 + " v=" + payload.streamVerticalRadius()
                 + " speed=" + payload.maxMaterializedCubesPerTick()
@@ -187,6 +207,13 @@ public final class CubeDebugOverlay {
             draw(graphics, minecraft, x, y, line, entry.materialized() ? GOOD : WARN);
             y += 10;
         }
+    }
+
+    private static String pregenState(CubeClientSyncPayload payload) {
+        if (payload.pregenRunning()) {
+            return payload.pregenPaused() ? "paused" : "running";
+        }
+        return "idle";
     }
 
     private static void draw(GuiGraphicsExtractor graphics, Minecraft minecraft, int x, int y, String text, int color) {

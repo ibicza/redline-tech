@@ -4,7 +4,7 @@ import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 
 /** Registers RWC play payloads used by the client sync/debug layer. */
 public final class WorldCoreNetwork {
-    public static final String NETWORK_VERSION = "12.1";
+    public static final String NETWORK_VERSION = "13.0";
 
     private WorldCoreNetwork() {
     }

@@ -6,6 +6,7 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.redline.worldcore.RedlineWorldCore;
 import com.redline.worldcore.api.dimension.CubicDimensionKeys;
 import com.redline.worldcore.api.cube.LevelCube;
+import com.redline.worldcore.api.cube.CubeStatus;
 import com.redline.worldcore.api.generation.CubicDimensionSettings;
 import com.redline.worldcore.server.generation.CubeGenerationDebug;
 import com.redline.worldcore.server.generation.CubeGenerationProfiler;
@@ -34,6 +35,10 @@ import com.redline.worldcore.server.lighting.SkyLightSummary;
 import com.redline.worldcore.server.lighting.SkyLightTransferData;
 import com.redline.worldcore.server.lighting.StaticBlockLightLayer;
 import com.redline.worldcore.server.lighting.StaticLightSummary;
+import com.redline.worldcore.server.pregen.CubePregenBudget;
+import com.redline.worldcore.server.pregen.CubePregenJob;
+import com.redline.worldcore.server.pregen.CubePregenManager;
+import com.redline.worldcore.server.pregen.CubePregenSnapshot;
 import com.redline.worldcore.server.ticket.CubeTicketDebugFormatter;
 import com.redline.worldcore.server.ticket.CubeTicketManager;
 import com.redline.worldcore.server.ticket.CubeTicketSnapshot;
@@ -395,6 +400,56 @@ public final class RedlineWorldCoreCommands {
                                                                                         IntegerArgumentType.getInteger(context, "maxCubeY"),
                                                                                         StringArgumentType.getString(context, "level")
                                                                                 ))))))))))
+                .then(Commands.literal("pregen")
+                        .then(Commands.literal("status")
+                                .executes(context -> pregenStatus(context.getSource())))
+                        .then(Commands.literal("pause")
+                                .executes(context -> pregenPause(context.getSource())))
+                        .then(Commands.literal("resume")
+                                .executes(context -> pregenResume(context.getSource())))
+                        .then(Commands.literal("stop")
+                                .executes(context -> pregenStop(context.getSource())))
+                        .then(Commands.literal("clearqueue")
+                                .executes(context -> pregenClearQueue(context.getSource())))
+                        .then(Commands.literal("configure")
+                                .then(Commands.argument("maxCubesPerTick", IntegerArgumentType.integer(1, CubePregenBudget.MAX_CUBES_PER_TICK_LIMIT))
+                                        .then(Commands.argument("maxMillisPerTick", IntegerArgumentType.integer(1, CubePregenBudget.MAX_MILLIS_PER_TICK_LIMIT))
+                                                .executes(context -> pregenConfigure(
+                                                        context.getSource(),
+                                                        IntegerArgumentType.getInteger(context, "maxCubesPerTick"),
+                                                        IntegerArgumentType.getInteger(context, "maxMillisPerTick")
+                                                )))))
+                        .then(Commands.literal("start")
+                                .then(Commands.literal("radius")
+                                        .then(Commands.argument("blocks", IntegerArgumentType.integer(0, 2048))
+                                                .then(Commands.argument("minY", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("maxY", IntegerArgumentType.integer())
+                                                                .then(Commands.argument("status", StringArgumentType.word())
+                                                                        .executes(context -> pregenStartRadius(
+                                                                                context.getSource(),
+                                                                                IntegerArgumentType.getInteger(context, "blocks"),
+                                                                                IntegerArgumentType.getInteger(context, "minY"),
+                                                                                IntegerArgumentType.getInteger(context, "maxY"),
+                                                                                StringArgumentType.getString(context, "status")
+                                                                        )))))))
+                                .then(Commands.literal("cuboid")
+                                        .then(Commands.argument("x1", IntegerArgumentType.integer())
+                                                .then(Commands.argument("y1", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("z1", IntegerArgumentType.integer())
+                                                                .then(Commands.argument("x2", IntegerArgumentType.integer())
+                                                                        .then(Commands.argument("y2", IntegerArgumentType.integer())
+                                                                                .then(Commands.argument("z2", IntegerArgumentType.integer())
+                                                                                        .then(Commands.argument("status", StringArgumentType.word())
+                                                                                                .executes(context -> pregenStartCuboid(
+                                                                                                        context.getSource(),
+                                                                                                        IntegerArgumentType.getInteger(context, "x1"),
+                                                                                                        IntegerArgumentType.getInteger(context, "y1"),
+                                                                                                        IntegerArgumentType.getInteger(context, "z1"),
+                                                                                                        IntegerArgumentType.getInteger(context, "x2"),
+                                                                                                        IntegerArgumentType.getInteger(context, "y2"),
+                                                                                                        IntegerArgumentType.getInteger(context, "z2"),
+                                                                                                        StringArgumentType.getString(context, "status")
+                                                                                                ))))))))))))
                 .then(Commands.literal("cubic_test")
                         .then(Commands.literal("status")
                                 .executes(context -> cubicTestStatus(context.getSource())))
@@ -470,6 +525,122 @@ public final class RedlineWorldCoreCommands {
                                                                         IntegerArgumentType.getInteger(context, "cubeZ")
                                                                 ))))))))
         );
+    }
+
+
+    private static int pregenStatus(CommandSourceStack source) {
+        CubePregenSnapshot snapshot = CubePregenManager.MANAGER.snapshot();
+        source.sendSuccess(() -> Component.literal("RWC pregen: state=" + pregenState(snapshot)
+                + ", queued=" + snapshot.queuedCubes()
+                + ", active=" + snapshot.activeProcessedCubes() + "/" + snapshot.activeTotalCubes()
+                + ", target=" + snapshot.targetStatus()
+                + ", job=" + snapshot.activeJobId()), false);
+        source.sendSuccess(() -> Component.literal("RWC pregen totals: jobsStarted=" + snapshot.totalStartedJobs()
+                + ", jobsDone=" + snapshot.totalCompletedJobs()
+                + ", processed=" + snapshot.totalProcessedCubes()
+                + ", generated=" + snapshot.totalGeneratedCubes()
+                + ", skipped=" + snapshot.totalSkippedCubes()
+                + ", failed=" + snapshot.totalFailedCubes()), false);
+        source.sendSuccess(() -> Component.literal("RWC pregen tick: processed=" + snapshot.lastTickProcessed()
+                + ", generated=" + snapshot.lastTickGenerated()
+                + ", skipped=" + snapshot.lastTickSkipped()
+                + ", failed=" + snapshot.lastTickFailed()
+                + ", us=" + snapshot.lastTickMicros()
+                + ", maxUs=" + snapshot.maxTickMicros()
+                + ", budget=" + snapshot.maxCubesPerTick() + "/t " + snapshot.maxMillisPerTick() + "ms"), false);
+        if (snapshot.activeMin() != null && snapshot.activeMax() != null) {
+            source.sendSuccess(() -> Component.literal("RWC pregen bounds: min=" + formatCube(snapshot.activeMin())
+                    + ", max=" + formatCube(snapshot.activeMax())
+                    + ", remaining=" + snapshot.remainingCubes()), false);
+        }
+        if (!snapshot.lastError().isBlank()) {
+            source.sendFailure(Component.literal("RWC pregen last error: " + snapshot.lastError()));
+        }
+        return snapshot.queuedCubes();
+    }
+
+    private static int pregenStartRadius(CommandSourceStack source, int radiusBlocks, int minY, int maxY, String statusName) {
+        try {
+            Vec3 sourcePos = source.getPosition();
+            int centerX = Mth.floor(sourcePos.x);
+            int centerZ = Mth.floor(sourcePos.z);
+            CubeStatus targetStatus = parseCubeStatus(statusName);
+            CubePos min = CubePos.fromBlock(centerX - radiusBlocks, Math.min(minY, maxY), centerZ - radiusBlocks);
+            CubePos max = CubePos.fromBlock(centerX + radiusBlocks, Math.max(minY, maxY), centerZ + radiusBlocks);
+            return startPregen(source, CubePregenJob.cuboid(min, max, targetStatus, "manual:radius"));
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to start RWC radius pregen: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int pregenStartCuboid(CommandSourceStack source, int x1, int y1, int z1, int x2, int y2, int z2, String statusName) {
+        try {
+            CubeStatus targetStatus = parseCubeStatus(statusName);
+            CubePos first = CubePos.fromBlock(x1, y1, z1);
+            CubePos second = CubePos.fromBlock(x2, y2, z2);
+            return startPregen(source, CubePregenJob.cuboid(first, second, targetStatus, "manual:cuboid"));
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to start RWC cuboid pregen: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int startPregen(CommandSourceStack source, CubePregenJob job) {
+        CubePregenJob started = CubePregenManager.MANAGER.start(job, cubeCache(source).settings());
+        source.sendSuccess(() -> Component.literal("RWC pregen started: job=" + started.shortId()
+                + ", target=" + started.targetStatus()
+                + ", cubes=" + started.totalCubes()
+                + ", min=" + formatCube(started.min())
+                + ", max=" + formatCube(started.max())), false);
+        return Mth.clamp((int) Math.min(Integer.MAX_VALUE, started.totalCubes()), 0, Integer.MAX_VALUE);
+    }
+
+    private static int pregenPause(CommandSourceStack source) {
+        boolean changed = CubePregenManager.MANAGER.pause();
+        if (changed) {
+            source.sendSuccess(() -> Component.literal("RWC pregen paused."), false);
+            return 1;
+        }
+        source.sendFailure(Component.literal("No active RWC pregen job to pause."));
+        return 0;
+    }
+
+    private static int pregenResume(CommandSourceStack source) {
+        boolean changed = CubePregenManager.MANAGER.resume();
+        if (changed) {
+            source.sendSuccess(() -> Component.literal("RWC pregen resumed."), false);
+            return 1;
+        }
+        source.sendFailure(Component.literal("No active RWC pregen job to resume."));
+        return 0;
+    }
+
+    private static int pregenStop(CommandSourceStack source) {
+        int removed = CubePregenManager.MANAGER.stop();
+        source.sendSuccess(() -> Component.literal("RWC pregen stopped: removed=" + removed), false);
+        return removed;
+    }
+
+    private static int pregenClearQueue(CommandSourceStack source) {
+        int removed = CubePregenManager.MANAGER.clearQueue();
+        source.sendSuccess(() -> Component.literal("RWC pregen queue cleared: removed=" + removed), false);
+        return removed;
+    }
+
+    private static int pregenConfigure(CommandSourceStack source, int maxCubesPerTick, int maxMillisPerTick) {
+        CubePregenManager.MANAGER.configureBudget(maxCubesPerTick, maxMillisPerTick);
+        source.sendSuccess(() -> Component.literal("RWC pregen budget: maxCubesPerTick="
+                + CubePregenManager.MANAGER.budget().maxCubesPerTick()
+                + ", maxMillisPerTick=" + CubePregenManager.MANAGER.budget().maxMillisPerTick()), false);
+        return maxCubesPerTick;
+    }
+
+    private static String pregenState(CubePregenSnapshot snapshot) {
+        if (snapshot.running()) {
+            return snapshot.paused() ? "paused" : "running";
+        }
+        return "idle";
     }
 
     private static int status(CommandSourceStack source) {
@@ -1474,6 +1645,16 @@ public final class RedlineWorldCoreCommands {
         } catch (IllegalArgumentException exception) {
             throw new IllegalArgumentException("Unknown ticket level '" + levelName + "'. Valid levels: "
                     + String.join(", ", java.util.Arrays.stream(CubeTicketLevel.values()).map(Enum::name).toList()));
+        }
+    }
+
+
+    private static CubeStatus parseCubeStatus(String statusName) {
+        try {
+            return CubeStatus.valueOf(statusName.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("Unknown cube status '" + statusName + "'. Valid statuses: "
+                    + String.join(", ", java.util.Arrays.stream(CubeStatus.values()).map(Enum::name).toList()));
         }
     }
 

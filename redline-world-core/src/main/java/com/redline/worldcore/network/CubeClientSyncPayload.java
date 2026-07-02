@@ -70,12 +70,35 @@ public record CubeClientSyncPayload(
         long entityScanMicrosLastTick,
         long entityScanMicrosAverage,
         long entityScanMicrosMax,
+        boolean pregenRunning,
+        boolean pregenPaused,
+        int pregenQueuedCubes,
+        long pregenActiveTotalCubes,
+        long pregenActiveProcessedCubes,
+        long pregenTotalCompletedJobs,
+        long pregenTotalProcessedCubes,
+        long pregenTotalGeneratedCubes,
+        long pregenTotalSkippedCubes,
+        long pregenTotalFailedCubes,
+        int pregenLastTickProcessed,
+        int pregenLastTickGenerated,
+        int pregenLastTickSkipped,
+        int pregenLastTickFailed,
+        long pregenLastTickMicros,
+        long pregenMaxTickMicros,
+        int pregenMaxCubesPerTick,
+        int pregenMaxMillisPerTick,
+        int pregenTargetStatusOrdinal,
+        String pregenActiveJobId,
+        String pregenLastError,
         List<Entry> entries
 ) implements CustomPacketPayload {
     public static final Type<CubeClientSyncPayload> TYPE = new Type<>(Identifier.fromNamespaceAndPath(RedlineWorldCore.MOD_ID, "cube_client_sync"));
     public static final StreamCodec<RegistryFriendlyByteBuf, CubeClientSyncPayload> CODEC = StreamCodec.ofMember(CubeClientSyncPayload::write, CubeClientSyncPayload::read);
 
     public CubeClientSyncPayload {
+        pregenActiveJobId = pregenActiveJobId == null ? "none" : pregenActiveJobId;
+        pregenLastError = pregenLastError == null ? "" : pregenLastError;
         entries = List.copyOf(entries);
     }
 
@@ -139,6 +162,27 @@ public record CubeClientSyncPayload(
         buffer.writeLong(entityScanMicrosLastTick);
         buffer.writeLong(entityScanMicrosAverage);
         buffer.writeLong(entityScanMicrosMax);
+        buffer.writeBoolean(pregenRunning);
+        buffer.writeBoolean(pregenPaused);
+        buffer.writeVarInt(pregenQueuedCubes);
+        buffer.writeLong(pregenActiveTotalCubes);
+        buffer.writeLong(pregenActiveProcessedCubes);
+        buffer.writeLong(pregenTotalCompletedJobs);
+        buffer.writeLong(pregenTotalProcessedCubes);
+        buffer.writeLong(pregenTotalGeneratedCubes);
+        buffer.writeLong(pregenTotalSkippedCubes);
+        buffer.writeLong(pregenTotalFailedCubes);
+        buffer.writeVarInt(pregenLastTickProcessed);
+        buffer.writeVarInt(pregenLastTickGenerated);
+        buffer.writeVarInt(pregenLastTickSkipped);
+        buffer.writeVarInt(pregenLastTickFailed);
+        buffer.writeLong(pregenLastTickMicros);
+        buffer.writeLong(pregenMaxTickMicros);
+        buffer.writeVarInt(pregenMaxCubesPerTick);
+        buffer.writeVarInt(pregenMaxMillisPerTick);
+        buffer.writeVarInt(pregenTargetStatusOrdinal);
+        buffer.writeUtf(pregenActiveJobId);
+        buffer.writeUtf(pregenLastError);
         buffer.writeVarInt(entries.size());
         for (Entry entry : entries) {
             entry.write(buffer);
@@ -200,6 +244,27 @@ public record CubeClientSyncPayload(
         long entityScanMicrosLastTick = buffer.readLong();
         long entityScanMicrosAverage = buffer.readLong();
         long entityScanMicrosMax = buffer.readLong();
+        boolean pregenRunning = buffer.readBoolean();
+        boolean pregenPaused = buffer.readBoolean();
+        int pregenQueuedCubes = buffer.readVarInt();
+        long pregenActiveTotalCubes = buffer.readLong();
+        long pregenActiveProcessedCubes = buffer.readLong();
+        long pregenTotalCompletedJobs = buffer.readLong();
+        long pregenTotalProcessedCubes = buffer.readLong();
+        long pregenTotalGeneratedCubes = buffer.readLong();
+        long pregenTotalSkippedCubes = buffer.readLong();
+        long pregenTotalFailedCubes = buffer.readLong();
+        int pregenLastTickProcessed = buffer.readVarInt();
+        int pregenLastTickGenerated = buffer.readVarInt();
+        int pregenLastTickSkipped = buffer.readVarInt();
+        int pregenLastTickFailed = buffer.readVarInt();
+        long pregenLastTickMicros = buffer.readLong();
+        long pregenMaxTickMicros = buffer.readLong();
+        int pregenMaxCubesPerTick = buffer.readVarInt();
+        int pregenMaxMillisPerTick = buffer.readVarInt();
+        int pregenTargetStatusOrdinal = buffer.readVarInt();
+        String pregenActiveJobId = buffer.readUtf();
+        String pregenLastError = buffer.readUtf();
         int count = buffer.readVarInt();
         List<Entry> entries = new ArrayList<>(Math.min(count, 256));
         for (int i = 0; i < count; i++) {
@@ -260,6 +325,27 @@ public record CubeClientSyncPayload(
                 entityScanMicrosLastTick,
                 entityScanMicrosAverage,
                 entityScanMicrosMax,
+                pregenRunning,
+                pregenPaused,
+                pregenQueuedCubes,
+                pregenActiveTotalCubes,
+                pregenActiveProcessedCubes,
+                pregenTotalCompletedJobs,
+                pregenTotalProcessedCubes,
+                pregenTotalGeneratedCubes,
+                pregenTotalSkippedCubes,
+                pregenTotalFailedCubes,
+                pregenLastTickProcessed,
+                pregenLastTickGenerated,
+                pregenLastTickSkipped,
+                pregenLastTickFailed,
+                pregenLastTickMicros,
+                pregenMaxTickMicros,
+                pregenMaxCubesPerTick,
+                pregenMaxMillisPerTick,
+                pregenTargetStatusOrdinal,
+                pregenActiveJobId,
+                pregenLastError,
                 entries
         );
     }

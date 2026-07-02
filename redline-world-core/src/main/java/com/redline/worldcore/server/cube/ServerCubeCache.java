@@ -409,6 +409,74 @@ public final class ServerCubeCache {
         return storage.get(cubePos);
     }
 
+
+
+    /**
+     * M13.0 manual pregen entry point.
+     *
+     * <p>This prepares a single cube in the cube-first backend and saves it to Region3D without creating gameplay
+     * tickets, entity ticking, random ticks, mob spawning or block entity logic. If the cube is already loaded or saved at
+     * the requested status, it is counted as skipped by the pregen manager.</p>
+     */
+    public synchronized PregenCubeResult pregenCube(CubePos cubePos, CubeStatus targetStatus, boolean saveImmediately) {
+        Objects.requireNonNull(cubePos, "cubePos");
+        Objects.requireNonNull(targetStatus, "targetStatus");
+        if (!settings.containsCubeY(cubePos.y())) {
+            return new PregenCubeResult(cubePos, false, false, false, "outside_settings");
+        }
+
+        CubeHolder existing = holders.get(cubePos);
+        if (existing != null && existing.cube().status().isAtLeast(targetStatus)) {
+            boolean saved = false;
+            if (saveImmediately && existing.dirty()) {
+                storage.put(existing.cube());
+                existing.markSaved(CubeHolderState.REGION3D_SAVED);
+                totalSaved++;
+                saved = true;
+            }
+            return new PregenCubeResult(cubePos, false, saved, false, "already_loaded");
+        }
+        if (existing != null && existing.dirty()) {
+            return new PregenCubeResult(cubePos, false, false, false, "loaded_dirty_skip");
+        }
+
+        Optional<LevelCube> persisted = storage.get(cubePos);
+        if (persisted.isPresent() && persisted.get().status().isAtLeast(targetStatus)) {
+            if (existing == null) {
+                storage.unloadFromMemory(cubePos);
+            }
+            return new PregenCubeResult(cubePos, false, false, false, "already_persisted");
+        }
+
+        LevelCube prepared = targetStatus == CubeStatus.EMPTY ? new LevelCube(cubePos) : generator.generate(cubePos);
+        if (targetStatus == CubeStatus.EMPTY) {
+            prepared.setStatus(CubeStatus.EMPTY);
+        }
+        StaticBlockLightLayer.rebuild(prepared);
+        totalLightRebuilt++;
+        if (targetStatus.isAtLeast(CubeStatus.LIGHT_READY)) {
+            SkyLightLayer.rebuildSingleCubeFromOpenSky(prepared);
+            totalSkyLightRebuilt++;
+        }
+
+        boolean saved = false;
+        if (saveImmediately) {
+            storage.put(prepared);
+            totalSaved++;
+            saved = true;
+        }
+        totalGenerated++;
+
+        if (existing != null) {
+            CubeHolder replacement = new CubeHolder(cubePos, prepared, existing.ticketLevel(), CubeHolderState.REGION3D_SAVED, gameTime);
+            replacement.markRequired(existing.ticketLevel(), gameTime);
+            holders.put(cubePos, replacement);
+        } else {
+            storage.unloadFromMemory(cubePos);
+        }
+        return new PregenCubeResult(cubePos, true, saved, targetStatus.isAtLeast(CubeStatus.LIGHT_READY), "generated");
+    }
+
     public synchronized CubeLoadingSnapshot snapshot() {
         Map<CubeTicketLevel, Integer> byTicketLevel = new EnumMap<>(CubeTicketLevel.class);
         Map<CubeStatus, Integer> byCubeStatus = new EnumMap<>(CubeStatus.class);
@@ -713,6 +781,11 @@ public final class ServerCubeCache {
 
     private static CubeTicketLevel strongerLevel(CubeTicketLevel first, CubeTicketLevel second) {
         return first.ordinal() >= second.ordinal() ? first : second;
+    }
+
+
+
+    public record PregenCubeResult(CubePos cubePos, boolean generated, boolean saved, boolean lightReady, String reason) {
     }
 
     private record RequiredLevels(Map<CubePos, CubeTicketLevel> levels, boolean limitHit) {

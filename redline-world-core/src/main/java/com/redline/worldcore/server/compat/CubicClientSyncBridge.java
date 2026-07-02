@@ -14,6 +14,8 @@ import com.redline.worldcore.server.entity.EntityTrackingSnapshot;
 import com.redline.worldcore.server.generation.CubeGenerationSummary;
 import com.redline.worldcore.server.lighting.SkyLightSummary;
 import com.redline.worldcore.server.lighting.StaticLightSummary;
+import com.redline.worldcore.server.pregen.CubePregenManager;
+import com.redline.worldcore.server.pregen.CubePregenSnapshot;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -298,6 +300,7 @@ public final class CubicClientSyncBridge {
     private static CubeClientSyncPayload buildPayload(ServerCubeCache cache, CubePos playerCube, PlayerBridgeState state) {
         CubeLoadingSnapshot snapshot = cache.snapshot();
         EntityTrackingSnapshot entitySnapshot = EntityCubeTracker.snapshot(playerCube);
+        CubePregenSnapshot pregenSnapshot = CubePregenManager.MANAGER.snapshot();
         CubePos busiestEntityCube = entitySnapshot.busiestCube();
         List<CubeClientSyncPayload.Entry> entries = new ArrayList<>();
         List<CubeHolder> nearby = cache.sortedHolders().stream()
@@ -387,6 +390,27 @@ public final class CubicClientSyncBridge {
                 entitySnapshot.scanMicrosLastTick(),
                 entitySnapshot.scanMicrosAverage(),
                 entitySnapshot.scanMicrosMax(),
+                pregenSnapshot.running(),
+                pregenSnapshot.paused(),
+                pregenSnapshot.queuedCubes(),
+                pregenSnapshot.activeTotalCubes(),
+                pregenSnapshot.activeProcessedCubes(),
+                pregenSnapshot.totalCompletedJobs(),
+                pregenSnapshot.totalProcessedCubes(),
+                pregenSnapshot.totalGeneratedCubes(),
+                pregenSnapshot.totalSkippedCubes(),
+                pregenSnapshot.totalFailedCubes(),
+                pregenSnapshot.lastTickProcessed(),
+                pregenSnapshot.lastTickGenerated(),
+                pregenSnapshot.lastTickSkipped(),
+                pregenSnapshot.lastTickFailed(),
+                pregenSnapshot.lastTickMicros(),
+                pregenSnapshot.maxTickMicros(),
+                pregenSnapshot.maxCubesPerTick(),
+                pregenSnapshot.maxMillisPerTick(),
+                pregenSnapshot.targetStatus().ordinal(),
+                pregenSnapshot.activeJobId(),
+                pregenSnapshot.lastError(),
                 entries
         );
     }
