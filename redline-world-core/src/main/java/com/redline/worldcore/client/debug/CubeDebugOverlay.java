@@ -48,9 +48,9 @@ public final class CubeDebugOverlay {
         int x = 6;
         int y = 6;
         int width = 272;
-        int lines = 5;
+        int lines = 6;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
-        draw(graphics, minecraft, x, y, "RWC M11 compact", GOOD);
+        draw(graphics, minecraft, x, y, "RWC M12 compact", GOOD);
         y += 10;
         draw(graphics, minecraft, x, y, "cube=" + payload.playerCubeX() + " " + payload.playerCubeY() + " " + payload.playerCubeZ()
                 + " loaded=" + payload.loadedCubes() + "/" + payload.requestedCubes(), TEXT);
@@ -71,6 +71,11 @@ public final class CubeDebugOverlay {
                 + " lvl=" + ClientDynamicLightLayer.activeLightLevel()
                 + " blocks=" + ClientDynamicLightLayer.appliedBlocks()
                 + " cube=" + ClientDynamicLightLayer.activeCubeString(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "entities tracked=" + payload.trackedEntities()
+                + " here=" + payload.entitiesInPlayerCube()
+                + " sections=" + payload.entitySections()
+                + " moved=" + payload.entityMovedLastTick(), MUTED);
     }
 
     private static void renderFull(GuiGraphicsExtractor graphics, Minecraft minecraft, CubeClientSyncPayload payload) {
@@ -78,10 +83,10 @@ public final class CubeDebugOverlay {
         int y = 6;
         int width = 374;
         int shownEntries = Math.min(8, payload.entries().size());
-        int lines = shownEntries + 11;
+        int lines = shownEntries + 12;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
 
-        draw(graphics, minecraft, x, y, "Redline World Core M11 sync/light", GOOD);
+        draw(graphics, minecraft, x, y, "Redline World Core M12 sync/light/entity", GOOD);
         y += 10;
         draw(graphics, minecraft, x, y, "playerCube=" + payload.playerCubeX() + " " + payload.playerCubeY() + " " + payload.playerCubeZ()
                 + "  cache loaded=" + payload.loadedCubes() + " pending=" + payload.pendingLoads() + " requested=" + payload.requestedCubes(), TEXT);
@@ -114,6 +119,16 @@ public final class CubeDebugOverlay {
                 + " cube=" + ClientDynamicLightLayer.activeCubeString()
                 + " item=" + ClientDynamicLightLayer.activeItem()
                 + " reason=" + ClientDynamicLightLayer.lastReason(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "entities tracked=" + payload.trackedEntities()
+                + " here=" + payload.entitiesInPlayerCube()
+                + " sections=" + payload.entitySections()
+                + " scanned=" + payload.entityScannedLastTick()
+                + " +" + payload.entityAddedLastTick()
+                + " move=" + payload.entityMovedLastTick()
+                + " -" + payload.entityRemovedLastTick()
+                + " busiest=" + payload.busiestEntityCubeX() + " " + payload.busiestEntityCubeY() + " " + payload.busiestEntityCubeZ()
+                + "/" + payload.busiestEntityCubeEntities(), MUTED);
         y += 10;
         draw(graphics, minecraft, x, y, "stream h=" + payload.streamHorizontalRadius()
                 + " v=" + payload.streamVerticalRadius()

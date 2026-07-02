@@ -50,6 +50,18 @@ public record CubeClientSyncPayload(
         long playerWritesSaved,
         long materializerWritesIgnored,
         long commandWritesSaved,
+        int trackedEntities,
+        int entitySections,
+        int entitiesInPlayerCube,
+        int entityScannedLastTick,
+        int entityAddedLastTick,
+        int entityMovedLastTick,
+        int entityRemovedLastTick,
+        long totalEntityMoves,
+        int busiestEntityCubeX,
+        int busiestEntityCubeY,
+        int busiestEntityCubeZ,
+        int busiestEntityCubeEntities,
         List<Entry> entries
 ) implements CustomPacketPayload {
     public static final Type<CubeClientSyncPayload> TYPE = new Type<>(Identifier.fromNamespaceAndPath(RedlineWorldCore.MOD_ID, "cube_client_sync"));
@@ -99,6 +111,18 @@ public record CubeClientSyncPayload(
         buffer.writeLong(playerWritesSaved);
         buffer.writeLong(materializerWritesIgnored);
         buffer.writeLong(commandWritesSaved);
+        buffer.writeVarInt(trackedEntities);
+        buffer.writeVarInt(entitySections);
+        buffer.writeVarInt(entitiesInPlayerCube);
+        buffer.writeVarInt(entityScannedLastTick);
+        buffer.writeVarInt(entityAddedLastTick);
+        buffer.writeVarInt(entityMovedLastTick);
+        buffer.writeVarInt(entityRemovedLastTick);
+        buffer.writeLong(totalEntityMoves);
+        buffer.writeVarInt(busiestEntityCubeX);
+        buffer.writeVarInt(busiestEntityCubeY);
+        buffer.writeVarInt(busiestEntityCubeZ);
+        buffer.writeVarInt(busiestEntityCubeEntities);
         buffer.writeVarInt(entries.size());
         for (Entry entry : entries) {
             entry.write(buffer);
@@ -140,6 +164,18 @@ public record CubeClientSyncPayload(
         long playerWritesSaved = buffer.readLong();
         long materializerWritesIgnored = buffer.readLong();
         long commandWritesSaved = buffer.readLong();
+        int trackedEntities = buffer.readVarInt();
+        int entitySections = buffer.readVarInt();
+        int entitiesInPlayerCube = buffer.readVarInt();
+        int entityScannedLastTick = buffer.readVarInt();
+        int entityAddedLastTick = buffer.readVarInt();
+        int entityMovedLastTick = buffer.readVarInt();
+        int entityRemovedLastTick = buffer.readVarInt();
+        long totalEntityMoves = buffer.readLong();
+        int busiestEntityCubeX = buffer.readVarInt();
+        int busiestEntityCubeY = buffer.readVarInt();
+        int busiestEntityCubeZ = buffer.readVarInt();
+        int busiestEntityCubeEntities = buffer.readVarInt();
         int count = buffer.readVarInt();
         List<Entry> entries = new ArrayList<>(Math.min(count, 256));
         for (int i = 0; i < count; i++) {
@@ -180,6 +216,18 @@ public record CubeClientSyncPayload(
                 playerWritesSaved,
                 materializerWritesIgnored,
                 commandWritesSaved,
+                trackedEntities,
+                entitySections,
+                entitiesInPlayerCube,
+                entityScannedLastTick,
+                entityAddedLastTick,
+                entityMovedLastTick,
+                entityRemovedLastTick,
+                totalEntityMoves,
+                busiestEntityCubeX,
+                busiestEntityCubeY,
+                busiestEntityCubeZ,
+                busiestEntityCubeEntities,
                 entries
         );
     }

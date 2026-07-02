@@ -23,6 +23,8 @@ import com.redline.worldcore.server.cube.ServerCubeCache;
 import com.redline.worldcore.server.compat.CubicClientSyncBridge;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
+import com.redline.worldcore.server.entity.EntityCubeTracker;
+import com.redline.worldcore.server.entity.EntityTrackingSnapshot;
 import com.redline.worldcore.server.generation.CubeGenerationHasher;
 import com.redline.worldcore.server.lighting.ColumnSkyIndex;
 import com.redline.worldcore.server.lighting.CubeLightDebug;
@@ -72,6 +74,11 @@ public final class RedlineWorldCoreCommands {
                         .executes(context -> cube(context.getSource()))
                         .then(Commands.literal("pos")
                                 .executes(context -> cube(context.getSource()))))
+                .then(Commands.literal("entity")
+                        .then(Commands.literal("status")
+                                .executes(context -> entityStatus(context.getSource())))
+                        .then(Commands.literal("reset")
+                                .executes(context -> entityReset(context.getSource()))))
                 .then(Commands.literal("selftest")
                         .executes(context -> selfTest(context.getSource())))
                 .then(Commands.literal("storage")
@@ -511,6 +518,38 @@ public final class RedlineWorldCoreCommands {
             source.sendFailure(Component.literal("Redline World Core Region3D storage self-test failed: " + exception.getMessage()));
             return 0;
         }
+    }
+
+    private static int entityStatus(CommandSourceStack source) {
+        CubePos playerCube = null;
+        if (source.getEntity() != null) {
+            playerCube = CubePos.fromBlock(source.getEntity().blockPosition());
+        }
+        EntityTrackingSnapshot snapshot = EntityCubeTracker.snapshot(playerCube);
+        source.sendSuccess(() -> Component.literal("M12 entity tracker: trackedEntities="
+                + snapshot.trackedEntities()
+                + ", entitySections=" + snapshot.entitySections()
+                + ", scannedLastTick=" + snapshot.scannedLastTick()
+                + ", playerCube=" + snapshot.playerCubeString()
+                + ", entitiesInPlayerCube=" + snapshot.entitiesInPlayerCube()), false);
+        source.sendSuccess(() -> Component.literal("M12 entity movement: addedLastTick="
+                + snapshot.addedLastTick()
+                + ", movedLastTick=" + snapshot.movedLastTick()
+                + ", removedLastTick=" + snapshot.removedLastTick()
+                + ", totalAdded=" + snapshot.totalAdded()
+                + ", totalMoved=" + snapshot.totalMoved()
+                + ", totalRemoved=" + snapshot.totalRemoved()), false);
+        source.sendSuccess(() -> Component.literal("M12 busiest entity cube: "
+                + snapshot.busiestCubeString()
+                + ", entities=" + snapshot.busiestCubeEntities()
+                + ", lastTickGameTime=" + snapshot.lastTickGameTime()), false);
+        return snapshot.trackedEntities();
+    }
+
+    private static int entityReset(CommandSourceStack source) {
+        EntityCubeTracker.reset();
+        source.sendSuccess(() -> Component.literal("M12 entity tracker reset."), false);
+        return 1;
     }
 
     private static int clientSyncStatus(CommandSourceStack source) {

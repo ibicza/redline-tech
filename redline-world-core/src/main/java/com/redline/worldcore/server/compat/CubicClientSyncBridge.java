@@ -9,6 +9,8 @@ import com.redline.worldcore.server.cube.CubeLoadingSnapshot;
 import com.redline.worldcore.server.cube.ServerCubeCache;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
+import com.redline.worldcore.server.entity.EntityCubeTracker;
+import com.redline.worldcore.server.entity.EntityTrackingSnapshot;
 import com.redline.worldcore.server.generation.CubeGenerationSummary;
 import com.redline.worldcore.server.lighting.SkyLightSummary;
 import com.redline.worldcore.server.lighting.StaticLightSummary;
@@ -295,6 +297,8 @@ public final class CubicClientSyncBridge {
 
     private static CubeClientSyncPayload buildPayload(ServerCubeCache cache, CubePos playerCube, PlayerBridgeState state) {
         CubeLoadingSnapshot snapshot = cache.snapshot();
+        EntityTrackingSnapshot entitySnapshot = EntityCubeTracker.snapshot(playerCube);
+        CubePos busiestEntityCube = entitySnapshot.busiestCube();
         List<CubeClientSyncPayload.Entry> entries = new ArrayList<>();
         List<CubeHolder> nearby = cache.sortedHolders().stream()
                 .sorted(Comparator.comparingInt(holder -> manhattan(holder.cubePos(), playerCube)))
@@ -363,6 +367,18 @@ public final class CubicClientSyncBridge {
                 playerWritesSaved,
                 materializerWritesIgnored,
                 commandWritesSaved,
+                entitySnapshot.trackedEntities(),
+                entitySnapshot.entitySections(),
+                entitySnapshot.entitiesInPlayerCube(),
+                entitySnapshot.scannedLastTick(),
+                entitySnapshot.addedLastTick(),
+                entitySnapshot.movedLastTick(),
+                entitySnapshot.removedLastTick(),
+                entitySnapshot.totalMoved(),
+                busiestEntityCube == null ? 0 : busiestEntityCube.x(),
+                busiestEntityCube == null ? 0 : busiestEntityCube.y(),
+                busiestEntityCube == null ? 0 : busiestEntityCube.z(),
+                entitySnapshot.busiestCubeEntities(),
                 entries
         );
     }
