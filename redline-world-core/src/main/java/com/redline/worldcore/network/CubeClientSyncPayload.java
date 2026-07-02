@@ -27,8 +27,18 @@ public record CubeClientSyncPayload(
         int lightRebuiltLastTick,
         int lightDirtyQueue,
         long totalSkyLightRebuilt,
+        long totalSkyLightColumnsRebuilt,
+        long totalSkyLightSkippedUnchanged,
+        long totalSkyLightSavedChanged,
         int skyLightColumnsLastTick,
         int skyLightDirtyColumns,
+        int skyLightChangedLastTick,
+        int skyLightSkippedUnchangedLastTick,
+        int skyLightSavedChangedLastTick,
+        long skyLightRebuildMicrosLastTick,
+        long skyLightRebuildMicrosMax,
+        int skyLightAutoColumnsPerTick,
+        int skyLightDirtyDelayTicks,
         int materializedCubes,
         int queuedMaterializations,
         int materializedLastTick,
@@ -66,8 +76,18 @@ public record CubeClientSyncPayload(
         buffer.writeVarInt(lightRebuiltLastTick);
         buffer.writeVarInt(lightDirtyQueue);
         buffer.writeLong(totalSkyLightRebuilt);
+        buffer.writeLong(totalSkyLightColumnsRebuilt);
+        buffer.writeLong(totalSkyLightSkippedUnchanged);
+        buffer.writeLong(totalSkyLightSavedChanged);
         buffer.writeVarInt(skyLightColumnsLastTick);
         buffer.writeVarInt(skyLightDirtyColumns);
+        buffer.writeVarInt(skyLightChangedLastTick);
+        buffer.writeVarInt(skyLightSkippedUnchangedLastTick);
+        buffer.writeVarInt(skyLightSavedChangedLastTick);
+        buffer.writeLong(skyLightRebuildMicrosLastTick);
+        buffer.writeLong(skyLightRebuildMicrosMax);
+        buffer.writeVarInt(skyLightAutoColumnsPerTick);
+        buffer.writeVarInt(skyLightDirtyDelayTicks);
         buffer.writeVarInt(materializedCubes);
         buffer.writeVarInt(queuedMaterializations);
         buffer.writeVarInt(materializedLastTick);
@@ -97,8 +117,18 @@ public record CubeClientSyncPayload(
         int lightRebuiltLastTick = buffer.readVarInt();
         int lightDirtyQueue = buffer.readVarInt();
         long totalSkyLightRebuilt = buffer.readLong();
+        long totalSkyLightColumnsRebuilt = buffer.readLong();
+        long totalSkyLightSkippedUnchanged = buffer.readLong();
+        long totalSkyLightSavedChanged = buffer.readLong();
         int skyLightColumnsLastTick = buffer.readVarInt();
         int skyLightDirtyColumns = buffer.readVarInt();
+        int skyLightChangedLastTick = buffer.readVarInt();
+        int skyLightSkippedUnchangedLastTick = buffer.readVarInt();
+        int skyLightSavedChangedLastTick = buffer.readVarInt();
+        long skyLightRebuildMicrosLastTick = buffer.readLong();
+        long skyLightRebuildMicrosMax = buffer.readLong();
+        int skyLightAutoColumnsPerTick = buffer.readVarInt();
+        int skyLightDirtyDelayTicks = buffer.readVarInt();
         int materializedCubes = buffer.readVarInt();
         int queuedMaterializations = buffer.readVarInt();
         int materializedLastTick = buffer.readVarInt();
@@ -127,8 +157,18 @@ public record CubeClientSyncPayload(
                 lightRebuiltLastTick,
                 lightDirtyQueue,
                 totalSkyLightRebuilt,
+                totalSkyLightColumnsRebuilt,
+                totalSkyLightSkippedUnchanged,
+                totalSkyLightSavedChanged,
                 skyLightColumnsLastTick,
                 skyLightDirtyColumns,
+                skyLightChangedLastTick,
+                skyLightSkippedUnchangedLastTick,
+                skyLightSavedChangedLastTick,
+                skyLightRebuildMicrosLastTick,
+                skyLightRebuildMicrosMax,
+                skyLightAutoColumnsPerTick,
+                skyLightDirtyDelayTicks,
                 materializedCubes,
                 queuedMaterializations,
                 materializedLastTick,

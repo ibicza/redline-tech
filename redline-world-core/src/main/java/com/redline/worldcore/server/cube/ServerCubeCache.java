@@ -25,6 +25,7 @@ import java.util.EnumMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -51,8 +52,11 @@ public final class ServerCubeCache {
     /** M9 keeps static block-light rebuilds small and predictable during gameplay ticks. */
     public static final int MAX_LIGHT_REBUILDS_PER_TICK = 32;
 
-    /** M10 keeps vertical sky-light column rebuilds bounded while the player is loading a 3D cube window. */
-    public static final int MAX_SKY_LIGHT_COLUMNS_PER_TICK = 8;
+    /** M10.1 keeps automatic vertical sky-light rebuilds tiny; manual commands may still rebuild large ranges immediately. */
+    public static final int MAX_SKY_LIGHT_COLUMNS_PER_TICK = 1;
+
+    /** Debounces automatic sky rebuilds while player tickets are still streaming many cubes into the same columns. */
+    public static final int SKY_LIGHT_DIRTY_DELAY_TICKS = 40;
 
     private final CubicDimensionSettings settings;
     private final CubeRegionStorage storage;
@@ -60,7 +64,7 @@ public final class ServerCubeCache {
     private final Map<CubePos, CubeHolder> holders = new ConcurrentHashMap<>();
     private final LinkedHashMap<CubePos, CubeTicketLevel> pendingLoads = new LinkedHashMap<>();
     private final LinkedHashSet<CubePos> lightDirtyQueue = new LinkedHashSet<>();
-    private final LinkedHashSet<ColumnPos> skyLightDirtyColumns = new LinkedHashSet<>();
+    private final LinkedHashMap<ColumnPos, Long> skyLightDirtyColumns = new LinkedHashMap<>();
 
     private long gameTime;
     private long totalLoaded;
@@ -77,8 +81,16 @@ public final class ServerCubeCache {
     private int lightRebuiltLastTick;
     private int lightDirtyLastTick;
     private long totalSkyLightRebuilt;
+    private long totalSkyLightColumnsRebuilt;
+    private long totalSkyLightSkippedUnchanged;
+    private long totalSkyLightSavedChanged;
     private int skyLightColumnsLastTick;
     private int skyLightDirtyLastTick;
+    private int skyLightChangedLastTick;
+    private int skyLightSkippedUnchangedLastTick;
+    private int skyLightSavedChangedLastTick;
+    private long skyLightRebuildMicrosLastTick;
+    private long skyLightRebuildMicrosMax;
 
     public ServerCubeCache(Path storageRoot, CubicDimensionSettings settings, long seed) {
         this(new CubeRegionStorage(storageRoot), settings, seed);
@@ -121,7 +133,7 @@ public final class ServerCubeCache {
         int unloadedThisTick = unloadNoLongerRequired(required.levels());
         LoadCounters loadCounters = loadPending(required.levels());
         int rebuiltLightThisTick = rebuildDirtyLightQueue();
-        int rebuiltSkyColumnsThisTick = rebuildDirtySkyLightColumns();
+        SkyLightQueueCounters skyCounters = rebuildDirtySkyLightColumns();
 
         queuedLastTick = queuedThisTick;
         loadedLastTick = loadCounters.loaded();
@@ -129,7 +141,12 @@ public final class ServerCubeCache {
         unloadedLastTick = unloadedThisTick;
         lightRebuiltLastTick = rebuiltLightThisTick;
         lightDirtyLastTick = lightDirtyQueue.size();
-        skyLightColumnsLastTick = rebuiltSkyColumnsThisTick;
+        skyLightColumnsLastTick = skyCounters.rebuiltColumns();
+        skyLightChangedLastTick = skyCounters.changedCubes();
+        skyLightSkippedUnchangedLastTick = skyCounters.skippedUnchangedCubes();
+        skyLightSavedChangedLastTick = skyCounters.savedChangedCubes();
+        skyLightRebuildMicrosLastTick = skyCounters.elapsedMicros();
+        skyLightRebuildMicrosMax = Math.max(skyLightRebuildMicrosMax, skyCounters.elapsedMicros());
         skyLightDirtyLastTick = skyLightDirtyColumns.size();
 
         return new CubeLoadingTickResult(gameTime, requestedLastTick, queuedThisTick, loadCounters.loaded(), loadCounters.generated(), unloadedThisTick, requestLimitHitLastTick);
@@ -173,7 +190,7 @@ public final class ServerCubeCache {
         holder.cube().setBlockState(worldPos, state);
         markLightDirty(cubePos);
         rebuildLightNow(holder);
-        rebuildSkyLightColumnLoaded(cubePos.columnPos(), false);
+        rebuildSkyLightColumnLoaded(cubePos.columnPos(), false, true);
         holder.markDirty();
         if (saveImmediately) {
             int saved = saveDirtyLoadedColumn(cubePos.columnPos());
@@ -198,13 +215,16 @@ public final class ServerCubeCache {
         return true;
     }
 
-    /** Marks an X/Z column as needing M10 vertical sky-light rebuild. */
+    /** Marks an X/Z column as needing delayed M10.1 vertical sky-light rebuild. */
     public synchronized boolean markSkyLightDirty(ColumnPos columnPos) {
-        boolean hasLoadedCube = holders.keySet().stream().anyMatch(cubePos -> cubePos.x() == columnPos.x() && cubePos.z() == columnPos.z());
-        if (!hasLoadedCube) {
+        if (!hasLoadedCubeInColumn(columnPos)) {
             return false;
         }
-        skyLightDirtyColumns.add(columnPos);
+        long dueGameTime = gameTime + SKY_LIGHT_DIRTY_DELAY_TICKS;
+        Long previousDue = skyLightDirtyColumns.get(columnPos);
+        if (previousDue == null || previousDue < dueGameTime) {
+            skyLightDirtyColumns.put(columnPos, dueGameTime);
+        }
         return true;
     }
 
@@ -276,28 +296,49 @@ public final class ServerCubeCache {
             }
         }
 
-        return rebuildSkyLightColumnLoaded(columnPos, saveImmediately);
+        return rebuildSkyLightColumnLoaded(columnPos, saveImmediately, true);
     }
 
     public synchronized Optional<SkyLightLayer.ColumnRebuildResult> rebuildSkyLightColumnLoaded(ColumnPos columnPos, boolean saveImmediately) {
+        return rebuildSkyLightColumnLoaded(columnPos, saveImmediately, true);
+    }
+
+    private synchronized Optional<SkyLightLayer.ColumnRebuildResult> rebuildSkyLightColumnLoaded(ColumnPos columnPos, boolean saveImmediately, boolean markDirtyChanged) {
         List<CubeHolder> columnHolders = loadedColumnHolders(columnPos);
         if (columnHolders.isEmpty()) {
             skyLightDirtyColumns.remove(columnPos);
             return Optional.empty();
         }
 
+        Map<CubePos, Long> beforeHashes = new LinkedHashMap<>();
+        for (CubeHolder holder : columnHolders) {
+            beforeHashes.put(holder.cubePos(), SkyLightSummary.from(holder.cube()).hash());
+        }
+
         List<LevelCube> cubes = columnHolders.stream()
                 .map(CubeHolder::cube)
                 .toList();
-        SkyLightLayer.ColumnRebuildResult result = SkyLightLayer.rebuildColumn(cubes);
-        for (CubeHolder holder : columnHolders) {
-            holder.markDirty();
-        }
-        totalSkyLightRebuilt += result.rebuiltCubes();
-        skyLightDirtyColumns.remove(columnPos);
+        long startNanos = System.nanoTime();
+        SkyLightLayer.ColumnRebuildResult rawResult = SkyLightLayer.rebuildColumn(cubes);
+        long elapsedMicros = Math.max(1L, (System.nanoTime() - startNanos) / 1_000L);
 
+        int changed = 0;
+        int unchanged = 0;
+        for (CubeHolder holder : columnHolders) {
+            long beforeHash = beforeHashes.getOrDefault(holder.cubePos(), Long.MIN_VALUE);
+            long afterHash = SkyLightSummary.from(holder.cube()).hash();
+            if (beforeHash == afterHash) {
+                unchanged++;
+                continue;
+            }
+            changed++;
+            if (markDirtyChanged) {
+                holder.markDirty();
+            }
+        }
+
+        int saved = 0;
         if (saveImmediately) {
-            int saved = 0;
             for (CubeHolder holder : columnHolders) {
                 if (!holder.dirty()) {
                     continue;
@@ -308,6 +349,13 @@ public final class ServerCubeCache {
             }
             totalSaved += saved;
         }
+
+        SkyLightLayer.ColumnRebuildResult result = rawResult.withRuntimeStats(changed, unchanged, saved, elapsedMicros);
+        totalSkyLightRebuilt += result.rebuiltCubes();
+        totalSkyLightColumnsRebuilt++;
+        totalSkyLightSkippedUnchanged += unchanged;
+        totalSkyLightSavedChanged += saved;
+        skyLightDirtyColumns.remove(columnPos);
         return Optional.of(result);
     }
 
@@ -384,8 +432,18 @@ public final class ServerCubeCache {
                 lightRebuiltLastTick,
                 lightDirtyLastTick,
                 totalSkyLightRebuilt,
+                totalSkyLightColumnsRebuilt,
+                totalSkyLightSkippedUnchanged,
+                totalSkyLightSavedChanged,
                 skyLightColumnsLastTick,
                 skyLightDirtyLastTick,
+                skyLightChangedLastTick,
+                skyLightSkippedUnchangedLastTick,
+                skyLightSavedChangedLastTick,
+                skyLightRebuildMicrosLastTick,
+                skyLightRebuildMicrosMax,
+                MAX_SKY_LIGHT_COLUMNS_PER_TICK,
+                SKY_LIGHT_DIRTY_DELAY_TICKS,
                 loadedLastTick,
                 generatedLastTick,
                 unloadedLastTick,
@@ -474,6 +532,7 @@ public final class ServerCubeCache {
     private LoadCounters loadPending(Map<CubePos, CubeTicketLevel> required) {
         int loaded = 0;
         int generated = 0;
+        Set<ColumnPos> touchedColumns = new LinkedHashSet<>();
         Iterator<Map.Entry<CubePos, CubeTicketLevel>> iterator = pendingLoads.entrySet().iterator();
         while (iterator.hasNext() && loaded < MAX_LOADS_PER_TICK) {
             Map.Entry<CubePos, CubeTicketLevel> entry = iterator.next();
@@ -489,7 +548,7 @@ public final class ServerCubeCache {
 
             CubeHolder holder = loadHolder(entry.getKey(), strongerLevel(entry.getValue(), requiredLevel));
             holders.put(holder.cubePos(), holder);
-            markSkyLightDirty(holder.cubePos().columnPos());
+            touchedColumns.add(holder.cubePos().columnPos());
             iterator.remove();
             loaded++;
             totalLoaded++;
@@ -497,6 +556,9 @@ public final class ServerCubeCache {
                 generated++;
                 totalGenerated++;
             }
+        }
+        for (ColumnPos columnPos : touchedColumns) {
+            markSkyLightDirty(columnPos);
         }
         return new LoadCounters(loaded, generated);
     }
@@ -515,18 +577,17 @@ public final class ServerCubeCache {
         if (level.isAtLeast(CubeTicketLevel.GENERATED)) {
             LevelCube generated = generator.generate(cubePos);
             StaticBlockLightLayer.rebuild(generated);
-            SkyLightLayer.rebuildSingleCubeFromOpenSky(generated);
+            // M10.1: do not rebuild sky per cube while the loading window streams in.
+            // The delayed column queue will compute correct finite-top skylight once the column settles.
             totalLightRebuilt++;
-            totalSkyLightRebuilt++;
             return new CubeHolder(cubePos, generated, level, CubeHolderState.GENERATED, gameTime);
         }
 
         LevelCube placeholder = new LevelCube(cubePos);
         placeholder.setStatus(CubeStatus.EMPTY);
         StaticBlockLightLayer.rebuild(placeholder);
-        SkyLightLayer.rebuildSingleCubeFromOpenSky(placeholder);
+        // M10.1: placeholders also wait for the delayed column queue instead of doing per-cube open-sky work.
         totalLightRebuilt++;
-        totalSkyLightRebuilt++;
         return new CubeHolder(cubePos, placeholder, level, CubeHolderState.PLACEHOLDER, gameTime);
     }
 
@@ -583,18 +644,34 @@ public final class ServerCubeCache {
         return rebuilt;
     }
 
-    private int rebuildDirtySkyLightColumns() {
-        int rebuilt = 0;
-        Iterator<ColumnPos> iterator = skyLightDirtyColumns.iterator();
-        while (iterator.hasNext() && rebuilt < MAX_SKY_LIGHT_COLUMNS_PER_TICK) {
-            ColumnPos columnPos = iterator.next();
-            iterator.remove();
-            Optional<SkyLightLayer.ColumnRebuildResult> result = rebuildSkyLightColumnLoaded(columnPos, false);
-            if (result.isPresent()) {
-                rebuilt++;
+    private SkyLightQueueCounters rebuildDirtySkyLightColumns() {
+        int rebuiltColumns = 0;
+        int changedCubes = 0;
+        int skippedUnchangedCubes = 0;
+        int savedChangedCubes = 0;
+        long elapsedMicros = 0L;
+
+        Iterator<Map.Entry<ColumnPos, Long>> iterator = skyLightDirtyColumns.entrySet().iterator();
+        while (iterator.hasNext() && rebuiltColumns < MAX_SKY_LIGHT_COLUMNS_PER_TICK) {
+            Map.Entry<ColumnPos, Long> entry = iterator.next();
+            if (entry.getValue() > gameTime) {
+                continue;
             }
+            ColumnPos columnPos = entry.getKey();
+            iterator.remove();
+            Optional<SkyLightLayer.ColumnRebuildResult> result = rebuildSkyLightColumnLoaded(columnPos, false, false);
+            if (result.isEmpty()) {
+                continue;
+            }
+            SkyLightLayer.ColumnRebuildResult rebuild = result.get();
+            rebuiltColumns++;
+            changedCubes += rebuild.changedCubes();
+            skippedUnchangedCubes += rebuild.unchangedCubes();
+            savedChangedCubes += rebuild.savedCubes();
+            elapsedMicros += rebuild.elapsedMicros();
         }
-        return rebuilt;
+
+        return new SkyLightQueueCounters(rebuiltColumns, changedCubes, skippedUnchangedCubes, savedChangedCubes, elapsedMicros);
     }
 
     private int saveDirtyLoadedColumn(ColumnPos columnPos) {
@@ -609,6 +686,15 @@ public final class ServerCubeCache {
         }
         totalSaved += saved;
         return saved;
+    }
+
+    private boolean hasLoadedCubeInColumn(ColumnPos columnPos) {
+        for (CubePos cubePos : holders.keySet()) {
+            if (cubePos.x() == columnPos.x() && cubePos.z() == columnPos.z()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private List<CubeHolder> loadedColumnHolders(ColumnPos columnPos) {
@@ -633,5 +719,8 @@ public final class ServerCubeCache {
     }
 
     private record LoadCounters(int loaded, int generated) {
+    }
+
+    private record SkyLightQueueCounters(int rebuiltColumns, int changedCubes, int skippedUnchangedCubes, int savedChangedCubes, long elapsedMicros) {
     }
 }

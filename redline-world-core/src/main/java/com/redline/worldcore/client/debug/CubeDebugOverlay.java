@@ -49,7 +49,7 @@ public final class CubeDebugOverlay {
         int width = 272;
         int lines = 4;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
-        draw(graphics, minecraft, x, y, "RWC M10 compact", GOOD);
+        draw(graphics, minecraft, x, y, "RWC M10.1 compact", GOOD);
         y += 10;
         draw(graphics, minecraft, x, y, "cube=" + payload.playerCubeX() + " " + payload.playerCubeY() + " " + payload.playerCubeZ()
                 + " loaded=" + payload.loadedCubes() + "/" + payload.requestedCubes(), TEXT);
@@ -58,6 +58,7 @@ public final class CubeDebugOverlay {
                 + " q=" + payload.queuedMaterializations()
                 + " lightQ=" + payload.lightDirtyQueue()
                 + " skyQ=" + payload.skyLightDirtyColumns()
+                + " skyTick=" + payload.skyLightColumnsLastTick()
                 + " writes=" + payload.playerWritesSaved(), TEXT);
         y += 10;
         draw(graphics, minecraft, x, y, "stream h=" + payload.streamHorizontalRadius()
@@ -71,10 +72,10 @@ public final class CubeDebugOverlay {
         int y = 6;
         int width = 374;
         int shownEntries = Math.min(8, payload.entries().size());
-        int lines = shownEntries + 9;
+        int lines = shownEntries + 10;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
 
-        draw(graphics, minecraft, x, y, "Redline World Core M10 sync/light", GOOD);
+        draw(graphics, minecraft, x, y, "Redline World Core M10.1 sync/light", GOOD);
         y += 10;
         draw(graphics, minecraft, x, y, "playerCube=" + payload.playerCubeX() + " " + payload.playerCubeY() + " " + payload.playerCubeZ()
                 + "  cache loaded=" + payload.loadedCubes() + " pending=" + payload.pendingLoads() + " requested=" + payload.requestedCubes(), TEXT);
@@ -89,8 +90,16 @@ public final class CubeDebugOverlay {
                 + " dirtyQ=" + payload.lightDirtyQueue(), TEXT);
         y += 10;
         draw(graphics, minecraft, x, y, "skyLight rebuiltCubes=" + payload.totalSkyLightRebuilt()
-                + " columnsLastTick=" + payload.skyLightColumnsLastTick()
-                + " dirtyColumns=" + payload.skyLightDirtyColumns(), TEXT);
+                + " columns=" + payload.totalSkyLightColumnsRebuilt()
+                + " last=" + payload.skyLightColumnsLastTick()
+                + " dirty=" + payload.skyLightDirtyColumns(), TEXT);
+        y += 10;
+        draw(graphics, minecraft, x, y, "skyPerf changed=" + payload.skyLightChangedLastTick()
+                + " skipped=" + payload.skyLightSkippedUnchangedLastTick()
+                + " saved=" + payload.skyLightSavedChangedLastTick()
+                + " us=" + payload.skyLightRebuildMicrosLastTick()
+                + " budget=" + payload.skyLightAutoColumnsPerTick()
+                + "/t delay=" + payload.skyLightDirtyDelayTicks() + "t", MUTED);
         y += 10;
         draw(graphics, minecraft, x, y, "stream h=" + payload.streamHorizontalRadius()
                 + " v=" + payload.streamVerticalRadius()

@@ -705,13 +705,23 @@ public final class RedlineWorldCoreCommands {
     private static int skylightStatus(CommandSourceStack source) {
         ServerCubeCache cache = cubeCache(source);
         CubeLoadingSnapshot snapshot = cache.snapshot();
-        source.sendSuccess(() -> Component.literal("M10 sky light: totalRebuiltCubes=" + snapshot.totalSkyLightRebuilt()
+        source.sendSuccess(() -> Component.literal("M10.1 sky light: totalRebuiltCubes=" + snapshot.totalSkyLightRebuilt()
+                + ", totalColumns=" + snapshot.totalSkyLightColumnsRebuilt()
                 + ", rebuiltColumnsLastTick=" + snapshot.skyLightColumnsLastTick()
                 + ", dirtyColumns=" + snapshot.skyLightDirtyColumns()), false);
+        source.sendSuccess(() -> Component.literal("M10.1 sky budget: autoColumnsPerTick=" + snapshot.skyLightAutoColumnsPerTick()
+                + ", debounceTicks=" + snapshot.skyLightDirtyDelayTicks()
+                + ", changedLastTick=" + snapshot.skyLightChangedLastTick()
+                + ", skippedLastTick=" + snapshot.skyLightSkippedUnchangedLastTick()
+                + ", savedLastTick=" + snapshot.skyLightSavedChangedLastTick()), false);
+        source.sendSuccess(() -> Component.literal("M10.1 sky timing: lastUs=" + snapshot.skyLightRebuildMicrosLastTick()
+                + ", maxUs=" + snapshot.skyLightRebuildMicrosMax()
+                + ", totalSkipped=" + snapshot.totalSkyLightSkippedUnchanged()
+                + ", totalSaved=" + snapshot.totalSkyLightSavedChanged()), false);
         source.sendSuccess(() -> Component.literal("Cube cache: loaded=" + snapshot.loadedCubes()
                 + ", pending=" + snapshot.pendingLoads()
                 + ", requested=" + snapshot.requestedCubes()), false);
-        source.sendSuccess(() -> Component.literal("MVP scope: finite-top vertical sky light over loaded columns; side tunnels and vanilla visual injection are later work."), false);
+        source.sendSuccess(() -> Component.literal("MVP scope: finite-top vertical sky light over loaded columns; M10.1 throttles automatic rebuilds, while side tunnels and vanilla visual injection are later work."), false);
         return snapshot.skyLightDirtyColumns();
     }
 
@@ -721,7 +731,7 @@ public final class RedlineWorldCoreCommands {
             CubeLightDebug.LightSourceCube sourceCube = new CubeLightDebug(cubeCache(source)).cubeForRead(cubePos);
             SkyLightSummary summary = SkyLightSummary.from(sourceCube.cube());
             SkyLightTransferData transfer = SkyLightTransferData.fromCube(sourceCube.cube());
-            source.sendSuccess(() -> Component.literal("M10 sky light summary: cube=" + formatCube(cubePos)
+            source.sendSuccess(() -> Component.literal("M10.1 sky light summary: cube=" + formatCube(cubePos)
                     + " source=" + sourceCube.source()), false);
             source.sendSuccess(() -> Component.literal(summary.oneLine()), false);
             source.sendSuccess(() -> Component.literal("Sky transfer: " + transfer.oneLine()), false);
@@ -742,7 +752,7 @@ public final class RedlineWorldCoreCommands {
             int worldX = cubePos.minBlockX() + localX;
             int worldY = cubePos.minBlockY() + localY;
             int worldZ = cubePos.minBlockZ() + localZ;
-            source.sendSuccess(() -> Component.literal("M10 sky light block: cube=" + formatCube(cubePos)
+            source.sendSuccess(() -> Component.literal("M10.1 sky light block: cube=" + formatCube(cubePos)
                     + " local=" + localX + " " + localY + " " + localZ
                     + " source=" + sourceCube.source()), false);
             source.sendSuccess(() -> Component.literal("World block: " + worldX + " " + worldY + " " + worldZ
@@ -762,7 +772,7 @@ public final class RedlineWorldCoreCommands {
             ColumnPos columnPos = new ColumnPos(cubeX, cubeZ);
             return cubeCache(source).columnSkyIndex(columnPos)
                     .map(index -> {
-                        source.sendSuccess(() -> Component.literal("M10 ColumnSkyIndex: " + index.oneLine()), false);
+                        source.sendSuccess(() -> Component.literal("M10.1 ColumnSkyIndex: " + index.oneLine()), false);
                         source.sendSuccess(() -> Component.literal("Sample local 8 8: topOpaqueWorldY=" + formatOptionalWorldY(index.topOpaqueWorldY(8, 8))
                                 + ", firstBlockedCubeY=" + formatOptionalCubeY(index.firstSkyBlockedCubeY(8, 8))
                                 + ", bottomSky=" + index.bottomSkyLevel(8, 8)), false);
@@ -783,7 +793,7 @@ public final class RedlineWorldCoreCommands {
             CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
             return cubeCache(source).rebuildSkyLightCube(cubePos, true)
                     .map(result -> {
-                        source.sendSuccess(() -> Component.literal("M10 sky light rebuilt and saved as single open-sky cube: " + result.oneLine()), false);
+                        source.sendSuccess(() -> Component.literal("M10.1 sky light rebuilt and saved as single open-sky cube: " + result.oneLine()), false);
                         return 1;
                     })
                     .orElseGet(() -> {
@@ -809,7 +819,7 @@ public final class RedlineWorldCoreCommands {
             ColumnPos columnPos = new ColumnPos(cubeX, cubeZ);
             return cubeCache(source).rebuildSkyLightColumn(columnPos, minY, maxY, true)
                     .map(result -> {
-                        source.sendSuccess(() -> Component.literal("M10 sky light rebuilt and saved column: cubeX=" + cubeX
+                        source.sendSuccess(() -> Component.literal("M10.1 sky light rebuilt and saved column: cubeX=" + cubeX
                                 + ", cubeZ=" + cubeZ + ", cubeY=" + minY + ".." + maxY), false);
                         source.sendSuccess(() -> Component.literal(result.oneLine()), false);
                         cubeCache(source).columnSkyIndex(columnPos).ifPresent(index ->

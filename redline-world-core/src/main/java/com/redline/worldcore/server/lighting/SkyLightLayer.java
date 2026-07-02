@@ -23,7 +23,7 @@ public final class SkyLightLayer {
 
     public static ColumnRebuildResult rebuildColumn(List<LevelCube> cubesTopToBottom) {
         if (cubesTopToBottom.isEmpty()) {
-            return new ColumnRebuildResult(0, 0, 0, 0, 0, StaticBlockLightLayer.FNV64_OFFSET);
+            return new ColumnRebuildResult(0, 0, 0, 0, 0, StaticBlockLightLayer.FNV64_OFFSET, 0, 0, 0, 0L);
         }
 
         byte[] incoming = filledTopLight();
@@ -44,7 +44,7 @@ public final class SkyLightLayer {
             hash *= StaticBlockLightLayer.FNV64_PRIME;
         }
 
-        return new ColumnRebuildResult(rebuilt, lit, blockedColumns, directColumns, max(incoming), hash);
+        return new ColumnRebuildResult(rebuilt, lit, blockedColumns, directColumns, max(incoming), hash, rebuilt, 0, 0, 0L);
     }
 
     public static CubeRebuildResult rebuildSingleCubeFromOpenSky(LevelCube cube) {
@@ -161,10 +161,33 @@ public final class SkyLightLayer {
             int blockedColumnSamples,
             int directColumnSamples,
             int bottomMaxSky,
-            long hash
+            long hash,
+            int changedCubes,
+            int unchangedCubes,
+            int savedCubes,
+            long elapsedMicros
     ) {
+        public ColumnRebuildResult withRuntimeStats(int changedCubes, int unchangedCubes, int savedCubes, long elapsedMicros) {
+            return new ColumnRebuildResult(
+                    rebuiltCubes,
+                    skyLitBlocks,
+                    blockedColumnSamples,
+                    directColumnSamples,
+                    bottomMaxSky,
+                    hash,
+                    changedCubes,
+                    unchangedCubes,
+                    savedCubes,
+                    elapsedMicros
+            );
+        }
+
         public String oneLine() {
             return "rebuiltCubes=" + rebuiltCubes
+                    + ", changed=" + changedCubes
+                    + ", unchanged=" + unchangedCubes
+                    + ", saved=" + savedCubes
+                    + ", elapsedUs=" + elapsedMicros
                     + ", skyLitBlocks=" + skyLitBlocks
                     + ", blockedSamples=" + blockedColumnSamples
                     + ", directSamples=" + directColumnSamples
