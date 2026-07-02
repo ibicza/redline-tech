@@ -2,6 +2,7 @@ package com.redline.worldcore.server.cube;
 
 import com.redline.worldcore.api.cube.CubeStatus;
 import com.redline.worldcore.api.ticket.CubeTicketLevel;
+import com.redline.worldcore.server.cube.access.CubeMutationSnapshot;
 
 import java.util.Map;
 
@@ -42,6 +43,7 @@ public record CubeLoadingSnapshot(
         boolean loadGeneratedBudgetHitLastTick,
         boolean loadTimeBudgetHitLastTick,
         boolean requestLimitHitLastTick,
+        CubeMutationSnapshot mutationSnapshot,
         Map<CubeTicketLevel, Integer> byTicketLevel,
         Map<CubeStatus, Integer> byCubeStatus,
         Map<CubeHolderState, Integer> byHolderState

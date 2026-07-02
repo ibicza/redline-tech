@@ -7,6 +7,12 @@ import com.redline.worldcore.api.pos.ColumnPos;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.api.ticket.CubeTicket;
 import com.redline.worldcore.api.ticket.CubeTicketLevel;
+import com.redline.worldcore.api.pos.CubeLocalPos;
+import com.redline.worldcore.server.cube.access.CubeBlockUpdatePipeline;
+import com.redline.worldcore.server.cube.access.CubeMutationContext;
+import com.redline.worldcore.server.cube.access.CubeMutationResult;
+import com.redline.worldcore.server.cube.access.CubeMutationSnapshot;
+import com.redline.worldcore.server.cube.access.CubicLevelAccess;
 import com.redline.worldcore.server.generation.CubicWorldgenPipeline;
 import com.redline.worldcore.server.lighting.ColumnSkyIndex;
 import com.redline.worldcore.server.lighting.SkyLightLayer;
@@ -77,6 +83,7 @@ public final class ServerCubeCache {
     private final LinkedHashMap<CubePos, CubeTicketLevel> pendingLoads = new LinkedHashMap<>();
     private final LinkedHashSet<CubePos> lightDirtyQueue = new LinkedHashSet<>();
     private final LinkedHashMap<ColumnPos, Long> skyLightDirtyColumns = new LinkedHashMap<>();
+    private final CubeBlockUpdatePipeline blockUpdatePipeline = new CubeBlockUpdatePipeline();
 
     private long gameTime;
     private long totalLoaded;
@@ -136,6 +143,19 @@ public final class ServerCubeCache {
         return settings;
     }
 
+    /** Returns the M14.0 cube-first facade that new world-core code should use for block access. */
+    public CubicLevelAccess access() {
+        return new CubicLevelAccess(this);
+    }
+
+    public synchronized CubeMutationSnapshot mutationSnapshot() {
+        return blockUpdatePipeline.snapshot();
+    }
+
+    public synchronized void resetMutationCounters() {
+        blockUpdatePipeline.reset();
+    }
+
 
     public synchronized CubeLoadingTickResult tick(Collection<CubeTicket> tickets) {
         gameTime++;
@@ -188,39 +208,140 @@ public final class ServerCubeCache {
     /**
      * M8 edit bridge: writes a physical vanilla block change back into the cube backend.
      *
-     * <p>If the holder is not currently loaded, the cube is loaded from Region3D or regenerated first. This keeps player
-     * edits persistent without forcing the caller to manage tickets.</p>
+     * <p>M14.0 routes the legacy bridge through the cube mutation pipeline. Physical player edits now share the same
+     * ownership path as commands and later mixins: block pos -&gt; CubePos -&gt; local pos -&gt; holder mutation -&gt; dirty/light/save.
+     * Sky light is queued instead of rebuilding the whole column synchronously on every player click.</p>
      */
     public synchronized Optional<CubeHolder> writeBlock(BlockPos worldPos, BlockState state, boolean saveImmediately) {
+        CubeMutationResult result = mutateBlock(worldPos, state, CubeMutationContext.playerEdit(saveImmediately));
+        if (!result.applied()) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(holders.get(result.cubePos()));
+    }
+
+    /** Reads a block from loaded or persisted cube storage without generating missing terrain. */
+    public synchronized Optional<BlockState> readBlock(BlockPos worldPos) {
         CubePos cubePos = CubePos.fromBlock(worldPos.getX(), worldPos.getY(), worldPos.getZ());
         if (!settings.containsCubeY(cubePos.y())) {
             return Optional.empty();
         }
 
         CubeHolder holder = holders.get(cubePos);
+        if (holder != null) {
+            return Optional.of(holder.cube().getBlockState(worldPos));
+        }
+
+        Optional<LevelCube> persisted = storage.get(cubePos);
+        if (persisted.isEmpty()) {
+            return Optional.empty();
+        }
+        BlockState state = persisted.get().getBlockState(worldPos);
+        storage.unloadFromMemory(cubePos);
+        return Optional.of(state);
+    }
+
+    /** Reads a block from cube storage, generating a temporary cube if the backend has not materialized it yet. */
+    public synchronized Optional<BlockState> readOrGenerateBlock(BlockPos worldPos) {
+        Optional<BlockState> stored = readBlock(worldPos);
+        if (stored.isPresent()) {
+            return stored;
+        }
+        CubePos cubePos = CubePos.fromBlock(worldPos.getX(), worldPos.getY(), worldPos.getZ());
+        if (!settings.containsCubeY(cubePos.y())) {
+            return Optional.empty();
+        }
+        return Optional.of(generateTemporary(cubePos).getBlockState(worldPos));
+    }
+
+    /**
+     * M14.0 cube-owned block mutation pipeline.
+     *
+     * <p>This is the first stable API that treats the cube as the owner of a block change. It is still deliberately
+     * conservative: vanilla chunks remain the visual/compatibility shell, but every Redline World Core mutation now has
+     * one path for holder load/generation, status promotion, dirty marking, light invalidation and Region3D saving.</p>
+     */
+    public synchronized CubeMutationResult mutateBlock(BlockPos worldPos, BlockState state, CubeMutationContext context) {
+        Objects.requireNonNull(worldPos, "worldPos");
+        Objects.requireNonNull(state, "state");
+        Objects.requireNonNull(context, "context");
+
+        long startNanos = System.nanoTime();
+        CubePos cubePos = CubePos.fromBlock(worldPos.getX(), worldPos.getY(), worldPos.getZ());
+        CubeLocalPos localPos = CubeLocalPos.fromBlock(worldPos);
+        if (!settings.containsCubeY(cubePos.y())) {
+            CubeMutationResult rejected = CubeMutationResult.rejected(worldPos, cubePos, localPos, state, context.origin(),
+                    "outside_settings", elapsedMicrosSince(startNanos));
+            blockUpdatePipeline.record(rejected);
+            return rejected;
+        }
+
+        CubeHolder holder = holders.get(cubePos);
+        boolean holderLoaded = false;
+        boolean holderGenerated = false;
         if (holder == null) {
+            if (!context.generateMissingHolder()) {
+                CubeMutationResult rejected = CubeMutationResult.rejected(worldPos, cubePos, localPos, state, context.origin(),
+                        "missing_holder", elapsedMicrosSince(startNanos));
+                blockUpdatePipeline.record(rejected);
+                return rejected;
+            }
             holder = loadHolder(cubePos, CubeTicketLevel.FULL);
             holders.put(cubePos, holder);
             totalLoaded++;
+            holderLoaded = true;
             if (holder.state() == CubeHolderState.GENERATED) {
                 totalGenerated++;
+                holderGenerated = true;
             }
         }
 
-        holder.cube().setBlockState(worldPos, state);
-        markLightDirty(cubePos);
-        rebuildLightNow(holder);
-        rebuildSkyLightColumnLoaded(cubePos.columnPos(), false, true);
-        holder.markDirty();
-        if (saveImmediately) {
-            int saved = saveDirtyLoadedColumn(cubePos.columnPos());
-            if (saved == 0) {
+        BlockState previous = holder.cube().getBlockState(worldPos);
+        boolean changed = !previous.equals(state);
+        boolean statusPromoted = !holder.cube().status().isAtLeast(CubeStatus.FULL);
+        if (changed) {
+            holder.cube().setBlockState(worldPos, state);
+        }
+        if (statusPromoted) {
+            holder.cube().setStatus(CubeStatus.FULL);
+        }
+
+        boolean dirty = changed || statusPromoted;
+        boolean staticLightRebuilt = false;
+        boolean skyLightRebuilt = false;
+        boolean skyLightQueued = false;
+        boolean saved = false;
+
+        if (dirty) {
+            holder.markDirty();
+            markLightDirty(cubePos);
+            if (context.rebuildStaticLightNow()) {
+                rebuildLightNow(holder);
+                holder.markDirty();
+                staticLightRebuilt = true;
+            }
+            if (context.rebuildSkyLightColumnNow()) {
+                skyLightRebuilt = rebuildSkyLightColumnLoaded(cubePos.columnPos(), false, true).isPresent();
+            } else if (context.markSkyLightDirty()) {
+                skyLightQueued = markSkyLightDirty(cubePos.columnPos());
+            }
+            if (context.saveImmediately()) {
                 storage.put(holder.cube());
                 holder.markSaved(CubeHolderState.REGION3D_SAVED);
                 totalSaved++;
+                saved = true;
             }
         }
-        return Optional.of(holder);
+
+        CubeMutationResult result = new CubeMutationResult(true, changed, statusPromoted, holderLoaded, holderGenerated, saved,
+                staticLightRebuilt, skyLightRebuilt, skyLightQueued, elapsedMicrosSince(startNanos), worldPos, cubePos,
+                localPos, previous, state, context.origin(), context.reason());
+        blockUpdatePipeline.record(result);
+        return result;
+    }
+
+    private static long elapsedMicrosSince(long startNanos) {
+        return Math.max(1L, (System.nanoTime() - startNanos) / 1_000L);
     }
 
     /** Marks a loaded cube as needing M9 static block-light rebuild. */
@@ -569,6 +690,7 @@ public final class ServerCubeCache {
                 loadGeneratedBudgetHitLastTick,
                 loadTimeBudgetHitLastTick,
                 requestLimitHitLastTick,
+                mutationSnapshot(),
                 Map.copyOf(byTicketLevel),
                 Map.copyOf(byCubeStatus),
                 Map.copyOf(byHolderState)

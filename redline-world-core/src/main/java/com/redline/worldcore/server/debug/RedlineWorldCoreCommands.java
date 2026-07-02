@@ -23,6 +23,9 @@ import com.redline.worldcore.server.cube.CubeLoadingSnapshot;
 import com.redline.worldcore.server.cube.ServerCubeCache;
 import com.redline.worldcore.server.compat.CubicClientSyncBridge;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
+import com.redline.worldcore.server.cube.access.CubeMutationContext;
+import com.redline.worldcore.server.cube.access.CubeMutationResult;
+import com.redline.worldcore.server.cube.access.CubeMutationSnapshot;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
 import com.redline.worldcore.server.entity.EntityCubeTracker;
 import com.redline.worldcore.server.entity.EntityRef;
@@ -66,6 +69,7 @@ import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -337,6 +341,45 @@ public final class RedlineWorldCoreCommands {
                                 .executes(context -> cubesSaveAll(context.getSource())))
                         .then(Commands.literal("unload_all")
                                 .executes(context -> cubesUnloadAll(context.getSource()))))
+                .then(Commands.literal("cube_access")
+                        .then(Commands.literal("status")
+                                .executes(context -> cubeAccessStatus(context.getSource())))
+                        .then(Commands.literal("reset_counters")
+                                .executes(context -> cubeAccessResetCounters(context.getSource())))
+                        .then(Commands.literal("get")
+                                .then(Commands.argument("x", IntegerArgumentType.integer())
+                                        .then(Commands.argument("y", IntegerArgumentType.integer())
+                                                .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                        .executes(context -> cubeAccessGet(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "x"),
+                                                                IntegerArgumentType.getInteger(context, "y"),
+                                                                IntegerArgumentType.getInteger(context, "z"),
+                                                                false
+                                                        ))))))
+                        .then(Commands.literal("get_generated")
+                                .then(Commands.argument("x", IntegerArgumentType.integer())
+                                        .then(Commands.argument("y", IntegerArgumentType.integer())
+                                                .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                        .executes(context -> cubeAccessGet(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "x"),
+                                                                IntegerArgumentType.getInteger(context, "y"),
+                                                                IntegerArgumentType.getInteger(context, "z"),
+                                                                true
+                                                        ))))))
+                        .then(Commands.literal("set")
+                                .then(Commands.argument("x", IntegerArgumentType.integer())
+                                        .then(Commands.argument("y", IntegerArgumentType.integer())
+                                                .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                        .then(Commands.argument("block", StringArgumentType.word())
+                                                                .executes(context -> cubeAccessSet(
+                                                                        context.getSource(),
+                                                                        IntegerArgumentType.getInteger(context, "x"),
+                                                                        IntegerArgumentType.getInteger(context, "y"),
+                                                                        IntegerArgumentType.getInteger(context, "z"),
+                                                                        StringArgumentType.getString(context, "block")
+                                                                ))))))))
                 .then(Commands.literal("tickets")
                         .then(Commands.literal("status")
                                 .executes(context -> ticketsStatus(context.getSource())))
@@ -1511,6 +1554,72 @@ public final class RedlineWorldCoreCommands {
 
 
 
+    private static int cubeAccessStatus(CommandSourceStack source) {
+        CubeMutationSnapshot snapshot = cubeCache(source).access().mutationSnapshot();
+        source.sendSuccess(() -> Component.literal(formatMutationSnapshot("RWC cube access", snapshot)), false);
+        source.sendSuccess(() -> Component.literal("RWC cube access totals: statusPromoted=" + snapshot.totalStatusPromoted()
+                + ", holderLoaded=" + snapshot.totalHolderLoaded()
+                + ", holderGenerated=" + snapshot.totalHolderGenerated()
+                + ", saved=" + snapshot.totalSaved()
+                + ", staticLight=" + snapshot.totalStaticLightRebuilt()
+                + ", skyQueued=" + snapshot.totalSkyLightQueued()
+                + ", skyRebuilt=" + snapshot.totalSkyLightRebuilt()), false);
+        return (int) Math.min(Integer.MAX_VALUE, snapshot.totalMutations());
+    }
+
+    private static int cubeAccessResetCounters(CommandSourceStack source) {
+        cubeCache(source).resetMutationCounters();
+        source.sendSuccess(() -> Component.literal("RWC cube access mutation counters reset."), false);
+        return 1;
+    }
+
+    private static int cubeAccessGet(CommandSourceStack source, int x, int y, int z, boolean generateIfMissing) {
+        BlockPos pos = new BlockPos(x, y, z);
+        CubePos cubePos = CubePos.fromBlock(pos);
+        try {
+            Optional<BlockState> state = generateIfMissing
+                    ? cubeCache(source).access().getOrGenerateBlockState(pos)
+                    : cubeCache(source).access().getBlockState(pos);
+            if (state.isEmpty()) {
+                source.sendFailure(Component.literal("RWC cube access get: no stored cube block at pos=" + formatBlock(pos)
+                        + ", cube=" + formatCube(cubePos) + ". Use get_generated to preview generator output."));
+                return 0;
+            }
+            source.sendSuccess(() -> Component.literal("RWC cube access get: pos=" + formatBlock(pos)
+                    + ", cube=" + formatCube(cubePos)
+                    + ", local=" + CubePos.local(pos.getX()) + " " + CubePos.local(pos.getY()) + " " + CubePos.local(pos.getZ())
+                    + ", block=" + CubicTestDimensionService.blockStateName(state.get())
+                    + ", source=" + (generateIfMissing ? "stored_or_generator" : "stored_only")), false);
+            return 1;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to read through RWC cube access: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int cubeAccessSet(CommandSourceStack source, int x, int y, int z, String blockName) {
+        BlockPos pos = new BlockPos(x, y, z);
+        try {
+            BlockState state = CubicTestDimensionService.parseMarkerBlock(blockName);
+            CubeMutationResult result = cubeCache(source).access().setBlockState(
+                    pos,
+                    state,
+                    CubeMutationContext.command(true).withReason("cube_access_set_command")
+            );
+            if (result.saved()) {
+                CubicClientSyncBridge.recordCommandWriteSaved();
+            }
+            source.sendSuccess(() -> Component.literal(formatMutationResult("RWC cube access set", result)), false);
+            if (!result.applied()) {
+                return 0;
+            }
+            return result.changed() || result.statusPromoted() ? 1 : 0;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to write through RWC cube access: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
     private static int cubesStatus(CommandSourceStack source) {
         ServerCubeCache cache = cubeCache(source);
         CubeLoadingSnapshot snapshot = cache.snapshot();
@@ -1533,6 +1642,7 @@ public final class RedlineWorldCoreCommands {
                 + ", maxLoadMicros=" + snapshot.maxLoadMicrosPerTick()
                 + ", generatedBudgetHit=" + snapshot.loadGeneratedBudgetHitLastTick()
                 + ", timeBudgetHit=" + snapshot.loadTimeBudgetHitLastTick()), false);
+        source.sendSuccess(() -> Component.literal(formatMutationSnapshot("Cube access", snapshot.mutationSnapshot())), false);
         source.sendSuccess(() -> Component.literal("Totals: loaded=" + snapshot.totalLoaded()
                 + ", generated=" + snapshot.totalGenerated()
                 + ", lightRebuilt=" + snapshot.totalLightRebuilt()
@@ -1910,6 +2020,46 @@ public final class RedlineWorldCoreCommands {
             throw new IllegalArgumentException("Unknown cube status '" + statusName + "'. Valid statuses: "
                     + String.join(", ", java.util.Arrays.stream(CubeStatus.values()).map(Enum::name).toList()));
         }
+    }
+
+    private static String formatMutationSnapshot(String prefix, CubeMutationSnapshot snapshot) {
+        String lastCube = snapshot.lastCube() == null ? "none" : formatCube(snapshot.lastCube());
+        String lastLocal = snapshot.lastLocal() == null ? "none" : snapshot.lastLocal().x() + " " + snapshot.lastLocal().y() + " " + snapshot.lastLocal().z();
+        return prefix + ": mutations=" + snapshot.totalMutations()
+                + ", applied=" + snapshot.totalApplied()
+                + ", changed=" + snapshot.totalChanged()
+                + ", unchanged=" + snapshot.totalUnchanged()
+                + ", rejected=" + snapshot.totalRejected()
+                + ", last=" + snapshot.lastOrigin()
+                + "/" + snapshot.lastReason()
+                + ", cube=" + lastCube
+                + ", local=" + lastLocal
+                + ", us=" + snapshot.lastElapsedMicros()
+                + ", maxUs=" + snapshot.maxElapsedMicros();
+    }
+
+    private static String formatMutationResult(String prefix, CubeMutationResult result) {
+        String previous = result.previousState() == null ? "none" : CubicTestDimensionService.blockStateName(result.previousState());
+        String next = result.newState() == null ? "none" : CubicTestDimensionService.blockStateName(result.newState());
+        return prefix + ": applied=" + result.applied()
+                + ", changed=" + result.changed()
+                + ", promoted=" + result.statusPromoted()
+                + ", cube=" + formatCube(result.cubePos())
+                + ", local=" + result.localPos().x() + " " + result.localPos().y() + " " + result.localPos().z()
+                + ", previous=" + previous
+                + ", new=" + next
+                + ", saved=" + result.saved()
+                + ", light=" + result.staticLightRebuilt()
+                + ", skyQueued=" + result.skyLightQueued()
+                + ", skyRebuilt=" + result.skyLightRebuilt()
+                + ", holderLoaded=" + result.holderLoaded()
+                + ", holderGenerated=" + result.holderGenerated()
+                + ", us=" + result.elapsedMicros()
+                + ", reason=" + result.reason();
+    }
+
+    private static String formatBlock(BlockPos pos) {
+        return pos.getX() + " " + pos.getY() + " " + pos.getZ();
     }
 
     private static String formatCube(CubePos cubePos) {

@@ -7,6 +7,8 @@ import com.redline.worldcore.api.dimension.CubicDimensionKeys;
 import com.redline.worldcore.api.generation.CubicDimensionSettings;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.server.storage.CubeRegionStorage;
+import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
+import com.redline.worldcore.server.cube.access.CubeMutationContext;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
@@ -59,11 +61,8 @@ public final class CubicTestDimensionService {
         ensureInsideConfiguredHeight(blockPos.getY());
 
         CubePos cubePos = CubePos.fromBlock(blockPos);
-        CubeRegionStorage storage = storage(server);
-        LevelCube cube = storage.getOrCreate(cubePos);
-        cube.setStatus(CubeStatus.FULL);
-        cube.setBlockState(blockPos, state);
-        storage.put(cube);
+        WorldCoreCubeLoading.cubicTestForServer(server)
+                .mutateBlock(blockPos, state, CubeMutationContext.command(true).withReason("cubic_test_virtual_set"));
         return new VirtualSetResult(cubePos, state);
     }
 
@@ -73,6 +72,10 @@ public final class CubicTestDimensionService {
         ensureInsideConfiguredHeight(blockPos.getY());
 
         CubePos cubePos = CubePos.fromBlock(blockPos);
+        Optional<BlockState> cached = WorldCoreCubeLoading.cubicTestForServer(server).readBlock(blockPos);
+        if (cached.isPresent()) {
+            return Optional.of(new VirtualGetResult(cubePos, cached.get()));
+        }
         return storage(server).get(cubePos)
                 .map(cube -> new VirtualGetResult(cubePos, cube.getBlockState(blockPos)));
     }
