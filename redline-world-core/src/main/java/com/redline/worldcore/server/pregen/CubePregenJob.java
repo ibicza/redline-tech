@@ -6,7 +6,7 @@ import com.redline.worldcore.api.pos.CubePos;
 import java.util.Objects;
 import java.util.UUID;
 
-/** One bounded manual M13.0 pregen request. Coordinates are cube coordinates, not blocks. */
+/** One bounded M13 pregen request. Coordinates are cube coordinates, not blocks. */
 public record CubePregenJob(
         UUID id,
         CubePos min,
@@ -30,6 +30,10 @@ public record CubePregenJob(
     }
 
     public static CubePregenJob cuboid(CubePos first, CubePos second, CubeStatus targetStatus, String ownerDescription) {
+        return cuboid(UUID.randomUUID(), first, second, targetStatus, ownerDescription);
+    }
+
+    public static CubePregenJob cuboid(UUID id, CubePos first, CubePos second, CubeStatus targetStatus, String ownerDescription) {
         CubePos min = new CubePos(
                 Math.min(first.x(), second.x()),
                 Math.min(first.y(), second.y()),
@@ -43,7 +47,15 @@ public record CubePregenJob(
         long total = ((long) max.x() - min.x() + 1L)
                 * ((long) max.y() - min.y() + 1L)
                 * ((long) max.z() - min.z() + 1L);
-        return new CubePregenJob(UUID.randomUUID(), min, max, targetStatus, total, ownerDescription);
+        return new CubePregenJob(id, min, max, targetStatus, total, ownerDescription);
+    }
+
+    public static CubePregenJob single(CubePos cubePos, CubeStatus targetStatus, String ownerDescription) {
+        return cuboid(cubePos, cubePos, targetStatus, ownerDescription);
+    }
+
+    public static CubePregenJob fromPersistent(UUID id, CubePos min, CubePos max, CubeStatus targetStatus, String ownerDescription) {
+        return cuboid(id, min, max, targetStatus, ownerDescription);
     }
 
     public String shortId() {

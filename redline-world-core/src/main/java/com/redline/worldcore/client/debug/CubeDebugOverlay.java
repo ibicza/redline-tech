@@ -47,10 +47,10 @@ public final class CubeDebugOverlay {
     private static void renderCompact(GuiGraphicsExtractor graphics, Minecraft minecraft, CubeClientSyncPayload payload) {
         int x = 6;
         int y = 6;
-        int width = 320;
-        int lines = 8;
+        int width = 340;
+        int lines = 11;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
-        draw(graphics, minecraft, x, y, "RWC M12 compact", GOOD);
+        draw(graphics, minecraft, x, y, "RWC M13.1 compact", GOOD);
         y += 10;
         draw(graphics, minecraft, x, y, "cube=" + payload.playerCubeX() + " " + payload.playerCubeY() + " " + payload.playerCubeZ()
                 + " loaded=" + payload.loadedCubes() + "/" + payload.requestedCubes(), TEXT);
@@ -61,6 +61,12 @@ public final class CubeDebugOverlay {
                 + " skyQ=" + payload.skyLightDirtyColumns()
                 + " skyTick=" + payload.skyLightColumnsLastTick()
                 + " writes=" + payload.playerWritesSaved(), TEXT);
+        y += 10;
+        draw(graphics, minecraft, x, y, "load last=" + payload.loadedCubes()
+                + " loadUs=" + payload.loadMicrosLastTick()
+                + " max=" + payload.loadMicrosMax()
+                + " genBudget=" + (payload.loadGeneratedBudgetHitLastTick() ? "hit" : "ok")
+                + " time=" + (payload.loadTimeBudgetHitLastTick() ? "hit" : "ok"), MUTED);
         y += 10;
         draw(graphics, minecraft, x, y, "stream h=" + payload.streamHorizontalRadius()
                 + " v=" + payload.streamVerticalRadius()
@@ -88,7 +94,19 @@ public final class CubeDebugOverlay {
                 + " q=" + payload.pregenQueuedCubes()
                 + " tick=" + payload.pregenLastTickProcessed()
                 + "/" + payload.pregenMaxCubesPerTick()
-                + " us=" + payload.pregenLastTickMicros(), MUTED);
+                + " gen/s=" + payload.pregenGeneratedThisSecond()
+                + "/" + payload.pregenMaxGeneratedCubesPerSecond()
+                + " reason=" + payload.pregenThrottleReason(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "visit cols=" + payload.visitedColumns()
+                + " done=" + payload.backfillDoneColumns()
+                + " backfill=" + (payload.backfillEnabled() ? "on" : "off")
+                + " pending=" + payload.backfillPendingColumns(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "afk=" + (payload.afkEnabled() ? "on" : "off")
+                + " players=" + payload.afkTrackedPlayers()
+                + " afk=" + payload.afkPlayers()
+                + " jobs=" + payload.afkJobsStarted(), MUTED);
     }
 
     private static void renderFull(GuiGraphicsExtractor graphics, Minecraft minecraft, CubeClientSyncPayload payload) {
@@ -96,7 +114,7 @@ public final class CubeDebugOverlay {
         int y = 6;
         int width = 430;
         int shownEntries = Math.min(8, payload.entries().size());
-        int lines = shownEntries + 16;
+        int lines = shownEntries + 21;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
 
         draw(graphics, minecraft, x, y, "Redline World Core debug overlay", GOOD);
@@ -108,6 +126,16 @@ public final class CubeDebugOverlay {
                 + "  materialized=" + payload.materializedCubes()
                 + " queue=" + payload.queuedMaterializations()
                 + " lastTick=" + payload.materializedLastTick(), TEXT);
+        y += 10;
+        draw(graphics, minecraft, x, y, "loadPerf last=" + payload.loadedLastTick()
+                + " gen=" + payload.generatedLastTick()
+                + " pending=" + payload.pendingLoads()
+                + " us=" + payload.loadMicrosLastTick()
+                + " max=" + payload.loadMicrosMax()
+                + " budget=" + payload.maxLoadsPerTick() + "/t gen=" + payload.maxGeneratedLoadsPerTick()
+                + "/t " + payload.maxLoadMicrosPerTick() + "us"
+                + " hit=" + (payload.loadGeneratedBudgetHitLastTick() ? "gen" : "-")
+                + "/" + (payload.loadTimeBudgetHitLastTick() ? "time" : "-"), MUTED);
         y += 10;
         draw(graphics, minecraft, x, y, "staticLight rebuiltTotal=" + payload.totalLightRebuilt()
                 + " lastTick=" + payload.lightRebuiltLastTick()
@@ -167,6 +195,33 @@ public final class CubeDebugOverlay {
                 + " us=" + payload.pregenLastTickMicros()
                 + " max=" + payload.pregenMaxTickMicros()
                 + " budget=" + payload.pregenMaxCubesPerTick() + "/t " + payload.pregenMaxMillisPerTick() + "ms", MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "pregenThrottle skip=" + payload.pregenMaxSkippedCubesPerTick()
+                + "/t gen=" + payload.pregenGeneratedThisSecond() + "/" + payload.pregenMaxGeneratedCubesPerSecond()
+                + "/s expensive=" + payload.pregenExpensiveCubeMillis()
+                + "ms cooldown=" + payload.pregenThrottleCooldownTicks()
+                + " reason=" + payload.pregenThrottleReason(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "visits columns=" + payload.visitedColumns()
+                + " backfillDone=" + payload.backfillDoneColumns()
+                + " backfill=" + (payload.backfillEnabled() ? "on" : "off")
+                + " pending=" + payload.backfillPendingColumns()
+                + " jobs=" + payload.backfillJobsStarted()
+                + " reason=" + payload.backfillLastReason(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "backfill cfg radiusY=" + payload.backfillMaxVerticalRadius()
+                + " delay=" + payload.backfillDelayTicks()
+                + "t target=" + payload.backfillTargetStatus()
+                + " afk=" + (payload.afkEnabled() ? "on" : "off")
+                + " afkPlayers=" + payload.afkPlayers()
+                + "/" + payload.afkTrackedPlayers(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "afk cfg after=" + payload.afkAfterTicks()
+                + "t radius=" + payload.afkRadiusBlocks()
+                + " v=" + payload.afkVerticalRadiusCubes()
+                + " target=" + payload.afkTargetStatus()
+                + " jobs=" + payload.afkJobsStarted()
+                + " reason=" + payload.afkLastReason(), MUTED);
         y += 10;
         draw(graphics, minecraft, x, y, "stream h=" + payload.streamHorizontalRadius()
                 + " v=" + payload.streamVerticalRadius()

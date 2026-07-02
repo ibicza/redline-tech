@@ -8,6 +8,7 @@ import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.debug.CubeMathSelfTest;
 import com.redline.worldcore.server.debug.RedlineWorldCoreCommands;
 import com.redline.worldcore.server.entity.EntityCubeTracker;
+import com.redline.worldcore.server.pregen.ColumnVisitTracker;
 import com.redline.worldcore.server.pregen.CubePregenManager;
 import com.redline.worldcore.server.ticket.PlayerCubeTicketUpdater;
 import com.redline.worldcore.server.ticket.WorldCoreTickets;
@@ -36,6 +37,7 @@ public final class RedlineWorldCore {
 
         NeoForge.EVENT_BUS.addListener((RegisterCommandsEvent event) -> RedlineWorldCoreCommands.register(event));
         NeoForge.EVENT_BUS.addListener((PlayerTickEvent.Post event) -> PlayerCubeTicketUpdater.onPlayerTick(event));
+        NeoForge.EVENT_BUS.addListener((PlayerTickEvent.Post event) -> ColumnVisitTracker.onPlayerTick(event));
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> WorldCoreTickets.onServerTick(event));
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> WorldCoreCubeLoading.onServerTick(event));
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> EntityCubeTracker.onServerTick(event));

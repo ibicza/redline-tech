@@ -35,10 +35,17 @@ import com.redline.worldcore.server.lighting.SkyLightSummary;
 import com.redline.worldcore.server.lighting.SkyLightTransferData;
 import com.redline.worldcore.server.lighting.StaticBlockLightLayer;
 import com.redline.worldcore.server.lighting.StaticLightSummary;
+import com.redline.worldcore.server.pregen.AfkPregenController;
+import com.redline.worldcore.server.pregen.AfkPregenSnapshot;
+import com.redline.worldcore.server.pregen.ColumnVisitEntry;
+import com.redline.worldcore.server.pregen.ColumnVisitSnapshot;
+import com.redline.worldcore.server.pregen.ColumnVisitTracker;
 import com.redline.worldcore.server.pregen.CubePregenBudget;
 import com.redline.worldcore.server.pregen.CubePregenJob;
 import com.redline.worldcore.server.pregen.CubePregenManager;
 import com.redline.worldcore.server.pregen.CubePregenSnapshot;
+import com.redline.worldcore.server.pregen.VerticalBackfillDaemon;
+import com.redline.worldcore.server.pregen.VerticalBackfillSnapshot;
 import com.redline.worldcore.server.ticket.CubeTicketDebugFormatter;
 import com.redline.worldcore.server.ticket.CubeTicketManager;
 import com.redline.worldcore.server.ticket.CubeTicketSnapshot;
@@ -419,6 +426,23 @@ public final class RedlineWorldCoreCommands {
                                                         IntegerArgumentType.getInteger(context, "maxCubesPerTick"),
                                                         IntegerArgumentType.getInteger(context, "maxMillisPerTick")
                                                 )))))
+                        .then(Commands.literal("throttle")
+                                .then(Commands.literal("status")
+                                        .executes(context -> pregenThrottleStatus(context.getSource())))
+                                .then(Commands.literal("set")
+                                        .then(Commands.argument("maxSkippedPerTick", IntegerArgumentType.integer(1, CubePregenBudget.MAX_SKIPPED_CUBES_PER_TICK_LIMIT))
+                                                .then(Commands.argument("maxGeneratedPerSecond", IntegerArgumentType.integer(1, CubePregenBudget.MAX_GENERATED_CUBES_PER_SECOND_LIMIT))
+                                                        .then(Commands.argument("expensiveCubeMs", IntegerArgumentType.integer(1, CubePregenBudget.MAX_EXPENSIVE_CUBE_MILLIS_LIMIT))
+                                                                .then(Commands.argument("cooldownTicks", IntegerArgumentType.integer(0, CubePregenBudget.MAX_COOLDOWN_AFTER_EXPENSIVE_TICKS_LIMIT))
+                                                                        .executes(context -> pregenThrottleSet(
+                                                                                context.getSource(),
+                                                                                IntegerArgumentType.getInteger(context, "maxSkippedPerTick"),
+                                                                                IntegerArgumentType.getInteger(context, "maxGeneratedPerSecond"),
+                                                                                IntegerArgumentType.getInteger(context, "expensiveCubeMs"),
+                                                                                IntegerArgumentType.getInteger(context, "cooldownTicks")
+                                                                        ))))))))
+                        .then(Commands.literal("save_state")
+                                .executes(context -> pregenSaveState(context.getSource())))
                         .then(Commands.literal("start")
                                 .then(Commands.literal("radius")
                                         .then(Commands.argument("blocks", IntegerArgumentType.integer(0, 2048))
@@ -450,6 +474,54 @@ public final class RedlineWorldCoreCommands {
                                                                                                         IntegerArgumentType.getInteger(context, "z2"),
                                                                                                         StringArgumentType.getString(context, "status")
                                                                                                 ))))))))))))
+                .then(Commands.literal("backfill")
+                        .then(Commands.literal("status")
+                                .executes(context -> backfillStatus(context.getSource())))
+                        .then(Commands.literal("enable")
+                                .executes(context -> backfillEnable(context.getSource(), true)))
+                        .then(Commands.literal("disable")
+                                .executes(context -> backfillEnable(context.getSource(), false)))
+                        .then(Commands.literal("configure")
+                                .then(Commands.argument("maxVerticalRadius", IntegerArgumentType.integer(0, 128))
+                                        .then(Commands.argument("delayTicks", IntegerArgumentType.integer(0, 20 * 60 * 60))
+                                                .then(Commands.argument("status", StringArgumentType.word())
+                                                        .executes(context -> backfillConfigure(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "maxVerticalRadius"),
+                                                                IntegerArgumentType.getInteger(context, "delayTicks"),
+                                                                StringArgumentType.getString(context, "status")
+                                                        ))))))
+                        .then(Commands.literal("reset_visits")
+                                .executes(context -> columnVisitedClear(context.getSource()))))
+                .then(Commands.literal("column")
+                        .then(Commands.literal("visited")
+                                .then(Commands.literal("status")
+                                        .executes(context -> columnVisitedStatus(context.getSource())))
+                                .then(Commands.literal("current")
+                                        .executes(context -> columnVisitedCurrent(context.getSource())))
+                                .then(Commands.literal("dump")
+                                        .executes(context -> columnVisitedDump(context.getSource(), 10)))
+                                .then(Commands.literal("clear")
+                                        .executes(context -> columnVisitedClear(context.getSource())))))
+                .then(Commands.literal("afk_pregen")
+                        .then(Commands.literal("status")
+                                .executes(context -> afkPregenStatus(context.getSource())))
+                        .then(Commands.literal("enable")
+                                .executes(context -> afkPregenEnable(context.getSource(), true)))
+                        .then(Commands.literal("disable")
+                                .executes(context -> afkPregenEnable(context.getSource(), false)))
+                        .then(Commands.literal("configure")
+                                .then(Commands.argument("afkAfterSeconds", IntegerArgumentType.integer(1, 3600))
+                                        .then(Commands.argument("radiusBlocks", IntegerArgumentType.integer(16, 1024))
+                                                .then(Commands.argument("verticalRadiusCubes", IntegerArgumentType.integer(0, 64))
+                                                        .then(Commands.argument("status", StringArgumentType.word())
+                                                                .executes(context -> afkPregenConfigure(
+                                                                        context.getSource(),
+                                                                        IntegerArgumentType.getInteger(context, "afkAfterSeconds"),
+                                                                        IntegerArgumentType.getInteger(context, "radiusBlocks"),
+                                                                        IntegerArgumentType.getInteger(context, "verticalRadiusCubes"),
+                                                                        StringArgumentType.getString(context, "status")
+                                                                ))))))))
                 .then(Commands.literal("cubic_test")
                         .then(Commands.literal("status")
                                 .executes(context -> cubicTestStatus(context.getSource())))
@@ -529,6 +601,7 @@ public final class RedlineWorldCoreCommands {
 
 
     private static int pregenStatus(CommandSourceStack source) {
+        CubePregenManager.MANAGER.ensurePersistentLoaded(source.getServer());
         CubePregenSnapshot snapshot = CubePregenManager.MANAGER.snapshot();
         source.sendSuccess(() -> Component.literal("RWC pregen: state=" + pregenState(snapshot)
                 + ", queued=" + snapshot.queuedCubes()
@@ -548,6 +621,17 @@ public final class RedlineWorldCoreCommands {
                 + ", us=" + snapshot.lastTickMicros()
                 + ", maxUs=" + snapshot.maxTickMicros()
                 + ", budget=" + snapshot.maxCubesPerTick() + "/t " + snapshot.maxMillisPerTick() + "ms"), false);
+        source.sendSuccess(() -> Component.literal("RWC pregen throttle: skip=" + snapshot.maxSkippedCubesPerTick()
+                + "/t, generated=" + snapshot.generatedThisSecond() + "/" + snapshot.maxGeneratedCubesPerSecond()
+                + "/s, expensive=" + snapshot.expensiveCubeMillis()
+                + "ms, cooldown=" + snapshot.throttleCooldownTicks()
+                + "/" + snapshot.cooldownAfterExpensiveTicks()
+                + "t, reason=" + snapshot.throttleReason()), false);
+        source.sendSuccess(() -> Component.literal("RWC backfill/AFK: visitedColumns=" + snapshot.visitedColumns()
+                + ", backfillPending=" + snapshot.backfillPendingColumns()
+                + ", backfillJobs=" + snapshot.backfillJobsStarted()
+                + ", afk=" + snapshot.afkPlayers() + "/" + snapshot.afkTrackedPlayers()
+                + ", afkJobs=" + snapshot.afkJobsStarted()), false);
         if (snapshot.activeMin() != null && snapshot.activeMax() != null) {
             source.sendSuccess(() -> Component.literal("RWC pregen bounds: min=" + formatCube(snapshot.activeMin())
                     + ", max=" + formatCube(snapshot.activeMax())
@@ -588,6 +672,7 @@ public final class RedlineWorldCoreCommands {
 
     private static int startPregen(CommandSourceStack source, CubePregenJob job) {
         CubePregenJob started = CubePregenManager.MANAGER.start(job, cubeCache(source).settings());
+        CubePregenManager.MANAGER.savePersistentNow(source.getServer());
         source.sendSuccess(() -> Component.literal("RWC pregen started: job=" + started.shortId()
                 + ", target=" + started.targetStatus()
                 + ", cubes=" + started.totalCubes()
@@ -599,6 +684,7 @@ public final class RedlineWorldCoreCommands {
     private static int pregenPause(CommandSourceStack source) {
         boolean changed = CubePregenManager.MANAGER.pause();
         if (changed) {
+            CubePregenManager.MANAGER.savePersistentNow(source.getServer());
             source.sendSuccess(() -> Component.literal("RWC pregen paused."), false);
             return 1;
         }
@@ -609,6 +695,7 @@ public final class RedlineWorldCoreCommands {
     private static int pregenResume(CommandSourceStack source) {
         boolean changed = CubePregenManager.MANAGER.resume();
         if (changed) {
+            CubePregenManager.MANAGER.savePersistentNow(source.getServer());
             source.sendSuccess(() -> Component.literal("RWC pregen resumed."), false);
             return 1;
         }
@@ -618,18 +705,21 @@ public final class RedlineWorldCoreCommands {
 
     private static int pregenStop(CommandSourceStack source) {
         int removed = CubePregenManager.MANAGER.stop();
+        CubePregenManager.MANAGER.savePersistentNow(source.getServer());
         source.sendSuccess(() -> Component.literal("RWC pregen stopped: removed=" + removed), false);
         return removed;
     }
 
     private static int pregenClearQueue(CommandSourceStack source) {
         int removed = CubePregenManager.MANAGER.clearQueue();
+        CubePregenManager.MANAGER.savePersistentNow(source.getServer());
         source.sendSuccess(() -> Component.literal("RWC pregen queue cleared: removed=" + removed), false);
         return removed;
     }
 
     private static int pregenConfigure(CommandSourceStack source, int maxCubesPerTick, int maxMillisPerTick) {
         CubePregenManager.MANAGER.configureBudget(maxCubesPerTick, maxMillisPerTick);
+        CubePregenManager.MANAGER.savePersistentNow(source.getServer());
         source.sendSuccess(() -> Component.literal("RWC pregen budget: maxCubesPerTick="
                 + CubePregenManager.MANAGER.budget().maxCubesPerTick()
                 + ", maxMillisPerTick=" + CubePregenManager.MANAGER.budget().maxMillisPerTick()), false);
@@ -641,6 +731,163 @@ public final class RedlineWorldCoreCommands {
             return snapshot.paused() ? "paused" : "running";
         }
         return "idle";
+    }
+
+
+    private static int pregenThrottleStatus(CommandSourceStack source) {
+        CubePregenSnapshot snapshot = CubePregenManager.MANAGER.snapshot();
+        source.sendSuccess(() -> Component.literal("RWC pregen throttle: skip=" + snapshot.maxSkippedCubesPerTick()
+                + "/t, generated=" + snapshot.generatedThisSecond() + "/" + snapshot.maxGeneratedCubesPerSecond()
+                + "/s, expensive=" + snapshot.expensiveCubeMillis()
+                + "ms, cooldown=" + snapshot.throttleCooldownTicks()
+                + "/" + snapshot.cooldownAfterExpensiveTicks()
+                + "t, reason=" + snapshot.throttleReason()), false);
+        return snapshot.throttleCooldownTicks();
+    }
+
+    private static int pregenThrottleSet(CommandSourceStack source, int maxSkippedPerTick, int maxGeneratedPerSecond, int expensiveCubeMs, int cooldownTicks) {
+        CubePregenManager.MANAGER.configureThrottle(maxSkippedPerTick, maxGeneratedPerSecond, expensiveCubeMs, cooldownTicks);
+        CubePregenManager.MANAGER.savePersistentNow(source.getServer());
+        source.sendSuccess(() -> Component.literal("RWC pregen throttle configured: maxSkippedPerTick=" + maxSkippedPerTick
+                + ", maxGeneratedPerSecond=" + maxGeneratedPerSecond
+                + ", expensiveCubeMs=" + expensiveCubeMs
+                + ", cooldownTicks=" + cooldownTicks), false);
+        return maxGeneratedPerSecond;
+    }
+
+    private static int pregenSaveState(CommandSourceStack source) {
+        CubePregenManager.MANAGER.savePersistentNow(source.getServer());
+        source.sendSuccess(() -> Component.literal("RWC pregen/backfill state saved."), false);
+        return 1;
+    }
+
+    private static int backfillStatus(CommandSourceStack source) {
+        VerticalBackfillSnapshot snapshot = VerticalBackfillDaemon.snapshot();
+        source.sendSuccess(() -> Component.literal("RWC backfill: enabled=" + snapshot.enabled()
+                + ", pendingColumns=" + snapshot.pendingColumns()
+                + ", jobsStarted=" + snapshot.jobsStarted()
+                + ", target=" + snapshot.targetStatus()
+                + ", reason=" + snapshot.lastReason()), false);
+        source.sendSuccess(() -> Component.literal("RWC backfill config: maxVerticalRadius=" + snapshot.maxVerticalRadius()
+                + ", delayTicks=" + snapshot.delayTicks()), false);
+        return snapshot.pendingColumns();
+    }
+
+    private static int backfillEnable(CommandSourceStack source, boolean enabled) {
+        VerticalBackfillDaemon.setEnabled(enabled);
+        CubePregenManager.MANAGER.markPersistentDirty();
+        CubePregenManager.MANAGER.savePersistentNow(source.getServer());
+        source.sendSuccess(() -> Component.literal("RWC backfill " + (enabled ? "enabled" : "disabled") + "."), false);
+        return enabled ? 1 : 0;
+    }
+
+    private static int backfillConfigure(CommandSourceStack source, int maxVerticalRadius, int delayTicks, String statusName) {
+        try {
+            CubeStatus status = parseCubeStatus(statusName);
+            VerticalBackfillDaemon.configure(VerticalBackfillDaemon.enabled(), maxVerticalRadius, delayTicks, status);
+            CubePregenManager.MANAGER.markPersistentDirty();
+            CubePregenManager.MANAGER.savePersistentNow(source.getServer());
+            source.sendSuccess(() -> Component.literal("RWC backfill configured: maxVerticalRadius=" + maxVerticalRadius
+                    + ", delayTicks=" + delayTicks
+                    + ", target=" + status), false);
+            return maxVerticalRadius;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to configure RWC backfill: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int columnVisitedStatus(CommandSourceStack source) {
+        CubePos cubePos = CubePos.fromBlock(Mth.floor(source.getPosition().x), Mth.floor(source.getPosition().y), Mth.floor(source.getPosition().z));
+        ColumnVisitSnapshot snapshot = ColumnVisitTracker.snapshot(cubePos);
+        source.sendSuccess(() -> Component.literal("RWC visited columns: total=" + snapshot.visitedColumns()
+                + ", backfillDone=" + snapshot.backfillDoneColumns()), false);
+        if (snapshot.currentColumn() != null) {
+            source.sendSuccess(() -> Component.literal("RWC current visited column: "
+                    + snapshot.currentColumn().x() + " " + snapshot.currentColumn().z()
+                    + ", y=" + snapshot.currentMinVisitedCubeY() + ".." + snapshot.currentMaxVisitedCubeY()
+                    + ", lastY=" + snapshot.currentLastVisitedCubeY()
+                    + ", visits=" + snapshot.currentVisits()), false);
+        }
+        return snapshot.visitedColumns();
+    }
+
+    private static int columnVisitedCurrent(CommandSourceStack source) {
+        CubePos cubePos = CubePos.fromBlock(Mth.floor(source.getPosition().x), Mth.floor(source.getPosition().y), Mth.floor(source.getPosition().z));
+        return ColumnVisitTracker.current(cubePos).map(entry -> {
+            source.sendSuccess(() -> Component.literal("RWC current column visit: column=" + entry.columnPos().x() + " " + entry.columnPos().z()
+                    + ", minY=" + entry.minVisitedCubeY()
+                    + ", maxY=" + entry.maxVisitedCubeY()
+                    + ", lastY=" + entry.lastVisitedCubeY()
+                    + ", visits=" + entry.visits()
+                    + ", nextBackfillStep=" + entry.nextBackfillStep()
+                    + ", done=" + entry.backfillDone()), false);
+            return 1;
+        }).orElseGet(() -> {
+            source.sendFailure(Component.literal("Current RWC column has not been visited by the M13 tracker yet."));
+            return 0;
+        });
+    }
+
+    private static int columnVisitedDump(CommandSourceStack source, int limit) {
+        List<ColumnVisitEntry> entries = ColumnVisitTracker.recentEntries(limit);
+        source.sendSuccess(() -> Component.literal("RWC visited column dump: shown=" + entries.size()), false);
+        for (ColumnVisitEntry entry : entries) {
+            source.sendSuccess(() -> Component.literal("  column=" + entry.columnPos().x() + " " + entry.columnPos().z()
+                    + " y=" + entry.minVisitedCubeY() + ".." + entry.maxVisitedCubeY()
+                    + " lastY=" + entry.lastVisitedCubeY()
+                    + " visits=" + entry.visits()
+                    + " next=" + entry.nextBackfillStep()
+                    + " done=" + entry.backfillDone()), false);
+        }
+        return entries.size();
+    }
+
+    private static int columnVisitedClear(CommandSourceStack source) {
+        int removed = ColumnVisitTracker.clear();
+        CubePregenManager.MANAGER.markPersistentDirty();
+        CubePregenManager.MANAGER.savePersistentNow(source.getServer());
+        source.sendSuccess(() -> Component.literal("RWC visited columns cleared: removed=" + removed), false);
+        return removed;
+    }
+
+    private static int afkPregenStatus(CommandSourceStack source) {
+        AfkPregenSnapshot snapshot = AfkPregenController.snapshot();
+        source.sendSuccess(() -> Component.literal("RWC AFK pregen: enabled=" + snapshot.enabled()
+                + ", trackedPlayers=" + snapshot.trackedPlayers()
+                + ", afkPlayers=" + snapshot.afkPlayers()
+                + ", jobsStarted=" + snapshot.jobsStarted()
+                + ", target=" + snapshot.targetStatus()
+                + ", reason=" + snapshot.lastReason()), false);
+        source.sendSuccess(() -> Component.literal("RWC AFK pregen config: after=" + snapshot.afkAfterTicks()
+                + "t, radius=" + snapshot.radiusBlocks()
+                + ", verticalRadius=" + snapshot.verticalRadiusCubes()), false);
+        return snapshot.afkPlayers();
+    }
+
+    private static int afkPregenEnable(CommandSourceStack source, boolean enabled) {
+        AfkPregenController.setEnabled(enabled);
+        CubePregenManager.MANAGER.markPersistentDirty();
+        CubePregenManager.MANAGER.savePersistentNow(source.getServer());
+        source.sendSuccess(() -> Component.literal("RWC AFK pregen " + (enabled ? "enabled" : "disabled") + "."), false);
+        return enabled ? 1 : 0;
+    }
+
+    private static int afkPregenConfigure(CommandSourceStack source, int afkAfterSeconds, int radiusBlocks, int verticalRadiusCubes, String statusName) {
+        try {
+            CubeStatus status = parseCubeStatus(statusName);
+            AfkPregenController.configure(AfkPregenController.enabled(), afkAfterSeconds * 20, radiusBlocks, verticalRadiusCubes, status);
+            CubePregenManager.MANAGER.markPersistentDirty();
+            CubePregenManager.MANAGER.savePersistentNow(source.getServer());
+            source.sendSuccess(() -> Component.literal("RWC AFK pregen configured: afterSeconds=" + afkAfterSeconds
+                    + ", radiusBlocks=" + radiusBlocks
+                    + ", verticalRadiusCubes=" + verticalRadiusCubes
+                    + ", target=" + status), false);
+            return radiusBlocks;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to configure RWC AFK pregen: " + exception.getMessage()));
+            return 0;
+        }
     }
 
     private static int status(CommandSourceStack source) {
@@ -1279,6 +1526,13 @@ public final class RedlineWorldCoreCommands {
                 + ", skyDirtyColumns=" + snapshot.skyLightDirtyColumns()
                 + ", unloaded=" + snapshot.unloadedLastTick()
                 + ", requestLimitHit=" + snapshot.requestLimitHitLastTick()), false);
+        source.sendSuccess(() -> Component.literal("Load budget: us=" + snapshot.loadMicrosLastTick()
+                + ", maxUs=" + snapshot.loadMicrosMax()
+                + ", maxLoadsPerTick=" + snapshot.maxLoadsPerTick()
+                + ", maxGeneratedPerTick=" + snapshot.maxGeneratedLoadsPerTick()
+                + ", maxLoadMicros=" + snapshot.maxLoadMicrosPerTick()
+                + ", generatedBudgetHit=" + snapshot.loadGeneratedBudgetHitLastTick()
+                + ", timeBudgetHit=" + snapshot.loadTimeBudgetHitLastTick()), false);
         source.sendSuccess(() -> Component.literal("Totals: loaded=" + snapshot.totalLoaded()
                 + ", generated=" + snapshot.totalGenerated()
                 + ", lightRebuilt=" + snapshot.totalLightRebuilt()

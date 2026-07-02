@@ -40,8 +40,20 @@ import java.util.concurrent.ConcurrentHashMap;
  * compatibility shell while this cache proves the cube lifecycle against Region3D storage and the cubic generator.</p>
  */
 public final class ServerCubeCache {
-    /** Keep one player ticket from loading in one tick; 3969 player cubes need about 31 ticks with this default. */
-    public static final int MAX_LOADS_PER_TICK = 128;
+    /**
+     * Active player movement must not synchronously generate a whole new cube slab.
+     *
+     * <p>M13.1 pregen has its own throttle, but player tickets used the older M6 loader directly. Crossing one cube
+     * boundary can request a fresh 21x9 slab edge, and loading 128 generated cubes in one server tick is exactly the
+     * multi-second freeze observed during M13.1 testing. Keep total active loads modest and cap generated loads harder.
+     */
+    public static final int MAX_LOADS_PER_TICK = 32;
+
+    /** At most one freshly generated gameplay cube per tick; persisted/loaded cubes may still stream faster. */
+    public static final int MAX_GENERATED_LOADS_PER_TICK = 1;
+
+    /** Soft active-load budget. One expensive generated cube can exceed this, but the loader stops immediately after it. */
+    public static final int MAX_LOAD_MICROS_PER_TICK = 4_000;
 
     /** Keep recently unrequested cubes warm for a short time to avoid thrash while tickets refresh or players move. */
     public static final int UNLOAD_GRACE_TICKS = 100;
@@ -76,6 +88,10 @@ public final class ServerCubeCache {
     private int loadedLastTick;
     private int unloadedLastTick;
     private int generatedLastTick;
+    private long loadMicrosLastTick;
+    private long loadMicrosMax;
+    private boolean loadGeneratedBudgetHitLastTick;
+    private boolean loadTimeBudgetHitLastTick;
     private boolean requestLimitHitLastTick;
     private long totalLightRebuilt;
     private int lightRebuiltLastTick;
@@ -138,6 +154,10 @@ public final class ServerCubeCache {
         queuedLastTick = queuedThisTick;
         loadedLastTick = loadCounters.loaded();
         generatedLastTick = loadCounters.generated();
+        loadMicrosLastTick = loadCounters.elapsedMicros();
+        loadMicrosMax = Math.max(loadMicrosMax, loadCounters.elapsedMicros());
+        loadGeneratedBudgetHitLastTick = loadCounters.generatedBudgetHit();
+        loadTimeBudgetHitLastTick = loadCounters.timeBudgetHit();
         unloadedLastTick = unloadedThisTick;
         lightRebuiltLastTick = rebuiltLightThisTick;
         lightDirtyLastTick = lightDirtyQueue.size();
@@ -411,6 +431,31 @@ public final class ServerCubeCache {
 
 
 
+
+    /**
+     * M13.1 throttle probe: tells the pregen manager whether the next request is likely to run the expensive generator.
+     * This is intentionally conservative; dirty loaded cubes are treated as skip so player edits are never overwritten by
+     * background pregen.
+     */
+    public synchronized boolean wouldPregenGenerate(CubePos cubePos, CubeStatus targetStatus) {
+        Objects.requireNonNull(cubePos, "cubePos");
+        Objects.requireNonNull(targetStatus, "targetStatus");
+        if (!settings.containsCubeY(cubePos.y())) {
+            return false;
+        }
+        CubeHolder existing = holders.get(cubePos);
+        if (existing != null) {
+            return !existing.cube().status().isAtLeast(targetStatus) && !existing.dirty();
+        }
+        Optional<LevelCube> persisted = storage.get(cubePos);
+        if (persisted.isPresent() && persisted.get().status().isAtLeast(targetStatus)) {
+            storage.unloadFromMemory(cubePos);
+            return false;
+        }
+        storage.unloadFromMemory(cubePos);
+        return targetStatus != CubeStatus.EMPTY;
+    }
+
     /**
      * M13.0 manual pregen entry point.
      *
@@ -516,6 +561,13 @@ public final class ServerCubeCache {
                 generatedLastTick,
                 unloadedLastTick,
                 queuedLastTick,
+                loadMicrosLastTick,
+                loadMicrosMax,
+                MAX_LOADS_PER_TICK,
+                MAX_GENERATED_LOADS_PER_TICK,
+                MAX_LOAD_MICROS_PER_TICK,
+                loadGeneratedBudgetHitLastTick,
+                loadTimeBudgetHitLastTick,
                 requestLimitHitLastTick,
                 Map.copyOf(byTicketLevel),
                 Map.copyOf(byCubeStatus),
@@ -600,6 +652,10 @@ public final class ServerCubeCache {
     private LoadCounters loadPending(Map<CubePos, CubeTicketLevel> required) {
         int loaded = 0;
         int generated = 0;
+        boolean generatedBudgetHit = false;
+        boolean timeBudgetHit = false;
+        long startNanos = System.nanoTime();
+        long elapsedMicros = 0L;
         Set<ColumnPos> touchedColumns = new LinkedHashSet<>();
         Iterator<Map.Entry<CubePos, CubeTicketLevel>> iterator = pendingLoads.entrySet().iterator();
         while (iterator.hasNext() && loaded < MAX_LOADS_PER_TICK) {
@@ -624,11 +680,26 @@ public final class ServerCubeCache {
                 generated++;
                 totalGenerated++;
             }
+
+            elapsedMicros = Math.max(1L, (System.nanoTime() - startNanos) / 1_000L);
+            if (generated >= MAX_GENERATED_LOADS_PER_TICK) {
+                generatedBudgetHit = iterator.hasNext();
+                break;
+            }
+            if (elapsedMicros >= MAX_LOAD_MICROS_PER_TICK) {
+                timeBudgetHit = iterator.hasNext();
+                break;
+            }
+        }
+        if (loaded == 0) {
+            elapsedMicros = 0L;
+        } else if (elapsedMicros == 0L) {
+            elapsedMicros = Math.max(1L, (System.nanoTime() - startNanos) / 1_000L);
         }
         for (ColumnPos columnPos : touchedColumns) {
             markSkyLightDirty(columnPos);
         }
-        return new LoadCounters(loaded, generated);
+        return new LoadCounters(loaded, generated, elapsedMicros, generatedBudgetHit, timeBudgetHit);
     }
 
     private CubeHolder loadHolder(CubePos cubePos, CubeTicketLevel level) {
@@ -791,7 +862,7 @@ public final class ServerCubeCache {
     private record RequiredLevels(Map<CubePos, CubeTicketLevel> levels, boolean limitHit) {
     }
 
-    private record LoadCounters(int loaded, int generated) {
+    private record LoadCounters(int loaded, int generated, long elapsedMicros, boolean generatedBudgetHit, boolean timeBudgetHit) {
     }
 
     private record SkyLightQueueCounters(int rebuiltColumns, int changedCubes, int skippedUnchangedCubes, int savedChangedCubes, long elapsedMicros) {

@@ -22,6 +22,15 @@ public record CubeClientSyncPayload(
         int loadedCubes,
         int pendingLoads,
         int requestedCubes,
+        int loadedLastTick,
+        int generatedLastTick,
+        long loadMicrosLastTick,
+        long loadMicrosMax,
+        int maxLoadsPerTick,
+        int maxGeneratedLoadsPerTick,
+        int maxLoadMicrosPerTick,
+        boolean loadGeneratedBudgetHitLastTick,
+        boolean loadTimeBudgetHitLastTick,
         long totalGenerated,
         long totalLightRebuilt,
         int lightRebuiltLastTick,
@@ -91,6 +100,31 @@ public record CubeClientSyncPayload(
         int pregenTargetStatusOrdinal,
         String pregenActiveJobId,
         String pregenLastError,
+        int pregenMaxSkippedCubesPerTick,
+        int pregenMaxGeneratedCubesPerSecond,
+        int pregenExpensiveCubeMillis,
+        int pregenCooldownAfterExpensiveTicks,
+        int pregenThrottleCooldownTicks,
+        int pregenGeneratedThisSecond,
+        String pregenThrottleReason,
+        int visitedColumns,
+        int backfillDoneColumns,
+        boolean backfillEnabled,
+        int backfillPendingColumns,
+        long backfillJobsStarted,
+        int backfillMaxVerticalRadius,
+        int backfillDelayTicks,
+        String backfillTargetStatus,
+        String backfillLastReason,
+        boolean afkEnabled,
+        int afkTrackedPlayers,
+        int afkPlayers,
+        long afkJobsStarted,
+        int afkAfterTicks,
+        int afkRadiusBlocks,
+        int afkVerticalRadiusCubes,
+        String afkTargetStatus,
+        String afkLastReason,
         List<Entry> entries
 ) implements CustomPacketPayload {
     public static final Type<CubeClientSyncPayload> TYPE = new Type<>(Identifier.fromNamespaceAndPath(RedlineWorldCore.MOD_ID, "cube_client_sync"));
@@ -99,6 +133,11 @@ public record CubeClientSyncPayload(
     public CubeClientSyncPayload {
         pregenActiveJobId = pregenActiveJobId == null ? "none" : pregenActiveJobId;
         pregenLastError = pregenLastError == null ? "" : pregenLastError;
+        pregenThrottleReason = pregenThrottleReason == null ? "" : pregenThrottleReason;
+        backfillTargetStatus = backfillTargetStatus == null ? "" : backfillTargetStatus;
+        backfillLastReason = backfillLastReason == null ? "" : backfillLastReason;
+        afkTargetStatus = afkTargetStatus == null ? "" : afkTargetStatus;
+        afkLastReason = afkLastReason == null ? "" : afkLastReason;
         entries = List.copyOf(entries);
     }
 
@@ -114,6 +153,15 @@ public record CubeClientSyncPayload(
         buffer.writeVarInt(loadedCubes);
         buffer.writeVarInt(pendingLoads);
         buffer.writeVarInt(requestedCubes);
+        buffer.writeVarInt(loadedLastTick);
+        buffer.writeVarInt(generatedLastTick);
+        buffer.writeLong(loadMicrosLastTick);
+        buffer.writeLong(loadMicrosMax);
+        buffer.writeVarInt(maxLoadsPerTick);
+        buffer.writeVarInt(maxGeneratedLoadsPerTick);
+        buffer.writeVarInt(maxLoadMicrosPerTick);
+        buffer.writeBoolean(loadGeneratedBudgetHitLastTick);
+        buffer.writeBoolean(loadTimeBudgetHitLastTick);
         buffer.writeLong(totalGenerated);
         buffer.writeLong(totalLightRebuilt);
         buffer.writeVarInt(lightRebuiltLastTick);
@@ -183,6 +231,31 @@ public record CubeClientSyncPayload(
         buffer.writeVarInt(pregenTargetStatusOrdinal);
         buffer.writeUtf(pregenActiveJobId);
         buffer.writeUtf(pregenLastError);
+        buffer.writeVarInt(pregenMaxSkippedCubesPerTick);
+        buffer.writeVarInt(pregenMaxGeneratedCubesPerSecond);
+        buffer.writeVarInt(pregenExpensiveCubeMillis);
+        buffer.writeVarInt(pregenCooldownAfterExpensiveTicks);
+        buffer.writeVarInt(pregenThrottleCooldownTicks);
+        buffer.writeVarInt(pregenGeneratedThisSecond);
+        buffer.writeUtf(pregenThrottleReason);
+        buffer.writeVarInt(visitedColumns);
+        buffer.writeVarInt(backfillDoneColumns);
+        buffer.writeBoolean(backfillEnabled);
+        buffer.writeVarInt(backfillPendingColumns);
+        buffer.writeLong(backfillJobsStarted);
+        buffer.writeVarInt(backfillMaxVerticalRadius);
+        buffer.writeVarInt(backfillDelayTicks);
+        buffer.writeUtf(backfillTargetStatus);
+        buffer.writeUtf(backfillLastReason);
+        buffer.writeBoolean(afkEnabled);
+        buffer.writeVarInt(afkTrackedPlayers);
+        buffer.writeVarInt(afkPlayers);
+        buffer.writeLong(afkJobsStarted);
+        buffer.writeVarInt(afkAfterTicks);
+        buffer.writeVarInt(afkRadiusBlocks);
+        buffer.writeVarInt(afkVerticalRadiusCubes);
+        buffer.writeUtf(afkTargetStatus);
+        buffer.writeUtf(afkLastReason);
         buffer.writeVarInt(entries.size());
         for (Entry entry : entries) {
             entry.write(buffer);
@@ -196,6 +269,15 @@ public record CubeClientSyncPayload(
         int loadedCubes = buffer.readVarInt();
         int pendingLoads = buffer.readVarInt();
         int requestedCubes = buffer.readVarInt();
+        int loadedLastTick = buffer.readVarInt();
+        int generatedLastTick = buffer.readVarInt();
+        long loadMicrosLastTick = buffer.readLong();
+        long loadMicrosMax = buffer.readLong();
+        int maxLoadsPerTick = buffer.readVarInt();
+        int maxGeneratedLoadsPerTick = buffer.readVarInt();
+        int maxLoadMicrosPerTick = buffer.readVarInt();
+        boolean loadGeneratedBudgetHitLastTick = buffer.readBoolean();
+        boolean loadTimeBudgetHitLastTick = buffer.readBoolean();
         long totalGenerated = buffer.readLong();
         long totalLightRebuilt = buffer.readLong();
         int lightRebuiltLastTick = buffer.readVarInt();
@@ -265,6 +347,31 @@ public record CubeClientSyncPayload(
         int pregenTargetStatusOrdinal = buffer.readVarInt();
         String pregenActiveJobId = buffer.readUtf();
         String pregenLastError = buffer.readUtf();
+        int pregenMaxSkippedCubesPerTick = buffer.readVarInt();
+        int pregenMaxGeneratedCubesPerSecond = buffer.readVarInt();
+        int pregenExpensiveCubeMillis = buffer.readVarInt();
+        int pregenCooldownAfterExpensiveTicks = buffer.readVarInt();
+        int pregenThrottleCooldownTicks = buffer.readVarInt();
+        int pregenGeneratedThisSecond = buffer.readVarInt();
+        String pregenThrottleReason = buffer.readUtf();
+        int visitedColumns = buffer.readVarInt();
+        int backfillDoneColumns = buffer.readVarInt();
+        boolean backfillEnabled = buffer.readBoolean();
+        int backfillPendingColumns = buffer.readVarInt();
+        long backfillJobsStarted = buffer.readLong();
+        int backfillMaxVerticalRadius = buffer.readVarInt();
+        int backfillDelayTicks = buffer.readVarInt();
+        String backfillTargetStatus = buffer.readUtf();
+        String backfillLastReason = buffer.readUtf();
+        boolean afkEnabled = buffer.readBoolean();
+        int afkTrackedPlayers = buffer.readVarInt();
+        int afkPlayers = buffer.readVarInt();
+        long afkJobsStarted = buffer.readLong();
+        int afkAfterTicks = buffer.readVarInt();
+        int afkRadiusBlocks = buffer.readVarInt();
+        int afkVerticalRadiusCubes = buffer.readVarInt();
+        String afkTargetStatus = buffer.readUtf();
+        String afkLastReason = buffer.readUtf();
         int count = buffer.readVarInt();
         List<Entry> entries = new ArrayList<>(Math.min(count, 256));
         for (int i = 0; i < count; i++) {
@@ -277,6 +384,15 @@ public record CubeClientSyncPayload(
                 loadedCubes,
                 pendingLoads,
                 requestedCubes,
+                loadedLastTick,
+                generatedLastTick,
+                loadMicrosLastTick,
+                loadMicrosMax,
+                maxLoadsPerTick,
+                maxGeneratedLoadsPerTick,
+                maxLoadMicrosPerTick,
+                loadGeneratedBudgetHitLastTick,
+                loadTimeBudgetHitLastTick,
                 totalGenerated,
                 totalLightRebuilt,
                 lightRebuiltLastTick,
@@ -346,6 +462,31 @@ public record CubeClientSyncPayload(
                 pregenTargetStatusOrdinal,
                 pregenActiveJobId,
                 pregenLastError,
+                pregenMaxSkippedCubesPerTick,
+                pregenMaxGeneratedCubesPerSecond,
+                pregenExpensiveCubeMillis,
+                pregenCooldownAfterExpensiveTicks,
+                pregenThrottleCooldownTicks,
+                pregenGeneratedThisSecond,
+                pregenThrottleReason,
+                visitedColumns,
+                backfillDoneColumns,
+                backfillEnabled,
+                backfillPendingColumns,
+                backfillJobsStarted,
+                backfillMaxVerticalRadius,
+                backfillDelayTicks,
+                backfillTargetStatus,
+                backfillLastReason,
+                afkEnabled,
+                afkTrackedPlayers,
+                afkPlayers,
+                afkJobsStarted,
+                afkAfterTicks,
+                afkRadiusBlocks,
+                afkVerticalRadiusCubes,
+                afkTargetStatus,
+                afkLastReason,
                 entries
         );
     }
