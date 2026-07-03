@@ -479,6 +479,10 @@ public final class RedlineWorldCoreCommands {
                 .then(Commands.literal("ownership")
                         .then(Commands.literal("status")
                                 .executes(context -> ownershipStatus(context.getSource())))
+                        .then(Commands.literal("auto_test")
+                                .executes(context -> CubeOwnershipAutoTest.start(context.getSource())))
+                        .then(Commands.literal("auto_test_cancel")
+                                .executes(context -> CubeOwnershipAutoTest.cancel(context.getSource())))
                         .then(Commands.literal("validate_current")
                                 .executes(context -> ownershipValidateCurrent(context.getSource())))
                         .then(Commands.literal("validate")
@@ -1824,15 +1828,27 @@ public final class RedlineWorldCoreCommands {
     }
 
     private static int cubesSaveAll(CommandSourceStack source) {
-        int saved = cubeCache(source).saveAllLoaded();
-        source.sendSuccess(() -> Component.literal("Cube cache save_all DEBUG/EXPENSIVE forced sync flush: saved=" + saved
-                + ". Normal gameplay uses async/idle dirty IO."), false);
+        ServerCubeCache cache = cubeCache(source);
+        int before = cache.debugSaveBacklog();
+        int saved = cache.saveAllLoaded();
+        int after = cache.debugSaveBacklog();
+        source.sendSuccess(() -> Component.literal("Cube cache save_all DEBUG/BUDGETED sync flush: saved=" + saved
+                + ", dirtyBefore=" + before
+                + ", dirtyAfter=" + after
+                + ", maxPerCall=" + ServerCubeCache.DEBUG_SAVE_ALL_MAX_SYNC_CUBES_PER_CALL
+                + ". Normal gameplay uses async/idle dirty IO; run again only if you intentionally want more debug flush."), false);
         return saved;
     }
 
     private static int cubesUnloadAll(CommandSourceStack source) {
-        int unloaded = cubeCache(source).unloadAllLoaded(true);
-        source.sendSuccess(() -> Component.literal("Cube cache unloaded all holders: unloaded=" + unloaded + ". Active tickets may reload them next tick."), false);
+        ServerCubeCache cache = cubeCache(source);
+        int dirtyBefore = cache.debugSaveBacklog();
+        int unloaded = cache.unloadAllLoaded(true);
+        int dirtyAfter = cache.debugSaveBacklog();
+        source.sendSuccess(() -> Component.literal("Cube cache unloaded clean holders: unloaded=" + unloaded
+                + ", dirtySkippedBefore=" + dirtyBefore
+                + ", dirtyStillLoaded=" + dirtyAfter
+                + ". Active tickets may reload clean holders next tick; dirty holders stay loaded until saved."), false);
         return unloaded;
     }
 

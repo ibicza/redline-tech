@@ -205,6 +205,7 @@ public final class CubicClientSyncBridge {
         for (PlayerBridgeState state : PLAYER_STATES.values()) {
             state.materializationQueue.clear();
             state.queued.clear();
+            state.dirtyInvalidationsAccounted.clear();
         }
     }
 
@@ -252,7 +253,7 @@ public final class CubicClientSyncBridge {
                         continue;
                     }
                     state.materializationQueue.addLast(cubePos);
-                    if (clientDirty) {
+                    if (clientDirty && state.dirtyInvalidationsAccounted.add(cubePos)) {
                         clientInvalidationsQueued++;
                     }
                 }
@@ -278,7 +279,10 @@ public final class CubicClientSyncBridge {
             rememberMaterialized(state, cubePos, hash);
             if (cache.clientSyncDirty(cubePos)) {
                 cache.recordClientMirrorSynced(cubePos);
+                state.dirtyInvalidationsAccounted.remove(cubePos);
                 clientMirrorsCleaned++;
+            } else {
+                state.dirtyInvalidationsAccounted.remove(cubePos);
             }
             materialized++;
             state.materializedLastTick++;
@@ -533,6 +537,7 @@ public final class CubicClientSyncBridge {
     private static final class PlayerBridgeState {
         private final ArrayDeque<CubePos> materializationQueue = new ArrayDeque<>();
         private final Set<CubePos> queued = new HashSet<>();
+        private final Set<CubePos> dirtyInvalidationsAccounted = new HashSet<>();
         private final Map<CubePos, Long> materializedHashes = new HashMap<>();
         private int tickCounter;
         private int materializedLastTick;

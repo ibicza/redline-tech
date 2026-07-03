@@ -107,6 +107,9 @@ public final class ServerCubeCache {
     /** Soft budget for processing async save completions on the server thread. */
     public static final int MAX_ASYNC_COMPLETION_MICROS_PER_TICK = 2_000;
 
+    /** M14.9.1 keeps manual debug save_all from freezing the integrated server for minutes. */
+    public static final int DEBUG_SAVE_ALL_MAX_SYNC_CUBES_PER_CALL = 16;
+
     /** M10.1 keeps automatic vertical sky-light rebuilds tiny; manual commands may still rebuild large ranges immediately. */
     public static final int MAX_SKY_LIGHT_COLUMNS_PER_TICK = 1;
 
@@ -285,12 +288,17 @@ public final class ServerCubeCache {
 
     public synchronized List<CubeScheduledTickData> scheduledTicks(CubePos cubePos) {
         CubeHolder holder = holders.get(cubePos);
-        if (holder == null) {
-            return List.of();
+        LevelCube cube = holder == null ? null : holder.cube();
+        if (cube == null) {
+            Optional<LevelCube> persisted = readPersisted(cubePos);
+            if (persisted.isEmpty()) {
+                return List.of();
+            }
+            cube = persisted.get();
         }
         List<CubeScheduledTickData> ticks = new ArrayList<>();
-        ticks.addAll(holder.cube().copyScheduledBlockTicks());
-        ticks.addAll(holder.cube().copyScheduledFluidTicks());
+        ticks.addAll(cube.copyScheduledBlockTicks());
+        ticks.addAll(cube.copyScheduledFluidTicks());
         return ticks;
     }
 
@@ -862,32 +870,102 @@ public final class ServerCubeCache {
     }
 
     public synchronized int saveAllLoaded() {
-        drainAsyncDirtySaveCompletions(true);
+        return saveAllLoaded(DEBUG_SAVE_ALL_MAX_SYNC_CUBES_PER_CALL);
+    }
+
+    /**
+     * M14.9.1: debug save_all is budgeted. It no longer writes thousands of dirty cubes in one server tick.
+     * Run the command repeatedly, wait for async dirty IO, or use ownership auto_test for a bounded persistence check.
+     */
+    public synchronized int saveAllLoaded(int maxSyncSaves) {
+        drainAsyncDirtySaveCompletions(false);
+        int limit = Math.max(1, maxSyncSaves);
         int saved = 0;
-        for (CubeHolder holder : holders.values()) {
+        for (CubeHolder holder : new ArrayList<>(holders.values())) {
+            if (saved >= limit) {
+                break;
+            }
             if (shouldSkipDebugSave(holder)) {
                 continue;
             }
-            long startNanos = System.nanoTime();
-            storage.put(holder.cube());
-            holder.markSaved(CubeHolderState.REGION3D_SAVED);
-            dirtyTracker.recordSaved(new CubeSaveWork(holder.cubePos(), Long.MAX_VALUE), Math.max(1L, (System.nanoTime() - startNanos) / 1_000L));
-            saved++;
+            if (saveCubeNow(holder)) {
+                saved++;
+            }
         }
-        totalSaved += saved;
         return saved;
     }
 
+    public synchronized int debugSaveBacklog() {
+        int dirtyLoaded = 0;
+        for (CubeHolder holder : holders.values()) {
+            if (holder.dirty()) {
+                dirtyLoaded++;
+            }
+        }
+        return dirtyLoaded;
+    }
+
     public synchronized int unloadAllLoaded(boolean saveDirty) {
+        drainAsyncDirtySaveCompletions(false);
         int unloaded = 0;
         for (CubeHolder holder : new ArrayList<>(holders.values())) {
-            unloadHolder(holder, saveDirty);
-            unloaded++;
+            if (unloadHolder(holder, saveDirty)) {
+                unloaded++;
+            }
         }
         pendingLoads.clear();
-        skyLightDirtyColumns.clear();
-        dirtyTracker.clearQueues();
+        if (holders.isEmpty()) {
+            skyLightDirtyColumns.clear();
+        }
         return unloaded;
+    }
+
+    public synchronized boolean forceSaveCube(CubePos cubePos) {
+        CubeHolder holder = holders.get(cubePos);
+        if (holder == null) {
+            return false;
+        }
+        return saveCubeNow(holder);
+    }
+
+    public synchronized boolean debugUnloadCube(CubePos cubePos, boolean forceSave) {
+        CubeHolder holder = holders.get(cubePos);
+        if (holder == null) {
+            storage.unloadFromMemory(cubePos);
+            return true;
+        }
+        if (forceSave && holder.dirty()) {
+            saveCubeNow(holder);
+        }
+        return unloadHolder(holder, false);
+    }
+
+    public synchronized boolean debugLoadCube(CubePos cubePos, CubeTicketLevel level) {
+        if (!settings.containsCubeY(cubePos.y())) {
+            return false;
+        }
+        CubeHolder holder = holders.get(cubePos);
+        if (holder != null) {
+            holder.markRequired(level, gameTime);
+            return true;
+        }
+        CubeHolder loaded = loadHolder(cubePos, level);
+        holders.put(cubePos, loaded);
+        totalLoaded++;
+        if (loaded.state() == CubeHolderState.GENERATED) {
+            totalGenerated++;
+        }
+        markSkyLightDirty(cubePos.columnPos());
+        return true;
+    }
+
+    private boolean saveCubeNow(CubeHolder holder) {
+        long startNanos = System.nanoTime();
+        storage.put(holder.cube());
+        holder.markSaved(CubeHolderState.REGION3D_SAVED);
+        dirtyTracker.recordSaved(new CubeSaveWork(holder.cubePos(), Long.MAX_VALUE), Math.max(1L, (System.nanoTime() - startNanos) / 1_000L));
+        totalSaved++;
+        return true;
     }
 
     private RequiredLevels collectRequiredLevels(Collection<CubeTicket> tickets) {
@@ -1035,8 +1113,9 @@ public final class ServerCubeCache {
             if (holder.ticksSinceRequired(gameTime) < UNLOAD_GRACE_TICKS) {
                 continue;
             }
-            unloadHolder(holder, true);
-            unloaded++;
+            if (unloadHolder(holder, true)) {
+                unloaded++;
+            }
         }
         return unloaded;
     }
@@ -1047,13 +1126,12 @@ public final class ServerCubeCache {
         return !holder.dirty();
     }
 
-    private void unloadHolder(CubeHolder holder, boolean saveDirty) {
+    private boolean unloadHolder(CubeHolder holder, boolean saveDirty) {
         if (saveDirty && holder.dirty()) {
-            long startNanos = System.nanoTime();
-            storage.put(holder.cube());
-            holder.markSaved(CubeHolderState.REGION3D_SAVED);
-            dirtyTracker.recordSaved(new CubeSaveWork(holder.cubePos(), Long.MAX_VALUE), Math.max(1L, (System.nanoTime() - startNanos) / 1_000L));
-            totalSaved++;
+            // M14.9.1: never perform large sync IO from the automatic unload path.
+            // Keep dirty holders resident until async/idle dirty IO or an explicit bounded debug save persists them.
+            dirtyTracker.mark(holder.cubePos(), CubeDirtyFlag.STORAGE);
+            return false;
         }
         holders.remove(holder.cubePos());
         lightDirtyQueue.remove(holder.cubePos());
@@ -1064,6 +1142,7 @@ public final class ServerCubeCache {
         }
         storage.unloadFromMemory(holder.cubePos());
         totalUnloaded++;
+        return true;
     }
 
     private int rebuildDirtyLightQueue() {

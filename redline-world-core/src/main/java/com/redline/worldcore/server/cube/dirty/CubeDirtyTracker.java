@@ -258,6 +258,21 @@ public final class CubeDirtyTracker {
         return !saveQueue.isEmpty() || !saveInFlight.isEmpty();
     }
 
+    public boolean storageDirtyOrQueued(CubePos cubePos) {
+        EnumSet<CubeDirtyFlag> set = dirtyFlags.get(cubePos);
+        return (set != null && set.contains(CubeDirtyFlag.STORAGE))
+                || saveQueue.contains(cubePos)
+                || saveInFlight.containsKey(cubePos);
+    }
+
+    public boolean saveInFlight(CubePos cubePos) {
+        return saveInFlight.containsKey(cubePos);
+    }
+
+    public int storageSaveBacklog() {
+        return saveQueue.size() + saveInFlight.size();
+    }
+
     public boolean clientSyncDirty(CubePos cubePos) {
         EnumSet<CubeDirtyFlag> set = dirtyFlags.get(cubePos);
         return set != null && set.contains(CubeDirtyFlag.CLIENT_SYNC);

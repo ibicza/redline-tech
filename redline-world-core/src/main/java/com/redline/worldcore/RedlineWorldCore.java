@@ -6,6 +6,7 @@ import com.redline.worldcore.network.WorldCoreNetwork;
 import com.redline.worldcore.server.compat.CubicClientSyncBridge;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.debug.CubeMathSelfTest;
+import com.redline.worldcore.server.debug.CubeOwnershipAutoTest;
 import com.redline.worldcore.server.debug.RedlineWorldCoreCommands;
 import com.redline.worldcore.server.entity.EntityCubeTracker;
 import com.redline.worldcore.server.pregen.ColumnVisitTracker;
@@ -43,6 +44,7 @@ public final class RedlineWorldCore {
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> EntityCubeTracker.onServerTick(event));
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> CubePregenManager.MANAGER.onServerTick(event));
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> CubicClientSyncBridge.onServerTick(event));
+        NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> CubeOwnershipAutoTest.onServerTick(event));
         NeoForge.EVENT_BUS.addListener((BreakBlockEvent event) -> CubicClientSyncBridge.onBlockBreak(event));
         NeoForge.EVENT_BUS.addListener((BlockEvent.EntityPlaceEvent event) -> CubicClientSyncBridge.onBlockPlace(event));
 
