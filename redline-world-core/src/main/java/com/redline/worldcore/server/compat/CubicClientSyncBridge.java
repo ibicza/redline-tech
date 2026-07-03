@@ -492,10 +492,13 @@ public final class CubicClientSyncBridge {
                 for (int localX = 0; localX < CubePos.SIZE; localX++) {
                     BlockState blockState = cube.getBlockState(localX, localY, localZ);
                     FluidState fluidState = blockState.getFluidState();
-                    if (!fluidState.getType().isSame(Fluids.WATER)) {
+                    if (!fluidState.getType().isSame(Fluids.WATER) || fluidState.isSource()) {
                         continue;
                     }
                     // Cap per cube: this is just a wake-up pass after the neighboring shell is present, not full fluid sim.
+                    // M16.3 deliberately wakes only generated flowing river/waterfall surfaces. Ocean/lake sources stay
+                    // static until a real player/block update touches them, preventing shelf lakes and ocean rims from
+                    // spilling over not-yet-sealed terrain.
                     if (scheduled >= 96) {
                         return;
                     }

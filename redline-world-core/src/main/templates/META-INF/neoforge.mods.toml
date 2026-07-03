@@ -7,6 +7,9 @@ displayName="${mod_name}"
 authors="${mod_authors}"
 description='''${mod_description}'''
 
+[[mixins]]
+config="redline_world_core.mixins.json"
+
 [[dependencies.${mod_id}]]
     modId="neoforge"
     type="required"
