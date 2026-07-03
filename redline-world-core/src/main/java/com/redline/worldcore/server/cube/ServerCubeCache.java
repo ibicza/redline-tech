@@ -941,13 +941,24 @@ public final class ServerCubeCache {
     }
 
     public synchronized boolean debugLoadCube(CubePos cubePos, CubeTicketLevel level) {
+        return ensureLoadedForClient(cubePos, level).isPresent();
+    }
+
+    /**
+     * M14.9.2 strict cube-shell helper.
+     *
+     * <p>The vanilla chunk generator is no longer allowed to be the visible source of truth for cubic_test.
+     * The client bridge calls this for the player cube before materializing, so the physical chunk shell is filled
+     * from cube-owned terrain instead of showing a temporary flat vanilla column until normal pending-load order catches up.</p>
+     */
+    public synchronized Optional<CubeHolder> ensureLoadedForClient(CubePos cubePos, CubeTicketLevel level) {
         if (!settings.containsCubeY(cubePos.y())) {
-            return false;
+            return Optional.empty();
         }
         CubeHolder holder = holders.get(cubePos);
         if (holder != null) {
             holder.markRequired(level, gameTime);
-            return true;
+            return Optional.of(holder);
         }
         CubeHolder loaded = loadHolder(cubePos, level);
         holders.put(cubePos, loaded);
@@ -956,7 +967,7 @@ public final class ServerCubeCache {
             totalGenerated++;
         }
         markSkyLightDirty(cubePos.columnPos());
-        return true;
+        return Optional.of(loaded);
     }
 
     private boolean saveCubeNow(CubeHolder holder) {

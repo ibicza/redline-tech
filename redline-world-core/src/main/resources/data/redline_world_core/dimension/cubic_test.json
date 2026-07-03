@@ -9,11 +9,7 @@
       "lakes": false,
       "layers": [
         {
-          "block": "minecraft:stone",
-          "height": 2032
-        },
-        {
-          "block": "minecraft:grass_block",
+          "block": "minecraft:air",
           "height": 1
         }
       ]

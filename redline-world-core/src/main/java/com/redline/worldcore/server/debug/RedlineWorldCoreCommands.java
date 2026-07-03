@@ -132,9 +132,9 @@ public final class RedlineWorldCoreCommands {
                                 .then(Commands.literal("full")
                                         .executes(context -> clientSyncOverlay(context.getSource(), CubicClientSyncBridge.OVERLAY_FULL))))
                         .then(Commands.literal("configure")
-                                .then(Commands.argument("horizontalRadius", IntegerArgumentType.integer(0, 8))
+                                .then(Commands.argument("horizontalRadius", IntegerArgumentType.integer(0, 10))
                                         .then(Commands.argument("verticalRadius", IntegerArgumentType.integer(0, 4))
-                                                .then(Commands.argument("maxPerTick", IntegerArgumentType.integer(1, 8))
+                                                .then(Commands.argument("maxPerTick", IntegerArgumentType.integer(1, 16))
                                                         .then(Commands.argument("syncIntervalTicks", IntegerArgumentType.integer(1, 100))
                                                                 .executes(context -> clientSyncConfigure(
                                                                         context.getSource(),
@@ -1182,13 +1182,22 @@ public final class RedlineWorldCoreCommands {
                 + CubicClientSyncBridge.streamHorizontalRadius()
                 + ", verticalRadius=" + CubicClientSyncBridge.streamVerticalRadius()
                 + ", maxMaterializedCubesPerTick=" + CubicClientSyncBridge.maxMaterializedCubesPerTick()
-                + ", syncPacketIntervalTicks=" + CubicClientSyncBridge.syncPacketIntervalTicks()), false);
+                + ", syncPacketIntervalTicks=" + CubicClientSyncBridge.syncPacketIntervalTicks()
+                + ", eagerLoadRadius=" + CubicClientSyncBridge.eagerLoadHorizontalRadius()
+                + "/" + CubicClientSyncBridge.eagerLoadVerticalRadius()
+                + ", maxEagerClientLoadsPerTick=" + CubicClientSyncBridge.maxEagerClientLoadsPerTick()), false);
         source.sendSuccess(() -> Component.literal("RWC overlay=" + CubicClientSyncBridge.overlayModeName()
                 + ", counters: playerWritesSaved=" + CubicClientSyncBridge.playerWritesSaved()
                 + ", materializerWritesIgnored=" + CubicClientSyncBridge.materializerWritesIgnored()
                 + ", commandWritesSaved=" + CubicClientSyncBridge.commandWritesSaved()
                 + ", clientInvalidationsQueued=" + CubicClientSyncBridge.clientInvalidationsQueued()
-                + ", clientMirrorsCleaned=" + CubicClientSyncBridge.clientMirrorsCleaned()), false);
+                + ", clientMirrorsCleaned=" + CubicClientSyncBridge.clientMirrorsCleaned()
+                + ", forcedClientLoads=" + CubicClientSyncBridge.forcedClientLoads()
+                + ", immediatePlayerCubeMaterializations=" + CubicClientSyncBridge.immediatePlayerCubeMaterializations()
+                + ", eagerClientLoads=" + CubicClientSyncBridge.eagerClientLoads()
+                + ", eagerClientGeneratedLoads=" + CubicClientSyncBridge.eagerClientGeneratedLoads()
+                + ", eagerLastTick=" + CubicClientSyncBridge.eagerClientLoadsLastTick()
+                + "/" + CubicClientSyncBridge.eagerClientGeneratedLastTick()), false);
         return CubicClientSyncBridge.trackedPlayers();
     }
 
