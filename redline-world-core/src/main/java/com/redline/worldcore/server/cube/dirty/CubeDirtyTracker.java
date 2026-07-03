@@ -20,6 +20,8 @@ public final class CubeDirtyTracker {
     private final int maxContentPerTick;
     private final int maxSavesPerTick;
     private final int maxSaveMicrosPerTick;
+    private final int maxSaveCompletionsPerTick;
+    private final int maxCompletionDrainMicrosPerTick;
 
     private final LinkedHashMap<CubePos, EnumSet<CubeDirtyFlag>> dirtyFlags = new LinkedHashMap<>();
     private final LinkedHashSet<CubePos> contentQueue = new LinkedHashSet<>();
@@ -33,16 +35,21 @@ public final class CubeDirtyTracker {
     private long totalSaved;
     private long totalSaveSubmitted;
     private long totalSaveFailed;
+    private long totalSaveCompletionsDrained;
     private int contentRebuiltLastTick;
     private int savedLastTick;
     private int saveSubmittedLastTick;
     private int saveFailedLastTick;
+    private int saveCompletionsDrainedLastTick;
     private long contentMicrosLastTick;
     private long contentMicrosMax;
     private long saveMicrosLastTick;
     private long saveMicrosMax;
+    private long completionDrainMicrosLastTick;
+    private long completionDrainMicrosMax;
     private boolean saveBudgetHitLastTick;
     private boolean saveIdleSkipLastTick;
+    private boolean completionBudgetHitLastTick;
     private int saveCooldownTicks;
     private int saveCooldownLastTick;
     private String saveLastReason = "none";
@@ -54,10 +61,13 @@ public final class CubeDirtyTracker {
     private CubePos lastSubmittedCube;
     private CubePos lastFailedCube;
 
-    public CubeDirtyTracker(int maxContentPerTick, int maxSavesPerTick, int maxSaveMicrosPerTick) {
+    public CubeDirtyTracker(int maxContentPerTick, int maxSavesPerTick, int maxSaveMicrosPerTick,
+                            int maxSaveCompletionsPerTick, int maxCompletionDrainMicrosPerTick) {
         this.maxContentPerTick = Math.max(1, maxContentPerTick);
         this.maxSavesPerTick = Math.max(1, maxSavesPerTick);
         this.maxSaveMicrosPerTick = Math.max(1, maxSaveMicrosPerTick);
+        this.maxSaveCompletionsPerTick = Math.max(1, maxSaveCompletionsPerTick);
+        this.maxCompletionDrainMicrosPerTick = Math.max(1, maxCompletionDrainMicrosPerTick);
     }
 
     public void mark(CubePos cubePos, CubeDirtyFlag first, CubeDirtyFlag... rest) {
@@ -216,10 +226,13 @@ public final class CubeDirtyTracker {
         savedLastTick = 0;
         saveSubmittedLastTick = 0;
         saveFailedLastTick = 0;
+        saveCompletionsDrainedLastTick = 0;
         contentMicrosLastTick = 0L;
         saveMicrosLastTick = 0L;
+        completionDrainMicrosLastTick = 0L;
         saveBudgetHitLastTick = false;
         saveIdleSkipLastTick = false;
+        completionBudgetHitLastTick = false;
         saveCooldownLastTick = saveCooldownTicks;
         if (saveCooldownTicks > 0) {
             saveCooldownTicks--;
@@ -240,9 +253,62 @@ public final class CubeDirtyTracker {
         saveLastReason = reason == null || reason.isBlank() ? "cooldown" : reason;
     }
 
+
+    public boolean hasSaveWorkQueued() {
+        return !saveQueue.isEmpty() || !saveInFlight.isEmpty();
+    }
+
+    public boolean clientSyncDirty(CubePos cubePos) {
+        EnumSet<CubeDirtyFlag> set = dirtyFlags.get(cubePos);
+        return set != null && set.contains(CubeDirtyFlag.CLIENT_SYNC);
+    }
+
+    public void recordClientSyncClean(CubePos cubePos) {
+        clean(cubePos, CubeDirtyFlag.CLIENT_SYNC);
+    }
+
+    public void recordCompletionDrain(int completions, long elapsedMicros, boolean budgetHit) {
+        if (completions > 0) {
+            totalSaveCompletionsDrained += completions;
+            saveCompletionsDrainedLastTick += completions;
+        }
+        if (elapsedMicros > 0L) {
+            completionDrainMicrosLastTick += elapsedMicros;
+            completionDrainMicrosMax = Math.max(completionDrainMicrosMax, elapsedMicros);
+        }
+        completionBudgetHitLastTick |= budgetHit;
+        if (budgetHit) {
+            saveLastReason = "completion_budget";
+        }
+    }
+
+    private int countDirty(CubeDirtyFlag flag) {
+        int count = 0;
+        for (EnumSet<CubeDirtyFlag> flags : dirtyFlags.values()) {
+            if (flags.contains(flag)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private int countAnyDirty(CubeDirtyFlag first, CubeDirtyFlag second) {
+        int count = 0;
+        for (EnumSet<CubeDirtyFlag> flags : dirtyFlags.values()) {
+            if (flags.contains(first) || flags.contains(second)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     public CubeDirtySnapshot snapshot() {
         return new CubeDirtySnapshot(
                 dirtyFlags.size(),
+                countDirty(CubeDirtyFlag.STORAGE),
+                countDirty(CubeDirtyFlag.CLIENT_SYNC),
+                countAnyDirty(CubeDirtyFlag.STATIC_LIGHT, CubeDirtyFlag.SKY_LIGHT),
+                countAnyDirty(CubeDirtyFlag.CONTENT_FLAGS, CubeDirtyFlag.COLUMN_INDEX),
                 contentQueue.size(),
                 saveQueue.size(),
                 saveInFlight.size(),
@@ -251,19 +317,26 @@ public final class CubeDirtyTracker {
                 totalSaved,
                 totalSaveSubmitted,
                 totalSaveFailed,
+                totalSaveCompletionsDrained,
                 contentRebuiltLastTick,
                 savedLastTick,
                 saveSubmittedLastTick,
                 saveFailedLastTick,
+                saveCompletionsDrainedLastTick,
                 contentMicrosLastTick,
                 contentMicrosMax,
                 saveMicrosLastTick,
                 saveMicrosMax,
+                completionDrainMicrosLastTick,
+                completionDrainMicrosMax,
                 maxContentPerTick,
                 maxSavesPerTick,
                 maxSaveMicrosPerTick,
+                maxSaveCompletionsPerTick,
+                maxCompletionDrainMicrosPerTick,
                 saveBudgetHitLastTick,
                 saveIdleSkipLastTick,
+                completionBudgetHitLastTick,
                 saveCooldownLastTick,
                 saveLastReason,
                 lastDirtyCube,

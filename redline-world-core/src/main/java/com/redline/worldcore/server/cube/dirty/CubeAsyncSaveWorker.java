@@ -47,6 +47,10 @@ public final class CubeAsyncSaveWorker {
         return completions.poll();
     }
 
+    public int pendingCompletions() {
+        return completions.size();
+    }
+
     public int inFlight() {
         return inFlight.get();
     }

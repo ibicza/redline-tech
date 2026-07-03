@@ -101,6 +101,12 @@ public final class ServerCubeCache {
     /** Maximum async Region3D writes allowed in flight from the gameplay dirty pipeline. */
     public static final int MAX_ASYNC_DIRTY_SAVES_IN_FLIGHT = 2;
 
+    /** M14.5.1 caps server-thread processing of completed async saves so completions cannot burst-freeze a tick. */
+    public static final int MAX_ASYNC_SAVE_COMPLETIONS_PER_TICK = 8;
+
+    /** Soft budget for processing async save completions on the server thread. */
+    public static final int MAX_ASYNC_COMPLETION_MICROS_PER_TICK = 2_000;
+
     /** M10.1 keeps automatic vertical sky-light rebuilds tiny; manual commands may still rebuild large ranges immediately. */
     public static final int MAX_SKY_LIGHT_COLUMNS_PER_TICK = 1;
 
@@ -117,7 +123,9 @@ public final class ServerCubeCache {
     private final CubeDirtyTracker dirtyTracker = new CubeDirtyTracker(
             MAX_DIRTY_CONTENT_REBUILDS_PER_TICK,
             MAX_DIRTY_SAVES_PER_TICK,
-            MAX_DIRTY_SAVE_MICROS_PER_TICK
+            MAX_DIRTY_SAVE_MICROS_PER_TICK,
+            MAX_ASYNC_SAVE_COMPLETIONS_PER_TICK,
+            MAX_ASYNC_COMPLETION_MICROS_PER_TICK
     );
     private final CubeBlockUpdatePipeline blockUpdatePipeline = new CubeBlockUpdatePipeline();
     private final CubeAsyncSaveWorker dirtySaveWorker = new CubeAsyncSaveWorker("RedlineWorldCore-DirtyCubeIO");
@@ -220,6 +228,14 @@ public final class ServerCubeCache {
         return captured;
     }
 
+    public synchronized boolean clientSyncDirty(CubePos cubePos) {
+        return dirtyTracker.clientSyncDirty(cubePos);
+    }
+
+    public synchronized void recordClientMirrorSynced(CubePos cubePos) {
+        dirtyTracker.recordClientSyncClean(cubePos);
+    }
+
     public synchronized Optional<Map<Integer, net.minecraft.nbt.CompoundTag>> blockEntityTags(CubePos cubePos) {
         CubeHolder holder = holders.get(cubePos);
         if (holder != null) {
@@ -292,7 +308,7 @@ public final class ServerCubeCache {
         dirtyTracker.beginTick();
         blockEntityTracker.beginTick();
         scheduledTickTracker.beginTick();
-        drainAsyncDirtySaveCompletions();
+        drainAsyncDirtySaveCompletions(false);
 
         RequiredLevels required = collectRequiredLevels(tickets);
         requestedLastTick = required.levels().size();
@@ -846,7 +862,7 @@ public final class ServerCubeCache {
     }
 
     public synchronized int saveAllLoaded() {
-        drainAsyncDirtySaveCompletions();
+        drainAsyncDirtySaveCompletions(true);
         int saved = 0;
         for (CubeHolder holder : holders.values()) {
             if (shouldSkipDebugSave(holder)) {
@@ -1154,7 +1170,7 @@ public final class ServerCubeCache {
     }
 
     private int flushDirtySaveQueue(LoadCounters loadCounters, int rebuiltContentThisTick, int rebuiltLightThisTick, SkyLightQueueCounters skyCounters) {
-        drainAsyncDirtySaveCompletions();
+        drainAsyncDirtySaveCompletions(false);
 
         if (dirtyTracker.saveCooldownActive()) {
             dirtyTracker.recordSaveIdleSkip("save_cooldown");
@@ -1211,28 +1227,39 @@ public final class ServerCubeCache {
         return 0;
     }
 
-    private void drainAsyncDirtySaveCompletions() {
+    private void drainAsyncDirtySaveCompletions(boolean forceAll) {
+        long startNanos = System.nanoTime();
+        int drained = 0;
+        boolean budgetHit = false;
         CubeAsyncSaveWorker.Completion completion;
         while ((completion = dirtySaveWorker.pollCompletion()) != null) {
             CubeSaveWork work = completion.work();
             if (!completion.success()) {
                 dirtyTracker.recordSaveFailed(work, completion.error());
-                continue;
+            } else {
+                totalSaved++;
+                boolean clean = dirtyTracker.recordSaved(work, completion.elapsedMicros());
+                CubeHolder holder = holders.get(work.cubePos());
+                if (holder != null && clean) {
+                    holder.markSaved(CubeHolderState.REGION3D_SAVED);
+                }
+                if (completion.elapsedMicros() >= EXPENSIVE_DIRTY_SAVE_MICROS) {
+                    dirtyTracker.startSaveCooldown(DIRTY_SAVE_COOLDOWN_TICKS, "expensive_async_save");
+                }
             }
-            totalSaved++;
-            boolean clean = dirtyTracker.recordSaved(work, completion.elapsedMicros());
-            CubeHolder holder = holders.get(work.cubePos());
-            if (holder != null && clean) {
-                holder.markSaved(CubeHolderState.REGION3D_SAVED);
-            }
-            if (completion.elapsedMicros() >= EXPENSIVE_DIRTY_SAVE_MICROS) {
-                dirtyTracker.startSaveCooldown(DIRTY_SAVE_COOLDOWN_TICKS, "expensive_async_save");
+            drained++;
+            long elapsedMicros = Math.max(1L, (System.nanoTime() - startNanos) / 1_000L);
+            if (!forceAll && (drained >= MAX_ASYNC_SAVE_COMPLETIONS_PER_TICK || elapsedMicros >= MAX_ASYNC_COMPLETION_MICROS_PER_TICK)) {
+                budgetHit = dirtySaveWorker.pendingCompletions() > 0;
+                break;
             }
         }
+        long elapsedMicros = drained == 0 ? 0L : Math.max(1L, (System.nanoTime() - startNanos) / 1_000L);
+        dirtyTracker.recordCompletionDrain(drained, elapsedMicros, budgetHit);
     }
 
     private int forceFlushDirtySaveQueue() {
-        drainAsyncDirtySaveCompletions();
+        drainAsyncDirtySaveCompletions(true);
         int saved = 0;
         int guard = 0;
         while (guard++ < 100000) {

@@ -72,6 +72,8 @@ public final class CubicClientSyncBridge {
     private static long materializerWritesIgnored;
     private static long playerWritesSaved;
     private static long commandWritesSaved;
+    private static long clientInvalidationsQueued;
+    private static long clientMirrorsCleaned;
 
     private CubicClientSyncBridge() {
     }
@@ -111,6 +113,8 @@ public final class CubicClientSyncBridge {
         materializerWritesIgnored = 0L;
         playerWritesSaved = 0L;
         commandWritesSaved = 0L;
+        clientInvalidationsQueued = 0L;
+        clientMirrorsCleaned = 0L;
     }
 
     public static int trackedPlayers() {
@@ -143,6 +147,14 @@ public final class CubicClientSyncBridge {
 
     public static long commandWritesSaved() {
         return commandWritesSaved;
+    }
+
+    public static long clientInvalidationsQueued() {
+        return clientInvalidationsQueued;
+    }
+
+    public static long clientMirrorsCleaned() {
+        return clientMirrorsCleaned;
     }
 
     public static int streamHorizontalRadius() {
@@ -232,13 +244,17 @@ public final class CubicClientSyncBridge {
                         continue;
                     }
                     long hash = CubeGenerationSummary.from(holder.get().cube()).hash();
-                    if (state.materializedHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash) {
+                    boolean clientDirty = cache.clientSyncDirty(cubePos);
+                    if (!clientDirty && state.materializedHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash) {
                         continue;
                     }
                     if (!state.queued.add(cubePos)) {
                         continue;
                     }
                     state.materializationQueue.addLast(cubePos);
+                    if (clientDirty) {
+                        clientInvalidationsQueued++;
+                    }
                 }
             }
         }
@@ -260,6 +276,10 @@ public final class CubicClientSyncBridge {
             }
             materializeCube(level, holder.get().cube());
             rememberMaterialized(state, cubePos, hash);
+            if (cache.clientSyncDirty(cubePos)) {
+                cache.recordClientMirrorSynced(cubePos);
+                clientMirrorsCleaned++;
+            }
             materialized++;
             state.materializedLastTick++;
         }

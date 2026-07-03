@@ -31,6 +31,8 @@ import com.redline.worldcore.server.cube.access.CubeMutationSnapshot;
 import com.redline.worldcore.server.cube.blockentity.CubeBlockEntityRef;
 import com.redline.worldcore.server.cube.blockentity.CubeBlockEntitySnapshot;
 import com.redline.worldcore.server.cube.dirty.CubeDirtySnapshot;
+import com.redline.worldcore.server.cube.ownership.CubeOwnershipValidationSnapshot;
+import com.redline.worldcore.server.cube.ownership.CubeOwnershipValidator;
 import com.redline.worldcore.server.cube.tick.CubeScheduledTickSnapshot;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
 import com.redline.worldcore.server.entity.EntityCubeTracker;
@@ -474,6 +476,21 @@ public final class RedlineWorldCoreCommands {
                                                                                 StringArgumentType.getString(context, "target"),
                                                                                 IntegerArgumentType.getInteger(context, "delayTicks")
                                                                         )))))))))
+                .then(Commands.literal("ownership")
+                        .then(Commands.literal("status")
+                                .executes(context -> ownershipStatus(context.getSource())))
+                        .then(Commands.literal("validate_current")
+                                .executes(context -> ownershipValidateCurrent(context.getSource())))
+                        .then(Commands.literal("validate")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .executes(context -> ownershipValidate(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                IntegerArgumentType.getInteger(context, "cubeZ")
+                                                        )))))))
                 .then(Commands.literal("tickets")
                         .then(Commands.literal("status")
                                 .executes(context -> ticketsStatus(context.getSource())))
@@ -1165,7 +1182,9 @@ public final class RedlineWorldCoreCommands {
         source.sendSuccess(() -> Component.literal("RWC overlay=" + CubicClientSyncBridge.overlayModeName()
                 + ", counters: playerWritesSaved=" + CubicClientSyncBridge.playerWritesSaved()
                 + ", materializerWritesIgnored=" + CubicClientSyncBridge.materializerWritesIgnored()
-                + ", commandWritesSaved=" + CubicClientSyncBridge.commandWritesSaved()), false);
+                + ", commandWritesSaved=" + CubicClientSyncBridge.commandWritesSaved()
+                + ", clientInvalidationsQueued=" + CubicClientSyncBridge.clientInvalidationsQueued()
+                + ", clientMirrorsCleaned=" + CubicClientSyncBridge.clientMirrorsCleaned()), false);
         return CubicClientSyncBridge.trackedPlayers();
     }
 
@@ -1806,7 +1825,8 @@ public final class RedlineWorldCoreCommands {
 
     private static int cubesSaveAll(CommandSourceStack source) {
         int saved = cubeCache(source).saveAllLoaded();
-        source.sendSuccess(() -> Component.literal("Cube cache saved loaded holders to Region3D: saved=" + saved), false);
+        source.sendSuccess(() -> Component.literal("Cube cache save_all DEBUG/EXPENSIVE forced sync flush: saved=" + saved
+                + ". Normal gameplay uses async/idle dirty IO."), false);
         return saved;
     }
 
@@ -1814,6 +1834,35 @@ public final class RedlineWorldCoreCommands {
         int unloaded = cubeCache(source).unloadAllLoaded(true);
         source.sendSuccess(() -> Component.literal("Cube cache unloaded all holders: unloaded=" + unloaded + ". Active tickets may reload them next tick."), false);
         return unloaded;
+    }
+
+
+    private static int ownershipStatus(CommandSourceStack source) {
+        CubeLoadingSnapshot snapshot = cubeCache(source).snapshot();
+        source.sendSuccess(() -> Component.literal("RWC ownership status M14.9: loaded=" + snapshot.loadedCubes()
+                + ", holders=" + snapshot.byHolderState()
+                + ", tickets=" + snapshot.byTicketLevel()), false);
+        source.sendSuccess(() -> Component.literal(formatDirtySnapshot("Ownership dirty", snapshot.dirtySnapshot())), false);
+        source.sendSuccess(() -> Component.literal(formatBlockEntitySnapshot("Ownership BE", snapshot.blockEntitySnapshot())), false);
+        source.sendSuccess(() -> Component.literal(formatScheduledTickSnapshot("Ownership ticks", snapshot.scheduledTickSnapshot())), false);
+        source.sendSuccess(() -> Component.literal("Ownership note: this is internal validation only; no public mod API is exposed in M14."), false);
+        return snapshot.loadedCubes();
+    }
+
+    private static int ownershipValidateCurrent(CommandSourceStack source) {
+        if (source.getEntity() == null) {
+            source.sendFailure(Component.literal("ownership validate_current requires an entity/player source."));
+            return 0;
+        }
+        CubePos cubePos = CubePos.fromBlock(source.getEntity().blockPosition());
+        return ownershipValidate(source, cubePos.x(), cubePos.y(), cubePos.z());
+    }
+
+    private static int ownershipValidate(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {
+        CubePos cubePos = new CubePos(cubeX, cubeY, cubeZ);
+        CubeOwnershipValidationSnapshot validation = new CubeOwnershipValidator(cubeCache(source)).validate(cubePos);
+        source.sendSuccess(() -> Component.literal("RWC ownership validate: " + validation.oneLine()), false);
+        return validation.ok() ? 1 : 0;
     }
 
     private static ServerCubeCache cubeCache(CommandSourceStack source) {
@@ -2255,7 +2304,11 @@ public final class RedlineWorldCoreCommands {
     }
 
     private static String formatDirtySnapshot(String prefix, CubeDirtySnapshot snapshot) {
-        return prefix + ": dirty=" + snapshot.dirtyCubes()
+        return prefix + ": activeDirty=" + snapshot.dirtyCubes()
+                + " storageDirty=" + snapshot.storageDirtyCubes()
+                + " clientDirty=" + snapshot.clientSyncDirtyCubes()
+                + " lightDirty=" + snapshot.lightDirtyCubes()
+                + " contentDirty=" + snapshot.contentDirtyCubes()
                 + ", contentQ=" + snapshot.contentQueue()
                 + ", saveQ=" + snapshot.saveQueue()
                 + ", inFlight=" + snapshot.saveInFlight()
@@ -2263,9 +2316,12 @@ public final class RedlineWorldCoreCommands {
                 + ", savedDone=" + snapshot.savedLastTick()
                 + ", submitted=" + snapshot.saveSubmittedLastTick()
                 + ", failed=" + snapshot.saveFailedLastTick()
+                + ", completions=" + snapshot.saveCompletionsDrainedLastTick()
                 + ", contentUs=" + snapshot.contentMicrosLastTick()
-                + ", saveUs=" + snapshot.saveMicrosLastTick()
+                + ", saveWorkerUs=" + snapshot.saveMicrosLastTick()
+                + ", completionDrainUs=" + snapshot.completionDrainMicrosLastTick()
                 + ", saveBudgetHit=" + snapshot.saveBudgetHitLastTick()
+                + ", completionBudgetHit=" + snapshot.completionBudgetHitLastTick()
                 + ", idleSkip=" + snapshot.saveIdleSkipLastTick()
                 + ", cooldown=" + snapshot.saveCooldownTicks()
                 + ", reason=" + snapshot.saveLastReason()
@@ -2280,11 +2336,15 @@ public final class RedlineWorldCoreCommands {
                 + ", savedDone=" + snapshot.totalSaved()
                 + ", submitted=" + snapshot.totalSaveSubmitted()
                 + ", failed=" + snapshot.totalSaveFailed()
+                + ", completionDrained=" + snapshot.totalSaveCompletionsDrained()
                 + ", maxContentUs=" + snapshot.contentMicrosMax()
-                + ", maxSaveUs=" + snapshot.saveMicrosMax()
+                + ", maxSaveWorkerUs=" + snapshot.saveMicrosMax()
+                + ", maxCompletionDrainUs=" + snapshot.completionDrainMicrosMax()
                 + ", budget=content " + snapshot.maxContentPerTick()
                 + "/t saveSubmit " + snapshot.maxSavesPerTick()
                 + "/t " + snapshot.maxSaveMicrosPerTick() + "us"
+                + " completion " + snapshot.maxSaveCompletionsPerTick()
+                + "/t " + snapshot.maxCompletionDrainMicrosPerTick() + "us"
                 + ", lastContent=" + formatNullableCube(snapshot.lastContentCube())
                 + " " + snapshot.lastContentSummary().compact();
     }
