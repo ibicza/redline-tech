@@ -31,6 +31,8 @@ public final class M15WorldgenAutoTest {
         expect(maxHeight - minHeight >= 24, problems, "surface height variation too low: " + minHeight + ".." + maxHeight);
         expect(minHeight >= profile.lowestSurfaceY(), problems, "surface below profile minimum");
         expect(maxHeight <= profile.highestSurfaceY(), problems, "surface above profile maximum");
+        M15TerrainSample spawn = M15TerrainModel.findSafeDrySpawn(cache.generationContext(), 0, 0, 1024);
+        expect(M15TerrainModel.isSafeDrySpawn(cache.generationContext(), spawn.x(), spawn.z()), problems, "safe dry spawn search failed: " + spawn.oneLine());
 
         CubePos surfaceCube = CubePos.fromBlock(0, M15TerrainModel.surfaceHeight(cache.generationContext(), 0, 0), 0);
         CubeGenerationSummary first = CubeGenerationSummary.from(cache.generateTemporary(surfaceCube));
@@ -49,7 +51,7 @@ public final class M15WorldgenAutoTest {
 
         int stoneY = Math.max(profile.deepslateTopY() + 32, profile.seaLevel() - 64);
         BlockState stone = M15TerrainModel.stateFor(cache.generationContext(), 32, stoneY, 32);
-        expect(stone.is(Blocks.STONE) || stone.is(Blocks.DIRT) || stone.is(Blocks.GRASS_BLOCK) || stone.is(Blocks.SAND), problems,
+        expect(stone.is(Blocks.STONE) || stone.is(Blocks.DIRT) || stone.is(Blocks.GRASS_BLOCK) || stone.is(Blocks.SANDSTONE), problems,
                 "upper stone/surface layer unexpected at Y=" + stoneY + ": " + blockName(stone));
 
         int lavaFound = 0;
@@ -74,7 +76,7 @@ public final class M15WorldgenAutoTest {
         BlockState top = M15TerrainModel.stateFor(cache.generationContext(), 64, surfaceY, 64);
         BlockState above = M15TerrainModel.stateFor(cache.generationContext(), 64, surfaceY + 1, 64);
         expect(!top.isAir(), problems, "surface top is air");
-        expect(above.isAir() || above.is(Blocks.WATER), problems, "block above surface is not air/water: " + blockName(above));
+        expect(above.isAir(), problems, "block above surface is not air in M15.1 dry terrain: " + blockName(above));
 
         CubePos airCube = CubePos.fromBlock(0, profile.highestSurfaceY() + 64, 0);
         LevelCube air = cache.generateTemporary(airCube);

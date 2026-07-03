@@ -28,6 +28,7 @@ import com.redline.worldcore.server.cube.CubeHolder;
 import com.redline.worldcore.server.cube.CubeLoadingSnapshot;
 import com.redline.worldcore.server.cube.ServerCubeCache;
 import com.redline.worldcore.server.compat.CubicClientSyncBridge;
+import com.redline.worldcore.server.compat.CubicTestGameplayGuard;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.cube.access.CubeMutationContext;
 import com.redline.worldcore.server.cube.access.CubeMutationResult;
@@ -1235,6 +1236,9 @@ public final class RedlineWorldCoreCommands {
                 + ", eagerClientGeneratedLoads=" + CubicClientSyncBridge.eagerClientGeneratedLoads()
                 + ", eagerLastTick=" + CubicClientSyncBridge.eagerClientLoadsLastTick()
                 + "/" + CubicClientSyncBridge.eagerClientGeneratedLastTick()), false);
+        source.sendSuccess(() -> Component.literal("RWC M15 gameplay guard: canceledMobs="
+                + CubicTestGameplayGuard.canceledMobs()
+                + ", canceledFallingBlocks=" + CubicTestGameplayGuard.canceledFallingBlocks()), false);
         return CubicClientSyncBridge.trackedPlayers();
     }
 
@@ -1246,7 +1250,8 @@ public final class RedlineWorldCoreCommands {
 
     private static int clientSyncResetCounters(CommandSourceStack source) {
         CubicClientSyncBridge.resetCounters();
-        source.sendSuccess(() -> Component.literal("RWC client sync counters reset."), false);
+        CubicTestGameplayGuard.resetCounters();
+        source.sendSuccess(() -> Component.literal("RWC client sync/gameplay guard counters reset."), false);
         return 1;
     }
 
@@ -1572,13 +1577,15 @@ public final class RedlineWorldCoreCommands {
                 source.sendFailure(Component.literal("Cubic test dimension is not registered in this world. Try creating/reloading a world after adding the mod data pack."));
                 return 0;
             }
-            int spawnX = 0;
-            int spawnZ = 0;
-            int surfaceY = M15TerrainModel.surfaceHeight(cubeCache(source).generationContext(), spawnX, spawnZ);
+            M15TerrainSample spawn = M15TerrainModel.findSafeDrySpawn(cubeCache(source).generationContext(), 0, 0, 2048);
+            int spawnX = spawn.x();
+            int spawnZ = spawn.z();
+            int surfaceY = spawn.surfaceY();
             double spawnY = surfaceY + 2.0D;
             player.teleportTo(target, spawnX + 0.5D, spawnY, spawnZ + 0.5D, Set.of(), player.getYRot(), player.getXRot(), true);
             source.sendSuccess(() -> Component.literal("Teleported to " + CubicDimensionKeys.CUBIC_TEST_ID
-                    + " at seed-only surface spawn " + spawnX + " " + (surfaceY + 1) + " " + spawnZ), false);
+                    + " at safe dry seed-only surface spawn " + spawnX + " " + (surfaceY + 1) + " " + spawnZ
+                    + ", zone=" + spawn.zone() + ", seaLevel=" + spawn.seaLevel()), false);
             return 1;
         } catch (Exception exception) {
             source.sendFailure(Component.literal("Failed to enter cubic test dimension: " + exception.getMessage()));

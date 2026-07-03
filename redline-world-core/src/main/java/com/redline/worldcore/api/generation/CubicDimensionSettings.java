@@ -20,7 +20,7 @@ public record CubicDimensionSettings(
     /**
      * M15 seed-only Java worldgen default for cubic_test.
      *
-     * <p>The world is intentionally finite for now: block Y -2048..2047. Sea level is fixed at Y=0,
+     * <p>The world is intentionally finite for now: block Y -2032..2031. Sea level is fixed at Y=0,
      * while terrain, deep layers and future ocean/river systems scale from min/max Y.</p>
      */
     public static CubicDimensionSettings defaults() {

@@ -68,7 +68,11 @@ public final class CubicClientSyncBridge {
     public static final int DEFAULT_MAX_EAGER_CLIENT_LOADS_PER_TICK = 8;
     public static final int MAX_PACKET_ENTRIES = 96;
 
-    private static final int SET_BLOCK_FLAGS = 2;
+    /**
+     * Client-only mirror writes must not wake vanilla physics. UPDATE_CLIENTS + UPDATE_KNOWN_SHAPE + UPDATE_SUPPRESS_DROPS.
+     * This is a temporary shell flag set until cube section packets replace physical vanilla block mirroring.
+     */
+    private static final int SET_BLOCK_FLAGS = 2 | 16 | 32;
     private static final int MAX_TRACKED_MATERIALIZED = 2048;
     private static final Map<UUID, PlayerBridgeState> PLAYER_STATES = new HashMap<>();
 
@@ -375,7 +379,9 @@ public final class CubicClientSyncBridge {
                 }
             }
         }
-        visible.sort(Comparator.comparingInt(cubePos -> manhattan(cubePos, playerCube)));
+        visible.sort(Comparator
+                .comparingInt((CubePos cubePos) -> manhattan(cubePos, playerCube))
+                .thenComparingInt(CubePos::y));
 
         for (CubePos cubePos : visible) {
             Optional<CubeHolder> holder = cache.holder(cubePos);

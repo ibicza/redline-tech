@@ -1,6 +1,7 @@
 package com.redline.worldcore.server.generation;
 
 import com.redline.worldcore.api.generation.CubeGenerationContext;
+import com.redline.worldcore.api.pos.CubePos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -12,7 +13,7 @@ import net.minecraft.world.level.block.state.BlockState;
  * run in a different configured mode.</p>
  */
 public final class M15TerrainModel {
-    public static final String VERSION = "M15 seed-only heightmap terrain v1";
+    public static final String VERSION = "M15.1 seed-only safe heightmap terrain v2";
 
     private static final long CONTINENT_SEED = 0x434F4E54494E454EL;
     private static final long EROSION_SEED = 0x45524F53494F4E31L;
@@ -28,11 +29,12 @@ public final class M15TerrainModel {
     private static final BlockState DEEPSLATE = Blocks.DEEPSLATE.defaultBlockState();
     private static final BlockState DIRT = Blocks.DIRT.defaultBlockState();
     private static final BlockState GRASS = Blocks.GRASS_BLOCK.defaultBlockState();
-    private static final BlockState SAND = Blocks.SAND.defaultBlockState();
+    /**
+     * M15.1 intentionally avoids falling terrain blocks in the visible vanilla shell.
+     * Real sand/gravel returns after the boundary-aware fluid/falling-block pipeline exists.
+     */
     private static final BlockState SANDSTONE = Blocks.SANDSTONE.defaultBlockState();
-    private static final BlockState GRAVEL = Blocks.GRAVEL.defaultBlockState();
     private static final BlockState SNOW = Blocks.SNOW_BLOCK.defaultBlockState();
-    private static final BlockState WATER = Blocks.WATER.defaultBlockState();
     private static final BlockState LAVA = Blocks.LAVA.defaultBlockState();
 
     public static M15WorldgenProfile profile(CubeGenerationContext context) {
@@ -56,9 +58,11 @@ public final class M15TerrainModel {
 
         double height = profile.baseLandY();
         height += continentalness * profile.continentAmplitude();
-        height += detail * profile.hillAmplitude();
+        // M15.1: plains must not be constant Minecraft-amplified hills. Detail mainly roughens mountains.
+        double localRelief = detail * profile.hillAmplitude() * (0.25D + 0.75D * mountainMask);
+        height += localRelief;
         height += (ridge * ridge) * mountainMask * profile.mountainAmplitude();
-        height -= Math.max(0.0D, erosion) * profile.hillAmplitude() * 0.55D;
+        height -= Math.max(0.0D, erosion) * profile.hillAmplitude() * 0.35D;
         height -= oceanDepth;
 
         int surfaceY = Mth.clamp((int) Math.round(height), profile.lowestSurfaceY(), profile.highestSurfaceY());
@@ -68,6 +72,45 @@ public final class M15TerrainModel {
 
     public static int surfaceHeight(CubeGenerationContext context, int x, int z) {
         return sample(context, x, z).surfaceY();
+    }
+
+
+    public static boolean isSafeDrySpawn(CubeGenerationContext context, int x, int z) {
+        M15TerrainSample sample = sample(context, x, z);
+        return sample.surfaceY() >= profile(context).seaLevel() + 4
+                && sample.zone() != M15SurfaceZone.OCEAN_FLOOR
+                && sample.zone() != M15SurfaceZone.BEACH;
+    }
+
+    public static M15TerrainSample findSafeDrySpawn(CubeGenerationContext context, int centerX, int centerZ, int maxRadiusBlocks) {
+        int step = CubePos.SIZE;
+        M15TerrainSample bestFallback = sample(context, centerX, centerZ);
+        if (isSafeDrySpawn(context, centerX, centerZ)) {
+            return bestFallback;
+        }
+        for (int radius = step; radius <= maxRadiusBlocks; radius += step) {
+            for (int x = centerX - radius; x <= centerX + radius; x += step) {
+                M15TerrainSample north = sample(context, x, centerZ - radius);
+                if (isSafeDrySpawn(context, north.x(), north.z())) {
+                    return north;
+                }
+                M15TerrainSample south = sample(context, x, centerZ + radius);
+                if (isSafeDrySpawn(context, south.x(), south.z())) {
+                    return south;
+                }
+            }
+            for (int z = centerZ - radius + step; z <= centerZ + radius - step; z += step) {
+                M15TerrainSample west = sample(context, centerX - radius, z);
+                if (isSafeDrySpawn(context, west.x(), west.z())) {
+                    return west;
+                }
+                M15TerrainSample east = sample(context, centerX + radius, z);
+                if (isSafeDrySpawn(context, east.x(), east.z())) {
+                    return east;
+                }
+            }
+        }
+        return bestFallback;
     }
 
     public static BlockState stateFor(CubeGenerationContext context, int x, int y, int z) {
@@ -82,9 +125,7 @@ public final class M15TerrainModel {
         M15TerrainSample sample = sample(context, x, z);
         int surfaceY = sample.surfaceY();
         if (y > surfaceY) {
-            if (surfaceY < profile.seaLevel() && y <= profile.seaLevel()) {
-                return WATER;
-            }
+            // M15.1 disables static water fill. M16 will add boundary-aware oceans/rivers/lakes.
             return AIR;
         }
 
@@ -147,8 +188,7 @@ public final class M15TerrainModel {
 
     private static BlockState topState(M15TerrainSample sample, M15WorldgenProfile profile) {
         return switch (sample.zone()) {
-            case OCEAN_FLOOR -> sample.surfaceY() < profile.seaLevel() - 12 ? GRAVEL : SAND;
-            case BEACH, DRY -> SAND;
+            case OCEAN_FLOOR, BEACH, DRY -> SANDSTONE;
             case COLD, SNOWY_MOUNTAIN -> SNOW;
             case ROCKY_MOUNTAIN -> sample.surfaceY() >= profile.snowLineY() ? SNOW : STONE;
             case TEMPERATE -> GRASS;
@@ -157,8 +197,7 @@ public final class M15TerrainModel {
 
     private static BlockState subsurfaceState(M15TerrainSample sample, M15WorldgenProfile profile, int y) {
         return switch (sample.zone()) {
-            case OCEAN_FLOOR -> sample.surfaceY() < profile.seaLevel() - 12 ? GRAVEL : SAND;
-            case BEACH, DRY -> y < sample.surfaceY() - 3 ? SANDSTONE : SAND;
+            case OCEAN_FLOOR, BEACH, DRY -> SANDSTONE;
             case COLD, TEMPERATE -> DIRT;
             case ROCKY_MOUNTAIN, SNOWY_MOUNTAIN -> baseStone(profile, y);
         };

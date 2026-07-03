@@ -4,6 +4,7 @@ import com.mojang.logging.LogUtils;
 import com.redline.worldcore.client.RedlineWorldCoreClient;
 import com.redline.worldcore.network.WorldCoreNetwork;
 import com.redline.worldcore.server.compat.CubicClientSyncBridge;
+import com.redline.worldcore.server.compat.CubicTestGameplayGuard;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.debug.CubeMathSelfTest;
 import com.redline.worldcore.server.debug.CubeOwnershipAutoTest;
@@ -20,6 +21,7 @@ import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.tick.PlayerTickEvent;
+import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.block.BreakBlockEvent;
@@ -47,6 +49,7 @@ public final class RedlineWorldCore {
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> CubeOwnershipAutoTest.onServerTick(event));
         NeoForge.EVENT_BUS.addListener((BreakBlockEvent event) -> CubicClientSyncBridge.onBlockBreak(event));
         NeoForge.EVENT_BUS.addListener((BlockEvent.EntityPlaceEvent event) -> CubicClientSyncBridge.onBlockPlace(event));
+        NeoForge.EVENT_BUS.addListener((EntityJoinLevelEvent event) -> CubicTestGameplayGuard.onEntityJoinLevel(event));
 
         CubeMathSelfTest.runOrThrow();
 
