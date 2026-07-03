@@ -13,6 +13,10 @@ import com.redline.worldcore.api.generation.CubicDimensionSettings;
 import com.redline.worldcore.server.generation.CubeGenerationDebug;
 import com.redline.worldcore.server.generation.CubeGenerationProfiler;
 import com.redline.worldcore.server.generation.CubeGenerationSummary;
+import com.redline.worldcore.server.generation.M15TerrainModel;
+import com.redline.worldcore.server.generation.M15TerrainSample;
+import com.redline.worldcore.server.generation.M15WorldgenAutoTest;
+import com.redline.worldcore.server.generation.M15WorldgenProfile;
 import com.redline.worldcore.api.pos.ColumnPos;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.api.pos.Region3DPos;
@@ -267,6 +271,39 @@ public final class RedlineWorldCoreCommands {
                                                                                 IntegerArgumentType.getInteger(context, "minCubeY"),
                                                                                 IntegerArgumentType.getInteger(context, "maxCubeY")
                                                                         )))))))))
+                .then(Commands.literal("worldgen")
+                        .then(Commands.literal("status")
+                                .executes(context -> worldgenStatus(context.getSource())))
+                        .then(Commands.literal("sample")
+                                .then(Commands.argument("x", IntegerArgumentType.integer())
+                                        .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                .executes(context -> worldgenSample(
+                                                        context.getSource(),
+                                                        IntegerArgumentType.getInteger(context, "x"),
+                                                        IntegerArgumentType.getInteger(context, "z")
+                                                )))))
+                        .then(Commands.literal("sample_block")
+                                .then(Commands.argument("x", IntegerArgumentType.integer())
+                                        .then(Commands.argument("y", IntegerArgumentType.integer())
+                                                .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                        .executes(context -> worldgenSampleBlock(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "x"),
+                                                                IntegerArgumentType.getInteger(context, "y"),
+                                                                IntegerArgumentType.getInteger(context, "z")
+                                                        ))))))
+                        .then(Commands.literal("profile")
+                                .then(Commands.argument("cubeX", IntegerArgumentType.integer())
+                                        .then(Commands.argument("cubeY", IntegerArgumentType.integer())
+                                                .then(Commands.argument("cubeZ", IntegerArgumentType.integer())
+                                                        .executes(context -> genSummary(
+                                                                context.getSource(),
+                                                                IntegerArgumentType.getInteger(context, "cubeX"),
+                                                                IntegerArgumentType.getInteger(context, "cubeY"),
+                                                                IntegerArgumentType.getInteger(context, "cubeZ")
+                                                        ))))))
+                        .then(Commands.literal("autotest")
+                                .executes(context -> worldgenAutotest(context.getSource()))))
                 .then(Commands.literal("gen")
                         .then(Commands.literal("summary")
                                 .then(Commands.argument("cubeX", IntegerArgumentType.integer())
@@ -1535,8 +1572,13 @@ public final class RedlineWorldCoreCommands {
                 source.sendFailure(Component.literal("Cubic test dimension is not registered in this world. Try creating/reloading a world after adding the mod data pack."));
                 return 0;
             }
-            player.teleportTo(target, 0.5, 80.0, 0.5, Set.of(), player.getYRot(), player.getXRot(), true);
-            source.sendSuccess(() -> Component.literal("Teleported to " + CubicDimensionKeys.CUBIC_TEST_ID), false);
+            int spawnX = 0;
+            int spawnZ = 0;
+            int surfaceY = M15TerrainModel.surfaceHeight(cubeCache(source).generationContext(), spawnX, spawnZ);
+            double spawnY = surfaceY + 2.0D;
+            player.teleportTo(target, spawnX + 0.5D, spawnY, spawnZ + 0.5D, Set.of(), player.getYRot(), player.getXRot(), true);
+            source.sendSuccess(() -> Component.literal("Teleported to " + CubicDimensionKeys.CUBIC_TEST_ID
+                    + " at seed-only surface spawn " + spawnX + " " + (surfaceY + 1) + " " + spawnZ), false);
             return 1;
         } catch (Exception exception) {
             source.sendFailure(Component.literal("Failed to enter cubic test dimension: " + exception.getMessage()));
@@ -1896,6 +1938,69 @@ public final class RedlineWorldCoreCommands {
 
     private static CubeGenerationDebug generationDebug(CommandSourceStack source) {
         return new CubeGenerationDebug(cubeCache(source));
+    }
+
+    private static int worldgenStatus(CommandSourceStack source) {
+        ServerCubeCache cache = cubeCache(source);
+        M15WorldgenProfile profile = M15TerrainModel.profile(cache.generationContext());
+        source.sendSuccess(() -> Component.literal("RWC worldgen M15: " + M15TerrainModel.VERSION), false);
+        source.sendSuccess(() -> Component.literal("Seed=" + cache.generationContext().seed()
+                + ", settings: cubes " + cache.settings().minCubeY() + ".." + cache.settings().maxCubeY()
+                + ", blocks " + cache.settings().minBlockY() + ".." + cache.settings().maxBlockY()
+                + ", seaLevel=" + cache.settings().seaLevel()), false);
+        source.sendSuccess(() -> Component.literal("Profile: " + profile.oneLine()), false);
+        source.sendSuccess(() -> Component.literal("M15 scope: seed-only heightmap terrain, vertical bedrock/lava/deepslate/stone layers, basic surface zones; rivers/caves/features/structures/atlas are later milestones."), false);
+        return 1;
+    }
+
+    private static int worldgenSample(CommandSourceStack source, int x, int z) {
+        try {
+            ServerCubeCache cache = cubeCache(source);
+            M15TerrainSample sample = M15TerrainModel.sample(cache.generationContext(), x, z);
+            source.sendSuccess(() -> Component.literal("RWC worldgen sample: " + sample.oneLine()), false);
+            source.sendSuccess(() -> Component.literal("Top block="
+                    + CubeGenerationHasher.blockStateDebugName(M15TerrainModel.stateFor(cache.generationContext(), x, sample.surfaceY(), z))
+                    + ", above=" + CubeGenerationHasher.blockStateDebugName(M15TerrainModel.stateFor(cache.generationContext(), x, sample.surfaceY() + 1, z))), false);
+            return sample.surfaceY();
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to sample M15 worldgen: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int worldgenSampleBlock(CommandSourceStack source, int x, int y, int z) {
+        try {
+            ServerCubeCache cache = cubeCache(source);
+            BlockState state = M15TerrainModel.stateFor(cache.generationContext(), x, y, z);
+            M15TerrainSample sample = M15TerrainModel.sample(cache.generationContext(), x, z);
+            source.sendSuccess(() -> Component.literal("RWC worldgen block sample: " + x + " " + y + " " + z
+                    + ", state=" + CubeGenerationHasher.blockStateDebugName(state)), false);
+            source.sendSuccess(() -> Component.literal("Column: surfaceY=" + sample.surfaceY()
+                    + ", seaLevel=" + sample.seaLevel()
+                    + ", zone=" + sample.zone()), false);
+            return state.isAir() ? 0 : 1;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to sample M15 worldgen block: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int worldgenAutotest(CommandSourceStack source) {
+        try {
+            M15WorldgenAutoTest.Result result = M15WorldgenAutoTest.run(cubeCache(source));
+            if (result.passed()) {
+                source.sendSuccess(() -> Component.literal("RWC worldgen autotest PASS: " + result.oneLine()), false);
+                return 1;
+            }
+            source.sendFailure(Component.literal("RWC worldgen autotest FAILED: " + result.oneLine()));
+            for (String problem : result.problems()) {
+                source.sendFailure(Component.literal(" - " + problem));
+            }
+            return 0;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to run M15 worldgen autotest: " + exception.getMessage()));
+            return 0;
+        }
     }
 
     private static int genSummary(CommandSourceStack source, int cubeX, int cubeY, int cubeZ) {

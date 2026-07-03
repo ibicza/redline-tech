@@ -4,6 +4,7 @@ import com.redline.worldcore.api.cube.CubeScheduledTickData;
 import com.redline.worldcore.api.cube.CubeScheduledTickKind;
 import com.redline.worldcore.api.cube.CubeStatus;
 import com.redline.worldcore.api.cube.LevelCube;
+import com.redline.worldcore.api.generation.CubeGenerationContext;
 import com.redline.worldcore.api.generation.CubicDimensionSettings;
 import com.redline.worldcore.api.pos.ColumnPos;
 import com.redline.worldcore.api.pos.CubePos;
@@ -191,6 +192,10 @@ public final class ServerCubeCache {
 
     public CubicDimensionSettings settings() {
         return settings;
+    }
+
+    public CubeGenerationContext generationContext() {
+        return generator.context();
     }
 
     /** Returns the M14.0 cube-first facade that new world-core code should use for block access. */
