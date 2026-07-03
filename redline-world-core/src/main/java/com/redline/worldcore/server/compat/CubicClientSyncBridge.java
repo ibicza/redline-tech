@@ -23,6 +23,8 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
+import net.minecraft.world.level.material.Fluids;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.block.BreakBlockEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
@@ -144,6 +146,19 @@ public final class CubicClientSyncBridge {
         eagerClientGeneratedLoads = 0L;
         eagerClientLoadsLastTick = 0;
         eagerClientGeneratedLastTick = 0;
+    }
+
+    public static boolean isMaterializedForAnyPlayer(CubePos cubePos) {
+        for (PlayerBridgeState state : PLAYER_STATES.values()) {
+            if (state.materializedHashes.containsKey(cubePos)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static boolean materializationInProgress() {
+        return materializationInProgress;
     }
 
     public static int trackedPlayers() {
@@ -318,6 +333,7 @@ public final class CubicClientSyncBridge {
         }
         materializeCube(level, holder.get().cube());
         rememberMaterialized(state, playerCube, hash);
+        scheduleWaterTicksWhenNeighborhoodReady(level, holder.get().cube(), state);
         if (clientDirty) {
             cache.recordClientMirrorSynced(playerCube);
             state.dirtyInvalidationsAccounted.remove(playerCube);
@@ -420,6 +436,7 @@ public final class CubicClientSyncBridge {
             }
             materializeCube(level, holder.get().cube());
             rememberMaterialized(state, cubePos, hash);
+            scheduleWaterTicksWhenNeighborhoodReady(level, holder.get().cube(), state);
             if (clientDirty) {
                 cache.recordClientMirrorSynced(cubePos);
                 state.dirtyInvalidationsAccounted.remove(cubePos);
@@ -453,6 +470,41 @@ public final class CubicClientSyncBridge {
             }
         } finally {
             materializationInProgress = false;
+        }
+    }
+
+    private static void scheduleWaterTicksWhenNeighborhoodReady(ServerLevel level, LevelCube cube, PlayerBridgeState state) {
+        CubePos cubePos = cube.cubePos();
+        if (!state.materializedHashes.containsKey(new CubePos(cubePos.x() + 1, cubePos.y(), cubePos.z()))
+                || !state.materializedHashes.containsKey(new CubePos(cubePos.x() - 1, cubePos.y(), cubePos.z()))
+                || !state.materializedHashes.containsKey(new CubePos(cubePos.x(), cubePos.y(), cubePos.z() + 1))
+                || !state.materializedHashes.containsKey(new CubePos(cubePos.x(), cubePos.y(), cubePos.z() - 1))) {
+            return;
+        }
+
+        int scheduled = 0;
+        for (int localY = 0; localY < CubePos.SIZE; localY++) {
+            int worldY = cubePos.minBlockY() + localY;
+            if (level.isOutsideBuildHeight(worldY)) {
+                continue;
+            }
+            for (int localZ = 0; localZ < CubePos.SIZE; localZ++) {
+                for (int localX = 0; localX < CubePos.SIZE; localX++) {
+                    BlockState blockState = cube.getBlockState(localX, localY, localZ);
+                    FluidState fluidState = blockState.getFluidState();
+                    if (!fluidState.getType().isSame(Fluids.WATER)) {
+                        continue;
+                    }
+                    // Cap per cube: this is just a wake-up pass after the neighboring shell is present, not full fluid sim.
+                    if (scheduled >= 96) {
+                        return;
+                    }
+                    BlockPos blockPos = new BlockPos(cubePos.minBlockX() + localX, worldY, cubePos.minBlockZ() + localZ);
+                    level.scheduleTick(blockPos, fluidState.getType(), Math.max(1, fluidState.getType().getTickDelay(level)));
+                    WaterSurfaceSupportDebug.recordScheduledPostMaterializeTick();
+                    scheduled++;
+                }
+            }
         }
     }
 

@@ -10,7 +10,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
 /**
- * M15 deterministic seed-only cube-first terrain generator.
+ * M16 deterministic seed-only cube-first terrain + static hydrology generator.
  *
  * <p>This is the Java reference backend for cubic_test. It owns terrain directly in LevelCube data and does not ask
  * vanilla ChunkGenerator to create terrain. Later milestones add rivers, caves, geology, features, structures, atlas
@@ -74,7 +74,12 @@ public final class BasicCubicGenerator implements CubeGenerator {
     private static boolean canUseSolidFastPath(CubeGenerationContext context, M15WorldgenProfile profile, CubePos cubePos) {
         int minY = cubePos.minBlockY();
         int maxY = cubePos.maxBlockY();
-        if (maxY >= profile.lowestSurfaceY() - 8) {
+        // M16 rivers/canyons can carve noticeably below the dry M15 lowest-surface envelope.
+        // Keep near-surface/waterbelt cubes detailed so water bodies are never overwritten by a solid fast path.
+        if (maxY >= profile.lowestSurfaceY() - 160) {
+            return false;
+        }
+        if (M16WaterModel.mayContainWater(context, profile, cubePos.x(), cubePos.y(), cubePos.z())) {
             return false;
         }
         if (maxY <= profile.bedrockTopY()) {

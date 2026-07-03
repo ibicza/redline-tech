@@ -13,7 +13,7 @@ import net.minecraft.world.level.block.state.BlockState;
  * run in a different configured mode.</p>
  */
 public final class M15TerrainModel {
-    public static final String VERSION = "M15.1 seed-only safe heightmap terrain v2";
+    public static final String VERSION = "M16.0 seed-only terrain + static safe hydrology v1";
 
     private static final long CONTINENT_SEED = 0x434F4E54494E454EL;
     private static final long EROSION_SEED = 0x45524F53494F4E31L;
@@ -30,9 +30,11 @@ public final class M15TerrainModel {
     private static final BlockState DIRT = Blocks.DIRT.defaultBlockState();
     private static final BlockState GRASS = Blocks.GRASS_BLOCK.defaultBlockState();
     /**
-     * M15.1 intentionally avoids falling terrain blocks in the visible vanilla shell.
-     * Real sand/gravel returns after the boundary-aware fluid/falling-block pipeline exists.
+     * M16 returns real sand for beaches/river beds, but generated sand always receives solid support below.
+     * The vanilla shell writes without neighbor updates, so sand behaves like vanilla static worldgen sand until
+     * a player/block update interacts with it.
      */
+    private static final BlockState SAND = Blocks.SAND.defaultBlockState();
     private static final BlockState SANDSTONE = Blocks.SANDSTONE.defaultBlockState();
     private static final BlockState SNOW = Blocks.SNOW_BLOCK.defaultBlockState();
     private static final BlockState LAVA = Blocks.LAVA.defaultBlockState();
@@ -42,6 +44,10 @@ public final class M15TerrainModel {
     }
 
     public static M15TerrainSample sample(CubeGenerationContext context, int x, int z) {
+        return sampleDry(context, x, z);
+    }
+
+    public static M15TerrainSample sampleDry(CubeGenerationContext context, int x, int z) {
         M15WorldgenProfile profile = profile(context);
         long seed = context.seed();
         double continentalness = M15Noise.fbm2D(seed ^ CONTINENT_SEED, x, z, 1536, 4);
@@ -71,40 +77,46 @@ public final class M15TerrainModel {
     }
 
     public static int surfaceHeight(CubeGenerationContext context, int x, int z) {
-        return sample(context, x, z).surfaceY();
+        M15TerrainSample dry = sampleDry(context, x, z);
+        M16WaterSample water = M16WaterModel.sample(context, dry);
+        return water.hasWater() ? Math.max(water.waterSurfaceY(), water.effectiveSurfaceY()) : dry.surfaceY();
     }
 
+    public static int surfaceHeightDry(CubeGenerationContext context, int x, int z) {
+        return sampleDry(context, x, z).surfaceY();
+    }
 
     public static boolean isSafeDrySpawn(CubeGenerationContext context, int x, int z) {
-        M15TerrainSample sample = sample(context, x, z);
-        return sample.surfaceY() >= profile(context).seaLevel() + 4
+        M15TerrainSample sample = sampleDry(context, x, z);
+        M16WaterSample water = M16WaterModel.sample(context, sample);
+        return M16WaterModel.isSafeDrySpawn(water, profile(context))
                 && sample.zone() != M15SurfaceZone.OCEAN_FLOOR
                 && sample.zone() != M15SurfaceZone.BEACH;
     }
 
     public static M15TerrainSample findSafeDrySpawn(CubeGenerationContext context, int centerX, int centerZ, int maxRadiusBlocks) {
         int step = CubePos.SIZE;
-        M15TerrainSample bestFallback = sample(context, centerX, centerZ);
+        M15TerrainSample bestFallback = sampleDry(context, centerX, centerZ);
         if (isSafeDrySpawn(context, centerX, centerZ)) {
             return bestFallback;
         }
         for (int radius = step; radius <= maxRadiusBlocks; radius += step) {
             for (int x = centerX - radius; x <= centerX + radius; x += step) {
-                M15TerrainSample north = sample(context, x, centerZ - radius);
+                M15TerrainSample north = sampleDry(context, x, centerZ - radius);
                 if (isSafeDrySpawn(context, north.x(), north.z())) {
                     return north;
                 }
-                M15TerrainSample south = sample(context, x, centerZ + radius);
+                M15TerrainSample south = sampleDry(context, x, centerZ + radius);
                 if (isSafeDrySpawn(context, south.x(), south.z())) {
                     return south;
                 }
             }
             for (int z = centerZ - radius + step; z <= centerZ + radius - step; z += step) {
-                M15TerrainSample west = sample(context, centerX - radius, z);
+                M15TerrainSample west = sampleDry(context, centerX - radius, z);
                 if (isSafeDrySpawn(context, west.x(), west.z())) {
                     return west;
                 }
-                M15TerrainSample east = sample(context, centerX + radius, z);
+                M15TerrainSample east = sampleDry(context, centerX + radius, z);
                 if (isSafeDrySpawn(context, east.x(), east.z())) {
                     return east;
                 }
@@ -122,25 +134,24 @@ public final class M15TerrainModel {
             return BEDROCK;
         }
 
-        M15TerrainSample sample = sample(context, x, z);
+        M15TerrainSample sample = sampleDry(context, x, z);
         int surfaceY = sample.surfaceY();
+        BlockState baseState;
         if (y > surfaceY) {
-            // M15.1 disables static water fill. M16 will add boundary-aware oceans/rivers/lakes.
-            return AIR;
+            baseState = AIR;
+        } else if (profile.inDeepLavaBelt(y) && isDeepLavaPocket(context.seed(), profile, x, y, z)) {
+            baseState = LAVA;
+        } else {
+            int surfaceDepth = surfaceDepth(context.seed(), x, z);
+            if (y == surfaceY) {
+                baseState = topState(sample, profile);
+            } else if (y > surfaceY - surfaceDepth) {
+                baseState = subsurfaceState(sample, profile, y);
+            } else {
+                baseState = baseStone(profile, y);
+            }
         }
-
-        if (profile.inDeepLavaBelt(y) && isDeepLavaPocket(context.seed(), profile, x, y, z)) {
-            return LAVA;
-        }
-
-        int surfaceDepth = surfaceDepth(context.seed(), x, z);
-        if (y == surfaceY) {
-            return topState(sample, profile);
-        }
-        if (y > surfaceY - surfaceDepth) {
-            return subsurfaceState(sample, profile, y);
-        }
-        return baseStone(profile, y);
+        return M16WaterModel.overrideState(context, sample, y, baseState);
     }
 
     public static boolean mayContainDeepLavaPocket(long seed, M15WorldgenProfile profile, int cubeX, int cubeY, int cubeZ) {
@@ -188,7 +199,7 @@ public final class M15TerrainModel {
 
     private static BlockState topState(M15TerrainSample sample, M15WorldgenProfile profile) {
         return switch (sample.zone()) {
-            case OCEAN_FLOOR, BEACH, DRY -> SANDSTONE;
+            case OCEAN_FLOOR, BEACH, DRY -> SAND;
             case COLD, SNOWY_MOUNTAIN -> SNOW;
             case ROCKY_MOUNTAIN -> sample.surfaceY() >= profile.snowLineY() ? SNOW : STONE;
             case TEMPERATE -> GRASS;

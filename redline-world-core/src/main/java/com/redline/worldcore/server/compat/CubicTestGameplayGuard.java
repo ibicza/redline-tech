@@ -1,6 +1,8 @@
 package com.redline.worldcore.server.compat;
 
 import com.redline.worldcore.api.dimension.CubicDimensionKeys;
+import com.redline.worldcore.api.pos.CubePos;
+import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
@@ -15,10 +17,14 @@ import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
  * the shell can interact with air gaps at not-yet-materialized cube borders. That causes suffocation spam, falling sand
  * duplication and water-edge updates. The cube backend still owns terrain; this guard only suppresses vanilla gameplay
  * entities that would mutate the temporary mirror.</p>
+ *
+ * <p>M16 relaxes falling blocks: static worldgen sand may fall after real interaction, but not while the physical shell
+ * is materializing or when the destination cube is not materialized yet.</p>
  */
 public final class CubicTestGameplayGuard {
     private static long canceledMobs;
     private static long canceledFallingBlocks;
+    private static long allowedFallingBlocks;
 
     private CubicTestGameplayGuard() {
     }
@@ -32,8 +38,12 @@ public final class CubicTestGameplayGuard {
             return;
         }
         if (entity instanceof FallingBlockEntity) {
-            canceledFallingBlocks++;
-            event.setCanceled(true);
+            if (shouldCancelFallingBlock(entity)) {
+                canceledFallingBlocks++;
+                event.setCanceled(true);
+            } else {
+                allowedFallingBlocks++;
+            }
             return;
         }
         if (entity instanceof Mob) {
@@ -50,8 +60,24 @@ public final class CubicTestGameplayGuard {
         return canceledFallingBlocks;
     }
 
+    public static long allowedFallingBlocks() {
+        return allowedFallingBlocks;
+    }
+
+    private static boolean shouldCancelFallingBlock(Entity entity) {
+        if (CubicClientSyncBridge.materializationInProgress()) {
+            return true;
+        }
+        BlockPos pos = entity.blockPosition();
+        CubePos currentCube = CubePos.fromBlock(pos);
+        CubePos belowCube = CubePos.fromBlock(pos.below());
+        return !CubicClientSyncBridge.isMaterializedForAnyPlayer(currentCube)
+                || !CubicClientSyncBridge.isMaterializedForAnyPlayer(belowCube);
+    }
+
     public static void resetCounters() {
         canceledMobs = 0L;
         canceledFallingBlocks = 0L;
+        allowedFallingBlocks = 0L;
     }
 }

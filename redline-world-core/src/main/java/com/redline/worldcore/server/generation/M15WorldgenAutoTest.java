@@ -72,11 +72,12 @@ public final class M15WorldgenAutoTest {
         }
         expect(lavaFound > 0, problems, "deep lava belt scan did not find lava pockets");
 
-        int surfaceY = M15TerrainModel.surfaceHeight(cache.generationContext(), 64, 64);
-        BlockState top = M15TerrainModel.stateFor(cache.generationContext(), 64, surfaceY, 64);
-        BlockState above = M15TerrainModel.stateFor(cache.generationContext(), 64, surfaceY + 1, 64);
-        expect(!top.isAir(), problems, "surface top is air");
-        expect(above.isAir(), problems, "block above surface is not air in M15.1 dry terrain: " + blockName(above));
+        M15TerrainSample safe = M15TerrainModel.findSafeDrySpawn(cache.generationContext(), 64, 64, 1024);
+        int surfaceY = M15TerrainModel.surfaceHeight(cache.generationContext(), safe.x(), safe.z());
+        BlockState top = M15TerrainModel.stateFor(cache.generationContext(), safe.x(), surfaceY, safe.z());
+        BlockState above = M15TerrainModel.stateFor(cache.generationContext(), safe.x(), surfaceY + 1, safe.z());
+        expect(!top.isAir() && !top.is(Blocks.WATER), problems, "safe dry surface top is invalid: " + blockName(top));
+        expect(above.isAir(), problems, "block above safe dry surface is not air: " + blockName(above));
 
         CubePos airCube = CubePos.fromBlock(0, profile.highestSurfaceY() + 64, 0);
         LevelCube air = cache.generateTemporary(airCube);
@@ -109,6 +110,7 @@ public final class M15WorldgenAutoTest {
             return "passed=" + passed
                     + ", sampledSurface=" + sampledMinSurface + ".." + sampledMaxSurface
                     + ", lavaFound=" + lavaFound
+                    + ", mode=M16-static-hydrology"
                     + ", surfaceHash=" + CubeGenerationHasher.shortHex(surfaceHash)
                     + ", profile={" + profile.oneLine() + "}";
         }

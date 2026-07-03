@@ -17,6 +17,10 @@ import com.redline.worldcore.server.generation.M15TerrainModel;
 import com.redline.worldcore.server.generation.M15TerrainSample;
 import com.redline.worldcore.server.generation.M15WorldgenAutoTest;
 import com.redline.worldcore.server.generation.M15WorldgenProfile;
+import com.redline.worldcore.server.generation.M16WaterAutoTest;
+import com.redline.worldcore.server.generation.M16WaterModel;
+import com.redline.worldcore.server.generation.M16WaterSample;
+import com.redline.worldcore.server.generation.M16WaterType;
 import com.redline.worldcore.api.pos.ColumnPos;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.api.pos.Region3DPos;
@@ -29,6 +33,7 @@ import com.redline.worldcore.server.cube.CubeLoadingSnapshot;
 import com.redline.worldcore.server.cube.ServerCubeCache;
 import com.redline.worldcore.server.compat.CubicClientSyncBridge;
 import com.redline.worldcore.server.compat.CubicTestGameplayGuard;
+import com.redline.worldcore.server.compat.WaterSurfaceSupportDebug;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.cube.access.CubeMutationContext;
 import com.redline.worldcore.server.cube.access.CubeMutationResult;
@@ -305,6 +310,85 @@ public final class RedlineWorldCoreCommands {
                                                         ))))))
                         .then(Commands.literal("autotest")
                                 .executes(context -> worldgenAutotest(context.getSource()))))
+                .then(Commands.literal("water")
+                        .then(Commands.literal("status")
+                                .executes(context -> waterStatus(context.getSource())))
+                        .then(Commands.literal("sample")
+                                .then(Commands.argument("x", IntegerArgumentType.integer())
+                                        .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                .executes(context -> waterSample(
+                                                        context.getSource(),
+                                                        IntegerArgumentType.getInteger(context, "x"),
+                                                        IntegerArgumentType.getInteger(context, "z")
+                                                )))))
+                        .then(Commands.literal("nearest")
+                                .then(Commands.literal("ocean")
+                                        .then(Commands.argument("radius", IntegerArgumentType.integer(1))
+                                                .executes(context -> waterNearest(
+                                                        context.getSource(),
+                                                        M16WaterType.OCEAN,
+                                                        IntegerArgumentType.getInteger(context, "radius"),
+                                                        false
+                                                ))))
+                                .then(Commands.literal("lake")
+                                        .then(Commands.argument("radius", IntegerArgumentType.integer(1))
+                                                .executes(context -> waterNearest(
+                                                        context.getSource(),
+                                                        M16WaterType.LAKE,
+                                                        IntegerArgumentType.getInteger(context, "radius"),
+                                                        false
+                                                ))))
+                                .then(Commands.literal("river")
+                                        .then(Commands.argument("radius", IntegerArgumentType.integer(1))
+                                                .executes(context -> waterNearest(
+                                                        context.getSource(),
+                                                        M16WaterType.RIVER,
+                                                        IntegerArgumentType.getInteger(context, "radius"),
+                                                        false
+                                                ))))
+                                .then(Commands.literal("waterfall")
+                                        .then(Commands.argument("radius", IntegerArgumentType.integer(1))
+                                                .executes(context -> waterNearest(
+                                                        context.getSource(),
+                                                        M16WaterType.WATERFALL,
+                                                        IntegerArgumentType.getInteger(context, "radius"),
+                                                        false
+                                                )))))
+                        .then(Commands.literal("teleport_nearest")
+                                .then(Commands.literal("ocean")
+                                        .then(Commands.argument("radius", IntegerArgumentType.integer(1))
+                                                .executes(context -> waterNearest(
+                                                        context.getSource(),
+                                                        M16WaterType.OCEAN,
+                                                        IntegerArgumentType.getInteger(context, "radius"),
+                                                        true
+                                                ))))
+                                .then(Commands.literal("lake")
+                                        .then(Commands.argument("radius", IntegerArgumentType.integer(1))
+                                                .executes(context -> waterNearest(
+                                                        context.getSource(),
+                                                        M16WaterType.LAKE,
+                                                        IntegerArgumentType.getInteger(context, "radius"),
+                                                        true
+                                                ))))
+                                .then(Commands.literal("river")
+                                        .then(Commands.argument("radius", IntegerArgumentType.integer(1))
+                                                .executes(context -> waterNearest(
+                                                        context.getSource(),
+                                                        M16WaterType.RIVER,
+                                                        IntegerArgumentType.getInteger(context, "radius"),
+                                                        true
+                                                ))))
+                                .then(Commands.literal("waterfall")
+                                        .then(Commands.argument("radius", IntegerArgumentType.integer(1))
+                                                .executes(context -> waterNearest(
+                                                        context.getSource(),
+                                                        M16WaterType.WATERFALL,
+                                                        IntegerArgumentType.getInteger(context, "radius"),
+                                                        true
+                                                )))))
+                        .then(Commands.literal("autotest")
+                                .executes(context -> waterAutotest(context.getSource()))))
                 .then(Commands.literal("gen")
                         .then(Commands.literal("summary")
                                 .then(Commands.argument("cubeX", IntegerArgumentType.integer())
@@ -1236,9 +1320,15 @@ public final class RedlineWorldCoreCommands {
                 + ", eagerClientGeneratedLoads=" + CubicClientSyncBridge.eagerClientGeneratedLoads()
                 + ", eagerLastTick=" + CubicClientSyncBridge.eagerClientLoadsLastTick()
                 + "/" + CubicClientSyncBridge.eagerClientGeneratedLastTick()), false);
-        source.sendSuccess(() -> Component.literal("RWC M15 gameplay guard: canceledMobs="
+        source.sendSuccess(() -> Component.literal("RWC M16 gameplay guard: canceledMobs="
                 + CubicTestGameplayGuard.canceledMobs()
-                + ", canceledFallingBlocks=" + CubicTestGameplayGuard.canceledFallingBlocks()), false);
+                + ", canceledFallingBlocks=" + CubicTestGameplayGuard.canceledFallingBlocks()
+                + ", allowedFallingBlocks=" + CubicTestGameplayGuard.allowedFallingBlocks()), false);
+        source.sendSuccess(() -> Component.literal("RWC M16.1 water support: waterHolesBlocked="
+                + WaterSurfaceSupportDebug.waterHolesBlocked()
+                + ", downflowsBlocked=" + WaterSurfaceSupportDebug.downflowsBlocked()
+                + ", horizontalSupportChecks=" + WaterSurfaceSupportDebug.horizontalSupportChecks()
+                + ", scheduledPostMaterializeTicks=" + WaterSurfaceSupportDebug.scheduledPostMaterializeTicks()), false);
         return CubicClientSyncBridge.trackedPlayers();
     }
 
@@ -1251,7 +1341,8 @@ public final class RedlineWorldCoreCommands {
     private static int clientSyncResetCounters(CommandSourceStack source) {
         CubicClientSyncBridge.resetCounters();
         CubicTestGameplayGuard.resetCounters();
-        source.sendSuccess(() -> Component.literal("RWC client sync/gameplay guard counters reset."), false);
+        WaterSurfaceSupportDebug.reset();
+        source.sendSuccess(() -> Component.literal("RWC client sync/gameplay/water support counters reset."), false);
         return 1;
     }
 
@@ -1950,13 +2041,13 @@ public final class RedlineWorldCoreCommands {
     private static int worldgenStatus(CommandSourceStack source) {
         ServerCubeCache cache = cubeCache(source);
         M15WorldgenProfile profile = M15TerrainModel.profile(cache.generationContext());
-        source.sendSuccess(() -> Component.literal("RWC worldgen M15: " + M15TerrainModel.VERSION), false);
+        source.sendSuccess(() -> Component.literal("RWC worldgen M16: " + M15TerrainModel.VERSION), false);
         source.sendSuccess(() -> Component.literal("Seed=" + cache.generationContext().seed()
                 + ", settings: cubes " + cache.settings().minCubeY() + ".." + cache.settings().maxCubeY()
                 + ", blocks " + cache.settings().minBlockY() + ".." + cache.settings().maxBlockY()
                 + ", seaLevel=" + cache.settings().seaLevel()), false);
         source.sendSuccess(() -> Component.literal("Profile: " + profile.oneLine()), false);
-        source.sendSuccess(() -> Component.literal("M15 scope: seed-only heightmap terrain, vertical bedrock/lava/deepslate/stone layers, basic surface zones; rivers/caves/features/structures/atlas are later milestones."), false);
+        source.sendSuccess(() -> Component.literal("M16 scope: seed-only heightmap terrain + static safe hydrology: oceans, lakes, rivers, rare waterfalls, safe sand; caves/features/structures/atlas are later milestones."), false);
         return 1;
     }
 
@@ -1964,13 +2055,16 @@ public final class RedlineWorldCoreCommands {
         try {
             ServerCubeCache cache = cubeCache(source);
             M15TerrainSample sample = M15TerrainModel.sample(cache.generationContext(), x, z);
+            M16WaterSample water = M16WaterModel.sample(cache.generationContext(), sample);
+            int topY = water.hasWater() ? Math.max(water.waterSurfaceY(), water.effectiveSurfaceY()) : sample.surfaceY();
             source.sendSuccess(() -> Component.literal("RWC worldgen sample: " + sample.oneLine()), false);
+            source.sendSuccess(() -> Component.literal("RWC water: " + water.oneLine()), false);
             source.sendSuccess(() -> Component.literal("Top block="
-                    + CubeGenerationHasher.blockStateDebugName(M15TerrainModel.stateFor(cache.generationContext(), x, sample.surfaceY(), z))
-                    + ", above=" + CubeGenerationHasher.blockStateDebugName(M15TerrainModel.stateFor(cache.generationContext(), x, sample.surfaceY() + 1, z))), false);
-            return sample.surfaceY();
+                    + CubeGenerationHasher.blockStateDebugName(M15TerrainModel.stateFor(cache.generationContext(), x, topY, z))
+                    + ", above=" + CubeGenerationHasher.blockStateDebugName(M15TerrainModel.stateFor(cache.generationContext(), x, topY + 1, z))), false);
+            return topY;
         } catch (RuntimeException exception) {
-            source.sendFailure(Component.literal("Failed to sample M15 worldgen: " + exception.getMessage()));
+            source.sendFailure(Component.literal("Failed to sample M16 worldgen: " + exception.getMessage()));
             return 0;
         }
     }
@@ -1980,14 +2074,18 @@ public final class RedlineWorldCoreCommands {
             ServerCubeCache cache = cubeCache(source);
             BlockState state = M15TerrainModel.stateFor(cache.generationContext(), x, y, z);
             M15TerrainSample sample = M15TerrainModel.sample(cache.generationContext(), x, z);
+            M16WaterSample water = M16WaterModel.sample(cache.generationContext(), sample);
             source.sendSuccess(() -> Component.literal("RWC worldgen block sample: " + x + " " + y + " " + z
                     + ", state=" + CubeGenerationHasher.blockStateDebugName(state)), false);
             source.sendSuccess(() -> Component.literal("Column: surfaceY=" + sample.surfaceY()
                     + ", seaLevel=" + sample.seaLevel()
-                    + ", zone=" + sample.zone()), false);
+                    + ", zone=" + sample.zone()
+                    + ", waterType=" + water.waterType()
+                    + ", waterSurfaceY=" + water.waterSurfaceY()
+                    + ", effectiveSurfaceY=" + water.effectiveSurfaceY()), false);
             return state.isAir() ? 0 : 1;
         } catch (RuntimeException exception) {
-            source.sendFailure(Component.literal("Failed to sample M15 worldgen block: " + exception.getMessage()));
+            source.sendFailure(Component.literal("Failed to sample M16 worldgen block: " + exception.getMessage()));
             return 0;
         }
     }
@@ -2006,6 +2104,85 @@ public final class RedlineWorldCoreCommands {
             return 0;
         } catch (RuntimeException exception) {
             source.sendFailure(Component.literal("Failed to run M15 worldgen autotest: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int waterStatus(CommandSourceStack source) {
+        try {
+            ServerCubeCache cache = cubeCache(source);
+            M15WorldgenProfile profile = M15TerrainModel.profile(cache.generationContext());
+            source.sendSuccess(() -> Component.literal("RWC water M16: " + M16WaterModel.VERSION), false);
+            source.sendSuccess(() -> Component.literal("Profile: seaLevel=" + profile.seaLevel()
+                    + ", surfaceRange=" + profile.lowestSurfaceY() + ".." + profile.highestSurfaceY()
+                    + ", staticWater=ocean/lake, riverWater=activeAfterNeighborMaterialization, safeSand=true, waterSurfaceSupportOverride=true"), false);
+            source.sendSuccess(() -> Component.literal("Use /rwc water sample <x> <z>, /rwc water nearest river|ocean|lake|waterfall <radius>, /rwc water teleport_nearest ..."), false);
+            return 1;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to read M16 water status: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int waterSample(CommandSourceStack source, int x, int z) {
+        try {
+            ServerCubeCache cache = cubeCache(source);
+            M16WaterSample sample = M16WaterModel.sample(cache.generationContext(), x, z);
+            source.sendSuccess(() -> Component.literal("RWC water sample: " + sample.oneLine()), false);
+            source.sendSuccess(() -> Component.literal("Blocks: bed="
+                    + CubeGenerationHasher.blockStateDebugName(M15TerrainModel.stateFor(cache.generationContext(), x, sample.effectiveSurfaceY(), z))
+                    + ", waterSurface=" + (sample.hasWater()
+                    ? CubeGenerationHasher.blockStateDebugName(M15TerrainModel.stateFor(cache.generationContext(), x, sample.waterSurfaceY(), z))
+                    : "none")
+                    + ", above=" + CubeGenerationHasher.blockStateDebugName(M15TerrainModel.stateFor(cache.generationContext(), x, Math.max(sample.drySurfaceY(), sample.waterSurfaceY()) + 1, z))), false);
+            return sample.hasWater() ? 1 : 0;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to sample M16 water: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int waterNearest(CommandSourceStack source, M16WaterType type, int radius, boolean teleport) {
+        try {
+            ServerCubeCache cache = cubeCache(source);
+            BlockPos center = BlockPos.containing(source.getPosition());
+            M16WaterModel.LocateResult result = M16WaterModel.locateNearest(cache.generationContext(), type, center.getX(), center.getZ(), radius);
+            if (!result.found() || result.sample() == null) {
+                source.sendFailure(Component.literal("RWC water nearest " + type.name().toLowerCase(Locale.ROOT)
+                        + " not found within " + radius + " blocks; " + result.oneLine()));
+                return 0;
+            }
+            source.sendSuccess(() -> Component.literal("RWC water nearest " + type.name().toLowerCase(Locale.ROOT) + ": " + result.oneLine()), false);
+            if (teleport) {
+                ServerPlayer player = source.getPlayerOrException();
+                ServerLevel target = CUBIC_TEST.level(source.getServer()).orElse(source.getLevel());
+                M16WaterSample sample = result.sample();
+                int topY = Math.max(sample.waterSurfaceY(), sample.drySurfaceY()) + 8;
+                player.teleportTo(target, sample.x() + 0.5D, topY, sample.z() + 0.5D, Set.of(), player.getYRot(), player.getXRot(), true);
+                source.sendSuccess(() -> Component.literal("Teleported to M16 " + type.name().toLowerCase(Locale.ROOT)
+                        + " test point at " + sample.x() + " " + topY + " " + sample.z()), false);
+            }
+            return 1;
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal("Failed to locate M16 water: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int waterAutotest(CommandSourceStack source) {
+        try {
+            M16WaterAutoTest.Result result = M16WaterAutoTest.run(cubeCache(source));
+            if (result.passed()) {
+                source.sendSuccess(() -> Component.literal("RWC water autotest PASS: " + result.oneLine()), false);
+                return 1;
+            }
+            source.sendFailure(Component.literal("RWC water autotest FAILED: " + result.oneLine()));
+            for (String problem : result.problems()) {
+                source.sendFailure(Component.literal(" - " + problem));
+            }
+            return 0;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("Failed to run M16 water autotest: " + exception.getMessage()));
             return 0;
         }
     }
