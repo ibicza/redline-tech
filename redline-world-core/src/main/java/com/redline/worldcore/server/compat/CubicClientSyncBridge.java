@@ -869,9 +869,15 @@ public final class CubicClientSyncBridge {
                 // M17.1 playable cube-first bridge: the immediate volume is guaranteed vanilla-visible, while the
                 // wider same-level band is materialized lazily so distant cubes are not invisible like debug-native.
                 if (horizontalCheb <= hybridAlwaysShellHorizontalRadius && dy <= hybridShellVerticalRadius) {
+                    RuntimeProfiler.addCount("client.hybrid_shell_required", 1);
                     yield true;
                 }
-                yield dy == 0 && horizontalCheb <= hybridShellHorizontalRadius;
+                if (dy == 0 && horizontalCheb <= hybridShellHorizontalRadius) {
+                    RuntimeProfiler.addCount("client.hybrid_shell_required", 1);
+                    yield true;
+                }
+                RuntimeProfiler.addCount("client.hybrid_shell_skipped_far", 1);
+                yield false;
             }
             case NATIVE_ONLY -> false;
         };
