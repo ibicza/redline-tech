@@ -82,6 +82,9 @@ public final class CubicClientSyncBridge {
     private static final int HARD_MATERIALIZE_MICROS_PER_TICK = 18_000;
     private static final int DEFAULT_NEAR_SHELL_HORIZONTAL_RADIUS = 4;
     private static final int DEFAULT_NEAR_SHELL_VERTICAL_RADIUS = 1;
+    private static final int DEFAULT_HYBRID_SHELL_HORIZONTAL_RADIUS = 5;
+    private static final int DEFAULT_HYBRID_SHELL_VERTICAL_RADIUS = 1;
+    private static final int DEFAULT_HYBRID_ALWAYS_SHELL_HORIZONTAL_RADIUS = 2;
 
     /**
      * Client-only mirror writes must not wake vanilla physics. UPDATE_CLIENTS + UPDATE_KNOWN_SHAPE + UPDATE_SUPPRESS_DROPS.
@@ -103,9 +106,12 @@ public final class CubicClientSyncBridge {
     private static int maxMaterializeBlocksPerTick = DEFAULT_MAX_MATERIALIZE_BLOCKS_PER_TICK;
     private static int maxMaterializeMicrosPerTick = DEFAULT_MAX_MATERIALIZE_MICROS_PER_TICK;
     private static int overlayMode = OVERLAY_FULL;
-    private static VanillaShellMode vanillaShellMode = VanillaShellMode.FULL;
+    private static VanillaShellMode vanillaShellMode = VanillaShellMode.HYBRID;
     private static int nearShellHorizontalRadius = DEFAULT_NEAR_SHELL_HORIZONTAL_RADIUS;
     private static int nearShellVerticalRadius = DEFAULT_NEAR_SHELL_VERTICAL_RADIUS;
+    private static int hybridShellHorizontalRadius = DEFAULT_HYBRID_SHELL_HORIZONTAL_RADIUS;
+    private static int hybridShellVerticalRadius = DEFAULT_HYBRID_SHELL_VERTICAL_RADIUS;
+    private static int hybridAlwaysShellHorizontalRadius = DEFAULT_HYBRID_ALWAYS_SHELL_HORIZONTAL_RADIUS;
 
     private static boolean materializationInProgress;
     private static long materializerWritesIgnored;
@@ -264,7 +270,8 @@ public final class CubicClientSyncBridge {
         vanillaShellMode = switch (normalized) {
             case "FULL" -> VanillaShellMode.FULL;
             case "NEAR" -> VanillaShellMode.NEAR;
-            case "NATIVE", "NATIVE_ONLY" -> VanillaShellMode.NATIVE_ONLY;
+            case "HYBRID" -> VanillaShellMode.HYBRID;
+            case "NATIVE", "NATIVE_ONLY", "DEBUG_NATIVE" -> VanillaShellMode.NATIVE_ONLY;
             default -> throw new IllegalArgumentException("Unknown RWC vanilla shell mode: " + modeName);
         };
         for (PlayerBridgeState state : PLAYER_STATES.values()) {
@@ -354,6 +361,9 @@ public final class CubicClientSyncBridge {
         maxVisibleQueueScansPerTick = Mth.clamp(maxMaterializedCubesPerTick * 64, 192, DEFAULT_MAX_VISIBLE_QUEUE_SCANS_PER_TICK * 2);
         nearShellHorizontalRadius = Math.min(streamHorizontalRadius, DEFAULT_NEAR_SHELL_HORIZONTAL_RADIUS);
         nearShellVerticalRadius = Math.min(streamVerticalRadius, DEFAULT_NEAR_SHELL_VERTICAL_RADIUS);
+        hybridShellHorizontalRadius = Math.min(streamHorizontalRadius, DEFAULT_HYBRID_SHELL_HORIZONTAL_RADIUS);
+        hybridShellVerticalRadius = Math.min(streamVerticalRadius, DEFAULT_HYBRID_SHELL_VERTICAL_RADIUS);
+        hybridAlwaysShellHorizontalRadius = Math.min(hybridShellHorizontalRadius, DEFAULT_HYBRID_ALWAYS_SHELL_HORIZONTAL_RADIUS);
         for (PlayerBridgeState state : PLAYER_STATES.values()) {
             state.materializationQueue.clear();
             state.queued.clear();
@@ -372,7 +382,7 @@ public final class CubicClientSyncBridge {
                 DEFAULT_MAX_MATERIALIZED_CUBES_PER_TICK,
                 DEFAULT_SYNC_PACKET_INTERVAL_TICKS
         );
-        vanillaShellMode = VanillaShellMode.FULL;
+        vanillaShellMode = VanillaShellMode.HYBRID;
     }
 
     public static void recordCommandWriteSaved() {
@@ -850,10 +860,19 @@ public final class CubicClientSyncBridge {
         if (priority) {
             return true;
         }
+        int horizontalCheb = Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z()));
+        int dy = Math.abs(cubePos.y() - playerCube.y());
         return switch (vanillaShellMode) {
             case FULL -> true;
-            case NEAR -> Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z())) <= nearShellHorizontalRadius
-                    && Math.abs(cubePos.y() - playerCube.y()) <= nearShellVerticalRadius;
+            case NEAR -> horizontalCheb <= nearShellHorizontalRadius && dy <= nearShellVerticalRadius;
+            case HYBRID -> {
+                // M17.1 playable cube-first bridge: the immediate volume is guaranteed vanilla-visible, while the
+                // wider same-level band is materialized lazily so distant cubes are not invisible like debug-native.
+                if (horizontalCheb <= hybridAlwaysShellHorizontalRadius && dy <= hybridShellVerticalRadius) {
+                    yield true;
+                }
+                yield dy == 0 && horizontalCheb <= hybridShellHorizontalRadius;
+            }
             case NATIVE_ONLY -> false;
         };
     }
@@ -1133,6 +1152,7 @@ public final class CubicClientSyncBridge {
     private enum VanillaShellMode {
         FULL,
         NEAR,
+        HYBRID,
         NATIVE_ONLY
     }
 

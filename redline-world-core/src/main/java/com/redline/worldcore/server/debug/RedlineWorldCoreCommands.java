@@ -155,6 +155,8 @@ public final class RedlineWorldCoreCommands {
                                         .executes(context -> clientSyncShellMode(context.getSource(), "full")))
                                 .then(Commands.literal("near")
                                         .executes(context -> clientSyncShellMode(context.getSource(), "near")))
+                                .then(Commands.literal("hybrid")
+                                        .executes(context -> clientSyncShellMode(context.getSource(), "hybrid")))
                                 .then(Commands.literal("native")
                                         .executes(context -> clientSyncShellMode(context.getSource(), "native"))))
                         .then(Commands.literal("configure")
@@ -1406,7 +1408,7 @@ public final class RedlineWorldCoreCommands {
         try {
             CubicClientSyncBridge.setVanillaShellMode(mode);
             source.sendSuccess(() -> Component.literal("RWC M17 vanilla shell mode: " + CubicClientSyncBridge.vanillaShellModeName()
-                    + " (full=old compatibility, near=near-player shell, native=cube-native metadata with player-cube shell fallback)"), false);
+                    + " (hybrid=playable cube-first bridge, near=near-player shell, native=debug cube-native metadata, full=legacy compatibility)"), false);
             return 1;
         } catch (IllegalArgumentException exception) {
             source.sendFailure(Component.literal(exception.getMessage()));

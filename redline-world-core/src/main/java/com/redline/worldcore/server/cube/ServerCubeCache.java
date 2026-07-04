@@ -80,6 +80,18 @@ public final class ServerCubeCache {
     /** Keep recently unrequested cubes warm for a short time to avoid thrash while tickets refresh or players move. */
     public static final int UNLOAD_GRACE_TICKS = 100;
 
+    /** M17.1: unloading is a lifecycle sweep, not a full holder scan every server tick. */
+    public static final int MAX_UNLOAD_SWEEP_HOLDERS_PER_TICK = 256;
+
+    /** M17.1: even if a player teleports far away, unloads are batched to avoid chunk-lifecycle spikes. */
+    public static final int MAX_UNLOADS_PER_TICK = 32;
+
+    /** M17.1: BE/scheduled tick gates are eventual; reevaluate them in small cadence instead of every tick. */
+    public static final int TICK_GATE_EVALUATION_INTERVAL_TICKS = 5;
+
+    /** M17.1: vanilla block-entity capture is a compatibility scan; throttle it while cube-native sync evolves. */
+    public static final int VANILLA_BLOCK_ENTITY_CAPTURE_INTERVAL_TICKS = 5;
+
     /** Safety cap for accidental huge debug cuboids before real async distance propagation exists. */
     public static final int MAX_REQUESTED_CUBES_PER_TICK = 32768;
 
@@ -128,6 +140,12 @@ public final class ServerCubeCache {
     private final Map<CubePos, CubeHolder> holders = new ConcurrentHashMap<>();
     private final LinkedHashMap<CubePos, CubeTicketLevel> pendingLoads = new LinkedHashMap<>();
     private final LinkedHashSet<CubePos> storageMissCache = new LinkedHashSet<>();
+    private List<CubePos> unloadSweepOrder = List.of();
+    private int unloadSweepCursor;
+    private int unloadSweepHolderCount = -1;
+    private long lastReprioritizeFocusSignature = Long.MIN_VALUE;
+    private int lastReprioritizePendingSize = -1;
+    private long lastReprioritizeGameTime = Long.MIN_VALUE;
     private RequiredLevels cachedRequiredLevels;
     private long cachedRequiredTicketSignature;
     private int cachedRequiredTicketCount;
@@ -363,7 +381,7 @@ public final class ServerCubeCache {
         LoadCounters loadCounters = loadPending(required.levels());
 
         phaseStart = RuntimeProfiler.markStart();
-        int capturedBlockEntities = captureVanillaBlockEntities(level);
+        int capturedBlockEntities = maybeCaptureVanillaBlockEntities(level);
         RuntimeProfiler.recordSince("cube_loading.capture_block_entities", phaseStart);
         RuntimeProfiler.addCount("cube_loading.captured_block_entities", capturedBlockEntities);
         if (capturedBlockEntities > 0) {
@@ -371,8 +389,13 @@ public final class ServerCubeCache {
         }
 
         phaseStart = RuntimeProfiler.markStart();
-        updateBlockEntityTickGates();
-        updateScheduledTickGates();
+        if (shouldUpdateTickGates(loadCounters.loaded(), unloadedThisTick, capturedBlockEntities)) {
+            updateBlockEntityTickGates();
+            updateScheduledTickGates();
+            RuntimeProfiler.addCount("cube_loading.tick_gates_evaluated", 1);
+        } else {
+            RuntimeProfiler.addCount("cube_loading.tick_gates_skipped", 1);
+        }
         RuntimeProfiler.recordSince("cube_loading.update_tick_gates", phaseStart);
 
         phaseStart = RuntimeProfiler.markStart();
@@ -1200,6 +1223,16 @@ public final class ServerCubeCache {
         if (focuses.isEmpty()) {
             return;
         }
+
+        long focusSignature = playerFocusSignature(focuses);
+        int pendingSize = pendingLoads.size();
+        boolean pendingChangedMeaningfully = Math.abs(pendingSize - lastReprioritizePendingSize) > 64;
+        boolean oldEnough = gameTime - lastReprioritizeGameTime >= 10;
+        if (focusSignature == lastReprioritizeFocusSignature && !pendingChangedMeaningfully && !oldEnough) {
+            RuntimeProfiler.addCount("cube_loading.reprioritize_skipped_stable", 1);
+            return;
+        }
+
         List<Map.Entry<CubePos, CubeTicketLevel>> entries = new ArrayList<>(pendingLoads.entrySet());
         Map<CubePos, Integer> priorities = new LinkedHashMap<>();
         Map<CubePos, PlayerLoadFocus> nearest = new LinkedHashMap<>();
@@ -1221,6 +1254,24 @@ public final class ServerCubeCache {
                 pendingLoads.put(entry.getKey(), entry.getValue());
             }
         }
+        lastReprioritizeFocusSignature = focusSignature;
+        lastReprioritizePendingSize = pendingLoads.size();
+        lastReprioritizeGameTime = gameTime;
+        RuntimeProfiler.addCount("cube_loading.reprioritize_rebuilt", 1);
+    }
+
+    private static long playerFocusSignature(List<PlayerLoadFocus> focuses) {
+        long signature = 0x9E3779B97F4A7C15L;
+        for (PlayerLoadFocus focus : focuses) {
+            int lookBucketX = focus.lookX() > 0.45D ? 1 : focus.lookX() < -0.45D ? -1 : 0;
+            int lookBucketZ = focus.lookZ() > 0.45D ? 1 : focus.lookZ() < -0.45D ? -1 : 0;
+            long value = mixTicketCoord(focus.cube().x(), focus.cube().y(), focus.cube().z());
+            value ^= ((long) (lookBucketX + 2)) << 48;
+            value ^= ((long) (lookBucketZ + 2)) << 52;
+            signature ^= mix64(value);
+            signature *= 0x100000001B3L;
+        }
+        return signature;
     }
 
     private List<PlayerLoadFocus> activePlayerFocuses(ServerLevel level) {
@@ -1313,7 +1364,12 @@ public final class ServerCubeCache {
     }
 
     private void purgePendingNoLongerRequired(Map<CubePos, CubeTicketLevel> required) {
+        int before = pendingLoads.size();
         pendingLoads.keySet().removeIf(cubePos -> !required.containsKey(cubePos));
+        int removed = before - pendingLoads.size();
+        if (removed > 0) {
+            RuntimeProfiler.addCount("cube_loading.pending_purged", removed);
+        }
     }
 
     private int queueMissingAndRefreshLoaded(Map<CubePos, CubeTicketLevel> required) {
@@ -1463,8 +1519,30 @@ public final class ServerCubeCache {
     }
 
     private int unloadNoLongerRequired(Map<CubePos, CubeTicketLevel> required) {
+        if (holders.isEmpty()) {
+            unloadSweepOrder = List.of();
+            unloadSweepCursor = 0;
+            unloadSweepHolderCount = 0;
+            return 0;
+        }
+        if (unloadSweepOrder.isEmpty() || unloadSweepHolderCount != holders.size() || unloadSweepCursor >= unloadSweepOrder.size()) {
+            unloadSweepOrder = new ArrayList<>(holders.keySet());
+            unloadSweepCursor = 0;
+            unloadSweepHolderCount = holders.size();
+            RuntimeProfiler.addCount("cube_loading.unload_sweep_rebuilt", 1);
+        }
+
+        int scanned = 0;
         int unloaded = 0;
-        for (CubeHolder holder : new ArrayList<>(holders.values())) {
+        while (scanned < MAX_UNLOAD_SWEEP_HOLDERS_PER_TICK
+                && unloaded < MAX_UNLOADS_PER_TICK
+                && unloadSweepCursor < unloadSweepOrder.size()) {
+            CubePos cubePos = unloadSweepOrder.get(unloadSweepCursor++);
+            scanned++;
+            CubeHolder holder = holders.get(cubePos);
+            if (holder == null) {
+                continue;
+            }
             if (required.containsKey(holder.cubePos())) {
                 continue;
             }
@@ -1474,6 +1552,12 @@ public final class ServerCubeCache {
             if (unloadHolder(holder, true)) {
                 unloaded++;
             }
+        }
+        RuntimeProfiler.addCount("cube_loading.unload_sweep_scanned", scanned);
+        if (unloadSweepCursor >= unloadSweepOrder.size()) {
+            unloadSweepOrder = List.of();
+            unloadSweepCursor = 0;
+            unloadSweepHolderCount = holders.size();
         }
         return unloaded;
     }
@@ -1551,10 +1635,15 @@ public final class ServerCubeCache {
     }
 
 
-    private int captureVanillaBlockEntities(ServerLevel level) {
+    private int maybeCaptureVanillaBlockEntities(ServerLevel level) {
         if (level == null) {
             return 0;
         }
+        if (gameTime % VANILLA_BLOCK_ENTITY_CAPTURE_INTERVAL_TICKS != 0) {
+            RuntimeProfiler.addCount("cube_loading.capture_block_entities_skipped", 1);
+            return 0;
+        }
+        RuntimeProfiler.addCount("cube_loading.capture_block_entities_evaluated", 1);
         Map<CubePos, LevelCube> loaded = new LinkedHashMap<>();
         for (CubeHolder holder : holders.values()) {
             loaded.put(holder.cubePos(), holder.cube());
@@ -1569,6 +1658,17 @@ public final class ServerCubeCache {
             }
         }
         return captured;
+    }
+
+    private boolean shouldUpdateTickGates(int loadedThisTick, int unloadedThisTick, int capturedBlockEntities) {
+        if (capturedBlockEntities > 0) {
+            return true;
+        }
+        if (gameTime % TICK_GATE_EVALUATION_INTERVAL_TICKS == 0) {
+            return true;
+        }
+        // Large lifecycle changes still force a prompt update, but steady one-cube streaming waits for the cadence.
+        return loadedThisTick + unloadedThisTick >= 32;
     }
 
     private void updateBlockEntityTickGates() {
