@@ -51,11 +51,30 @@ public final class CubeRegionStorage implements CubeStorage {
         }
 
         try {
-            Optional<LevelCube> loadedFromDisk = regionFile(cubePos.regionPos()).readCube(cubePos);
+            Region3DFile file = regionFile(cubePos.regionPos());
+            if (!file.hasCube(cubePos)) {
+                return Optional.empty();
+            }
+            Optional<LevelCube> loadedFromDisk = file.readCube(cubePos);
             loadedFromDisk.ifPresent(cube -> loadedCubes.put(cubePos, cube));
             return loadedFromDisk;
         } catch (IOException exception) {
             throw new CubeStorageException("Failed to read cube " + cubePos, exception);
+        }
+    }
+
+    /**
+     * Cheap Region3D index probe. This reads/caches only the region header and avoids full CubeNBT IO
+     * for deterministic generated cubes that have never been saved.
+     */
+    public boolean hasCube(CubePos cubePos) {
+        if (loadedCubes.containsKey(cubePos)) {
+            return true;
+        }
+        try {
+            return regionFile(cubePos.regionPos()).hasCube(cubePos);
+        } catch (IOException exception) {
+            throw new CubeStorageException("Failed to inspect cube " + cubePos, exception);
         }
     }
 

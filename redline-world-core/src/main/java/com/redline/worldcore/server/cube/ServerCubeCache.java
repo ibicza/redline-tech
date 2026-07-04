@@ -790,6 +790,17 @@ public final class ServerCubeCache {
             RuntimeProfiler.addCount("cube_io.storage_miss_cache_hits", 1);
             return Optional.empty();
         }
+
+        long indexStart = RuntimeProfiler.markStart();
+        if (!storage.hasCube(cubePos)) {
+            RuntimeProfiler.recordSince("cube_io.storage_index_probe", indexStart);
+            RuntimeProfiler.addCount("cube_io.storage_index_misses", 1);
+            rememberStorageMiss(cubePos);
+            return Optional.empty();
+        }
+        RuntimeProfiler.recordSince("cube_io.storage_index_probe", indexStart);
+        RuntimeProfiler.addCount("cube_io.storage_index_hits", 1);
+
         Optional<LevelCube> loaded = storage.get(cubePos);
         if (loaded.isPresent()) {
             storageMissCache.remove(cubePos);

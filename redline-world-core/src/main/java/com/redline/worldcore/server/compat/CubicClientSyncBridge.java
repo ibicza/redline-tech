@@ -72,6 +72,12 @@ public final class CubicClientSyncBridge {
     public static final int DEFAULT_MAX_EAGER_CLIENT_LOAD_MICROS_PER_TICK = 2_500;
     public static final int MAX_PACKET_ENTRIES = 96;
     public static final int DEFAULT_MAX_VISIBLE_QUEUE_SCANS_PER_TICK = 384;
+    public static final int DEFAULT_MAX_MATERIALIZE_BLOCKS_PER_TICK = 32_768;
+    public static final int DEFAULT_MAX_MATERIALIZE_MICROS_PER_TICK = 12_000;
+    private static final int MAX_ADAPTIVE_MATERIALIZE_BLOCKS_PER_TICK = 98_304;
+    private static final int MAX_ADAPTIVE_MATERIALIZE_MICROS_PER_TICK = 28_000;
+    private static final int MAX_ADAPTIVE_MATERIALIZED_CUBES_PER_TICK = 32;
+    private static final int MAX_PRIORITY_WHOLE_CUBES_PER_TICK = 3;
 
     /**
      * Client-only mirror writes must not wake vanilla physics. UPDATE_CLIENTS + UPDATE_KNOWN_SHAPE + UPDATE_SUPPRESS_DROPS.
@@ -90,6 +96,8 @@ public final class CubicClientSyncBridge {
     private static int maxEagerClientLoadsPerTick = DEFAULT_MAX_EAGER_CLIENT_LOADS_PER_TICK;
     private static int maxEagerClientGeneratedLoadsPerTick = DEFAULT_MAX_EAGER_CLIENT_GENERATED_LOADS_PER_TICK;
     private static int maxVisibleQueueScansPerTick = DEFAULT_MAX_VISIBLE_QUEUE_SCANS_PER_TICK;
+    private static int maxMaterializeBlocksPerTick = DEFAULT_MAX_MATERIALIZE_BLOCKS_PER_TICK;
+    private static int maxMaterializeMicrosPerTick = DEFAULT_MAX_MATERIALIZE_MICROS_PER_TICK;
     private static int overlayMode = OVERLAY_FULL;
 
     private static boolean materializationInProgress;
@@ -291,10 +299,11 @@ public final class CubicClientSyncBridge {
         eagerLoadVerticalRadius = Math.min(streamVerticalRadius, DEFAULT_EAGER_LOAD_VERTICAL_RADIUS);
         maxEagerClientLoadsPerTick = Math.min(maxMaterializedCubesPerTick, DEFAULT_MAX_EAGER_CLIENT_LOADS_PER_TICK);
         maxEagerClientGeneratedLoadsPerTick = Math.min(maxEagerClientLoadsPerTick, DEFAULT_MAX_EAGER_CLIENT_GENERATED_LOADS_PER_TICK);
-        maxVisibleQueueScansPerTick = Mth.clamp(maxMaterializedCubesPerTick * 48, 128, DEFAULT_MAX_VISIBLE_QUEUE_SCANS_PER_TICK);
+        maxVisibleQueueScansPerTick = Mth.clamp(maxMaterializedCubesPerTick * 64, 192, DEFAULT_MAX_VISIBLE_QUEUE_SCANS_PER_TICK * 2);
         for (PlayerBridgeState state : PLAYER_STATES.values()) {
             state.materializationQueue.clear();
             state.queued.clear();
+            state.materializationTasks.clear();
             state.dirtyInvalidationsAccounted.clear();
             state.visibleOrder = List.of();
             state.visibleOrderCenter = null;
@@ -331,7 +340,7 @@ public final class CubicClientSyncBridge {
         queueVisibleLoadedCubes(cache, playerCube, state);
         RuntimeProfiler.recordSince("client.queue_visible_loaded", phaseStart);
         phaseStart = RuntimeProfiler.markStart();
-        materializeQueued(level, cache, state);
+        materializeQueued(level, cache, state, playerCube);
         RuntimeProfiler.recordSince("client.materialize_queued_total", phaseStart);
 
         if (state.tickCounter % syncPacketIntervalTicks == 0) {
@@ -353,14 +362,8 @@ public final class CubicClientSyncBridge {
         if (!clientDirty && state.materializedHashes.getOrDefault(playerCube, Long.MIN_VALUE) == hash) {
             return;
         }
-        materializeCube(level, holder.get().cube());
-        RuntimeProfiler.addCount("client.immediate_player_cube_materialized", 1);
-        rememberMaterialized(state, playerCube, hash);
-        scheduleWaterTicksWhenNeighborhoodReady(level, holder.get().cube(), state);
-        if (clientDirty) {
-            cache.recordClientMirrorSynced(playerCube);
-            state.dirtyInvalidationsAccounted.remove(playerCube);
-            clientMirrorsCleaned++;
+        if (enqueueMaterialization(state, playerCube, true)) {
+            RuntimeProfiler.addCount("client.immediate_player_cube_materialize_enqueued", 1);
         }
         immediatePlayerCubeMaterializations++;
     }
@@ -455,11 +458,9 @@ public final class CubicClientSyncBridge {
             if (!clientDirty && state.materializedHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash) {
                 continue;
             }
-            if (!state.queued.add(cubePos)) {
+            if (!enqueueMaterialization(state, cubePos, false)) {
                 continue;
             }
-            state.materializationQueue.addLast(cubePos);
-            RuntimeProfiler.addCount("client.materialization_enqueued", 1);
             if (clientDirty && state.dirtyInvalidationsAccounted.add(cubePos)) {
                 clientInvalidationsQueued++;
             }
@@ -493,67 +494,201 @@ public final class CubicClientSyncBridge {
         return visible;
     }
 
-    private static void materializeQueued(ServerLevel level, ServerCubeCache cache, PlayerBridgeState state) {
-        int materialized = 0;
-        while (materialized < maxMaterializedCubesPerTick && !state.materializationQueue.isEmpty()) {
+    private static void materializeQueued(ServerLevel level, ServerCubeCache cache, PlayerBridgeState state, CubePos playerCube) {
+        int queueAtStart = state.materializationQueue.size();
+        int completedCubes = 0;
+        int priorityWholeCubes = 0;
+        int blockBudget = adaptiveMaterializeBlockBudget(queueAtStart);
+        int cubeBudget = adaptiveMaterializeCubeBudget(queueAtStart);
+        int timeBudgetMicros = adaptiveMaterializeMicrosBudget(queueAtStart);
+        long startNanos = System.nanoTime();
+
+        RuntimeProfiler.addCount("client.materialize_adaptive_block_budget", blockBudget);
+        RuntimeProfiler.addCount("client.materialize_adaptive_cube_budget", cubeBudget);
+
+        while (completedCubes < cubeBudget && blockBudget > 0 && !state.materializationQueue.isEmpty()) {
+            // M16.13: M16.12 proved that tiny fixed slices remove the worst pauses but murder visual throughput.
+            // Keep a soft global time budget, but let a few near-player cubes complete whole so the shell does not
+            // visibly lag behind the player. Far cubes still use slices and yield when the adaptive budget is spent.
+            if (completedCubes > 0 && elapsedMicrosSince(startNanos) >= timeBudgetMicros) {
+                RuntimeProfiler.addCount("client.materialize_time_budget_hits", 1);
+                break;
+            }
+
             CubePos cubePos = state.materializationQueue.removeFirst();
-            state.queued.remove(cubePos);
             Optional<CubeHolder> holder = cache.holder(cubePos);
             if (holder.isEmpty() || !isInsidePhysicalShell(level, cubePos)) {
+                finishMaterializationTask(state, cubePos);
                 continue;
             }
 
             long hash = holder.get().generationHash();
             boolean clientDirty = cache.clientSyncDirty(cubePos);
             if (!clientDirty && state.materializedHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash) {
+                finishMaterializationTask(state, cubePos);
                 continue;
             }
-            materializeCube(level, holder.get().cube());
+
+            MaterializationTask task = state.materializationTasks.compute(cubePos, (ignored, existing) -> {
+                if (existing == null || existing.hash != hash) {
+                    return new MaterializationTask(hash);
+                }
+                return existing;
+            });
+
+            boolean nearPlayer = isNearPlayerMaterialization(cubePos, playerCube);
+            boolean priorityFullSlice = nearPlayer && task.cursor == 0 && priorityWholeCubes < MAX_PRIORITY_WHOLE_CUBES_PER_TICK;
+            int sliceBudget = priorityFullSlice
+                    ? Math.max(blockBudget, CubePos.BLOCK_COUNT)
+                    : Math.min(blockBudget, farMaterializeSliceBudget(queueAtStart, cubePos, playerCube));
+            MaterializeSliceResult result = materializeCubeSlice(
+                    level,
+                    holder.get().cube(),
+                    task,
+                    sliceBudget,
+                    startNanos,
+                    timeBudgetMicros,
+                    priorityFullSlice
+            );
+            blockBudget -= result.scanned();
+
+            if (!result.completed()) {
+                if (nearPlayer) {
+                    state.materializationQueue.addFirst(cubePos);
+                    RuntimeProfiler.addCount("client.materialize_priority_requeued", 1);
+                } else {
+                    state.materializationQueue.addLast(cubePos);
+                }
+                if (blockBudget <= 0) {
+                    RuntimeProfiler.addCount("client.materialize_block_budget_hits", 1);
+                }
+                break;
+            }
+
+            if (priorityFullSlice) {
+                priorityWholeCubes++;
+                RuntimeProfiler.addCount("client.materialize_priority_full_slices", 1);
+            }
             RuntimeProfiler.addCount("client.materialized_cubes", 1);
             rememberMaterialized(state, cubePos, hash);
             scheduleWaterTicksWhenNeighborhoodReady(level, holder.get().cube(), state);
             if (clientDirty) {
                 cache.recordClientMirrorSynced(cubePos);
-                state.dirtyInvalidationsAccounted.remove(cubePos);
                 clientMirrorsCleaned++;
-            } else {
-                state.dirtyInvalidationsAccounted.remove(cubePos);
             }
-            materialized++;
+            state.dirtyInvalidationsAccounted.remove(cubePos);
+            finishMaterializationTask(state, cubePos);
+            completedCubes++;
             state.materializedLastTick++;
         }
     }
 
-    private static void materializeCube(ServerLevel level, LevelCube cube) {
+    private static int adaptiveMaterializeBlockBudget(int queueSize) {
+        int extra = Math.min(MAX_ADAPTIVE_MATERIALIZE_BLOCKS_PER_TICK - maxMaterializeBlocksPerTick, Math.max(0, queueSize - 16) * 512);
+        return Mth.clamp(maxMaterializeBlocksPerTick + extra, CubePos.BLOCK_COUNT, MAX_ADAPTIVE_MATERIALIZE_BLOCKS_PER_TICK);
+    }
+
+    private static int adaptiveMaterializeCubeBudget(int queueSize) {
+        int extra = Math.max(0, queueSize - 32) / 24;
+        return Mth.clamp(maxMaterializedCubesPerTick + extra, maxMaterializedCubesPerTick, MAX_ADAPTIVE_MATERIALIZED_CUBES_PER_TICK);
+    }
+
+    private static int adaptiveMaterializeMicrosBudget(int queueSize) {
+        int extra = Math.min(MAX_ADAPTIVE_MATERIALIZE_MICROS_PER_TICK - maxMaterializeMicrosPerTick, Math.max(0, queueSize - 24) * 96);
+        return Mth.clamp(maxMaterializeMicrosPerTick + extra, maxMaterializeMicrosPerTick, MAX_ADAPTIVE_MATERIALIZE_MICROS_PER_TICK);
+    }
+
+    private static int farMaterializeSliceBudget(int queueAtStart, CubePos cubePos, CubePos playerCube) {
+        if (isNearPlayerMaterialization(cubePos, playerCube)) {
+            return CubePos.BLOCK_COUNT;
+        }
+        int horizontalCheb = Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z()));
+        int dy = Math.abs(cubePos.y() - playerCube.y());
+        if (horizontalCheb <= 3 && dy <= 1) {
+            return CubePos.BLOCK_COUNT;
+        }
+        int base = queueAtStart > 128 ? CubePos.BLOCK_COUNT : CubePos.BLOCK_COUNT / 2;
+        return Math.max(512, base);
+    }
+
+    private static boolean isNearPlayerMaterialization(CubePos cubePos, CubePos playerCube) {
+        return Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z())) <= 1
+                && Math.abs(cubePos.y() - playerCube.y()) <= 1;
+    }
+
+    private static void finishMaterializationTask(PlayerBridgeState state, CubePos cubePos) {
+        state.queued.remove(cubePos);
+        state.materializationTasks.remove(cubePos);
+    }
+
+    private static boolean enqueueMaterialization(PlayerBridgeState state, CubePos cubePos, boolean priority) {
+        if (state.queued.contains(cubePos)) {
+            if (priority) {
+                state.materializationQueue.remove(cubePos);
+                state.materializationQueue.addFirst(cubePos);
+            }
+            return false;
+        }
+        state.queued.add(cubePos);
+        if (priority) {
+            state.materializationQueue.addFirst(cubePos);
+        } else {
+            state.materializationQueue.addLast(cubePos);
+        }
+        RuntimeProfiler.addCount("client.materialization_enqueued", 1);
+        return true;
+    }
+
+    private static MaterializeSliceResult materializeCubeSlice(
+            ServerLevel level,
+            LevelCube cube,
+            MaterializationTask task,
+            int maxBlocks,
+            long tickStartNanos,
+            int timeBudgetMicros,
+            boolean allowPriorityOverrun
+    ) {
         long profileStart = RuntimeProfiler.markStart();
         CubePos cubePos = cube.cubePos();
         int scanned = 0;
         int changed = 0;
         materializationInProgress = true;
         try {
-            for (int localY = 0; localY < CubePos.SIZE; localY++) {
+            while (task.cursor < CubePos.BLOCK_COUNT && scanned < maxBlocks) {
+                if (scanned > 0
+                        && (scanned & 127) == 0
+                        && elapsedMicrosSince(tickStartNanos) >= timeBudgetMicros) {
+                    // Priority cubes may overrun a little so the player does not see a hollow shell, but never force
+                    // an entire expensive cube through one tick. M16.12 was smooth but slow; M16.13 keeps throughput
+                    // while still bounding the worst pauses.
+                    if (!allowPriorityOverrun || scanned >= CubePos.BLOCK_COUNT / 2) {
+                        break;
+                    }
+                }
+                int localIndex = task.cursor++;
+                int localX = localIndex & CubePos.MASK;
+                int localZ = (localIndex >> CubePos.SIZE_BITS) & CubePos.MASK;
+                int localY = localIndex >> (CubePos.SIZE_BITS * 2);
                 int worldY = cubePos.minBlockY() + localY;
                 if (level.isOutsideBuildHeight(worldY)) {
                     continue;
                 }
-                for (int localZ = 0; localZ < CubePos.SIZE; localZ++) {
-                    for (int localX = 0; localX < CubePos.SIZE; localX++) {
-                        scanned++;
-                        BlockState state = cube.getBlockState(localX, localY, localZ);
-                        BlockPos blockPos = new BlockPos(cubePos.minBlockX() + localX, worldY, cubePos.minBlockZ() + localZ);
-                        if (!level.getBlockState(blockPos).equals(state)) {
-                            level.setBlock(blockPos, state, SET_BLOCK_FLAGS);
-                            changed++;
-                        }
-                    }
+                scanned++;
+                BlockState state = cube.getBlockState(localX, localY, localZ);
+                BlockPos blockPos = new BlockPos(cubePos.minBlockX() + localX, worldY, cubePos.minBlockZ() + localZ);
+                if (!level.getBlockState(blockPos).equals(state)) {
+                    level.setBlock(blockPos, state, SET_BLOCK_FLAGS);
+                    changed++;
                 }
             }
         } finally {
             materializationInProgress = false;
             RuntimeProfiler.addCount("client.materialized_blocks_scanned", scanned);
             RuntimeProfiler.addCount("client.materialized_blocks_changed", changed);
+            RuntimeProfiler.addCount("client.materialize_slices", 1);
             RuntimeProfiler.recordSince("client.materialize_cube", profileStart);
         }
+        return new MaterializeSliceResult(task.cursor >= CubePos.BLOCK_COUNT, scanned, changed);
     }
 
     private static void scheduleWaterTicksWhenNeighborhoodReady(ServerLevel level, LevelCube cube, PlayerBridgeState state) {
@@ -805,6 +940,10 @@ public final class CubicClientSyncBridge {
         return Math.abs(first.x() - second.x()) + Math.abs(first.y() - second.y()) + Math.abs(first.z() - second.z());
     }
 
+    private static long elapsedMicrosSince(long startNanos) {
+        return Math.max(1L, (System.nanoTime() - startNanos) / 1_000L);
+    }
+
     private static boolean isInsidePhysicalShell(ServerLevel level, CubePos cubePos) {
         return !level.isOutsideBuildHeight(cubePos.minBlockY()) && !level.isOutsideBuildHeight(cubePos.maxBlockY());
     }
@@ -867,11 +1006,24 @@ public final class CubicClientSyncBridge {
         private final Set<CubePos> queued = new HashSet<>();
         private final Set<CubePos> dirtyInvalidationsAccounted = new HashSet<>();
         private final Map<CubePos, Long> materializedHashes = new HashMap<>();
+        private final Map<CubePos, MaterializationTask> materializationTasks = new HashMap<>();
         private CubePos visibleOrderCenter;
         private List<CubePos> visibleOrder = List.of();
         private int visibleOrderConfigHash;
         private int visibleCursor;
         private int tickCounter;
         private int materializedLastTick;
+    }
+
+    private static final class MaterializationTask {
+        private final long hash;
+        private int cursor;
+
+        private MaterializationTask(long hash) {
+            this.hash = hash;
+        }
+    }
+
+    private record MaterializeSliceResult(boolean completed, int scanned, int changed) {
     }
 }

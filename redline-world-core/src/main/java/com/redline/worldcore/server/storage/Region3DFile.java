@@ -21,6 +21,8 @@ public final class Region3DFile {
     private final Path path;
     private final Region3DPos regionPos;
     private final CubeSerializer serializer;
+    private Region3DHeader cachedHeader;
+    private boolean headerLoaded;
 
     public Region3DFile(Path path, Region3DPos regionPos, CubeSerializer serializer) {
         this.path = Objects.requireNonNull(path, "path");
@@ -39,16 +41,17 @@ public final class Region3DFile {
     public synchronized Optional<LevelCube> readCube(CubePos cubePos) throws IOException {
         requireInRegion(cubePos);
         if (!Files.exists(path)) {
+            cacheMissingFile();
+            return Optional.empty();
+        }
+
+        Region3DHeader header = cachedHeader();
+        int index = Region3DPos.localIndex(cubePos);
+        if (!header.hasEntry(index)) {
             return Optional.empty();
         }
 
         try (RandomAccessFile file = new RandomAccessFile(path.toFile(), "r")) {
-            Region3DHeader header = Region3DHeader.read(file);
-            int index = Region3DPos.localIndex(cubePos);
-            if (!header.hasEntry(index)) {
-                return Optional.empty();
-            }
-
             byte[] bytes = new byte[header.length(index)];
             file.seek(header.offset(index));
             file.readFully(bytes);
@@ -59,6 +62,15 @@ public final class Region3DFile {
             }
             return Optional.of(cube);
         }
+    }
+
+    public synchronized boolean hasCube(CubePos cubePos) throws IOException {
+        requireInRegion(cubePos);
+        if (!Files.exists(path)) {
+            cacheMissingFile();
+            return false;
+        }
+        return cachedHeader().hasEntry(Region3DPos.localIndex(cubePos));
     }
 
     public synchronized void writeCube(LevelCube cube) throws IOException {
@@ -77,6 +89,8 @@ public final class Region3DFile {
             file.write(bytes);
             header.setEntry(Region3DPos.localIndex(cube.cubePos()), offset, bytes.length, cube.status().ordinal());
             header.write(file);
+            cachedHeader = header;
+            headerLoaded = true;
         }
     }
 
@@ -93,6 +107,8 @@ public final class Region3DFile {
             if (existed) {
                 header.clearEntry(index);
                 header.write(file);
+                cachedHeader = header;
+                headerLoaded = true;
             }
             return existed;
         }
@@ -100,10 +116,27 @@ public final class Region3DFile {
 
     public synchronized int usedEntries() throws IOException {
         if (!Files.exists(path)) {
+            cacheMissingFile();
             return 0;
         }
+        return cachedHeader().usedEntries();
+    }
+
+    private Region3DHeader cachedHeader() throws IOException {
+        if (headerLoaded) {
+            return cachedHeader;
+        }
         try (RandomAccessFile file = new RandomAccessFile(path.toFile(), "r")) {
-            return Region3DHeader.read(file).usedEntries();
+            cachedHeader = Region3DHeader.read(file);
+            headerLoaded = true;
+            return cachedHeader;
+        }
+    }
+
+    private void cacheMissingFile() {
+        if (!headerLoaded) {
+            cachedHeader = Region3DHeader.empty();
+            headerLoaded = true;
         }
     }
 
