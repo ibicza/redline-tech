@@ -18,7 +18,7 @@ import net.minecraft.world.level.material.Fluids;
  * milestone. This prevents M15.0 style water leaks into not-yet-materialized cube borders.</p>
  */
 public final class M16WaterModel {
-    public static final String VERSION = "M16.14 request-dedupe + shore tile hints v1";
+    public static final String VERSION = "M17.3 shore hotpath trim v1";
 
     private static final long OCEAN_SEED = 0x4F4345414E4D4150L;
     private static final long RIVER_SEED = 0x5249564552533031L;
@@ -216,6 +216,10 @@ public final class M16WaterModel {
         // areas that have no nearby river valley, lake rim or ocean coast, preventing hundreds of thousands of tiny
         // direct shore probes during normal flight.
         if (!hint.mayHaveShore()) {
+            return false;
+        }
+        if (hint.mayRiver() && !hint.mayOcean() && !hint.mayLake() && terrain.surfaceY() > profile.seaLevel() + 14) {
+            RuntimeProfiler.addCount("water.dry_shore_river_high_skips", 1);
             return false;
         }
         if (terrain.surfaceY() > profile.seaLevel() + 40 && !hint.mayLake()) {
@@ -933,10 +937,13 @@ public final class M16WaterModel {
         }
         int x = terrain.x();
         int z = terrain.z();
-        int[] radii = {4, 8, 16, 32, 48, 64};
+        // M17.3: this is a dry-land helper, not the ocean owner's exact depth solver.  M16.14 checked too many
+        // tiny rings for every coastal dry column; use coarser rings and let the per-column shore-shape cache smooth
+        // adjacent columns.  This keeps beaches/shelves but removes many 30-50ms cold shore spikes.
+        int[] radii = {8, 16, 32, 64};
         ShoreShape best = ShoreShape.NONE;
         for (int r : radii) {
-            int step = r <= 8 ? 8 : 16;
+            int step = r == 8 ? 8 : 16;
             for (int dz = -r; dz <= r; dz += step) {
                 for (int dx = -r; dx <= r; dx += step) {
                     if (Math.abs(dx) != r && Math.abs(dz) != r) {

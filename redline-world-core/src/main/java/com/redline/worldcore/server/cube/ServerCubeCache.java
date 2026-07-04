@@ -34,6 +34,8 @@ import com.redline.worldcore.server.lighting.StaticBlockLightLayer;
 import com.redline.worldcore.server.lighting.StaticLightSummary;
 import com.redline.worldcore.server.profiler.RuntimeProfiler;
 import com.redline.worldcore.server.storage.CubeRegionStorage;
+import com.redline.worldcore.server.sync.CubeSectionSnapshot;
+import com.redline.worldcore.server.sync.CubeSectionSnapshotCache;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -88,6 +90,9 @@ public final class ServerCubeCache {
 
     /** M17.2: stale pending entries are purged incrementally; a full removeIf showed up as 40-60ms spikes. */
     public static final int MAX_PENDING_PURGE_SCAN_PER_TICK = 512;
+
+    /** M17.3: do not rebuild the pending purge snapshot every tick just because streaming added/removed a few cubes. */
+    public static final int PENDING_PURGE_REBUILD_SIZE_DELTA = 2048;
 
     /** M17.2: refresh loaded holders from a stable ticket cuboid in slices instead of walking every required cube. */
     public static final int MAX_REQUIRED_REFRESHES_PER_TICK = 384;
@@ -179,6 +184,7 @@ public final class ServerCubeCache {
     private final CubeAsyncSaveWorker dirtySaveWorker = new CubeAsyncSaveWorker("RedlineWorldCore-DirtyCubeIO");
     private final CubeBlockEntityTracker blockEntityTracker = new CubeBlockEntityTracker();
     private final CubeScheduledTickTracker scheduledTickTracker = new CubeScheduledTickTracker();
+    private final CubeSectionSnapshotCache sectionSnapshotCache = new CubeSectionSnapshotCache();
 
     private long gameTime;
     private long totalLoaded;
@@ -286,6 +292,23 @@ public final class ServerCubeCache {
 
     public synchronized void recordClientMirrorSynced(CubePos cubePos) {
         dirtyTracker.recordClientSyncClean(cubePos);
+    }
+
+    public synchronized Optional<CubeSectionSnapshot> cubeSectionSnapshot(CubePos cubePos) {
+        CubeHolder holder = holders.get(cubePos);
+        if (holder == null) {
+            RuntimeProfiler.addCount("client.native_section_snapshot_missing_holder", 1);
+            return Optional.empty();
+        }
+        return Optional.of(sectionSnapshotCache.getOrBuild(holder.cube(), holder.generationHash()));
+    }
+
+    public synchronized void invalidateCubeSectionSnapshot(CubePos cubePos) {
+        sectionSnapshotCache.invalidate(cubePos);
+    }
+
+    public synchronized int cubeSectionSnapshotCacheSize() {
+        return sectionSnapshotCache.size();
     }
 
     public synchronized Optional<Map<Integer, net.minecraft.nbt.CompoundTag>> blockEntityTags(CubePos cubePos) {
@@ -599,6 +622,7 @@ public final class ServerCubeCache {
                     CubeDirtyFlag.STORAGE,
                     CubeDirtyFlag.CLIENT_SYNC
             );
+            invalidateCubeSectionSnapshot(cubePos);
             markLightDirty(cubePos);
             if (context.rebuildSkyLightColumnNow() || context.markSkyLightDirty()) {
                 dirtyTracker.mark(cubePos, CubeDirtyFlag.SKY_LIGHT);
@@ -1426,11 +1450,17 @@ public final class ServerCubeCache {
             pendingPurgeSize = 0;
             return;
         }
-        if (pendingPurgeOrder.isEmpty() || pendingPurgeSize != pendingLoads.size() || pendingPurgeCursor >= pendingPurgeOrder.size()) {
+        boolean purgeOrderDrifted = Math.abs(pendingPurgeSize - pendingLoads.size()) >= PENDING_PURGE_REBUILD_SIZE_DELTA;
+        if (pendingPurgeOrder.isEmpty() || pendingPurgeCursor >= pendingPurgeOrder.size() || purgeOrderDrifted) {
             pendingPurgeOrder = new ArrayList<>(pendingLoads.keySet());
             pendingPurgeCursor = 0;
             pendingPurgeSize = pendingLoads.size();
             RuntimeProfiler.addCount("cube_loading.pending_purge_order_rebuilt", 1);
+            if (purgeOrderDrifted) {
+                RuntimeProfiler.addCount("cube_loading.pending_purge_order_rebuilt_drift", 1);
+            }
+        } else if (pendingPurgeSize != pendingLoads.size()) {
+            RuntimeProfiler.addCount("cube_loading.pending_purge_order_reused_drift", 1);
         }
 
         int scanned = 0;
@@ -1727,6 +1757,7 @@ public final class ServerCubeCache {
             return false;
         }
         holders.remove(holder.cubePos());
+        sectionSnapshotCache.invalidate(holder.cubePos());
         lightDirtyQueue.remove(holder.cubePos());
         dirtyTracker.remove(holder.cubePos());
         blockEntityTracker.removeCube(holder.cubePos());

@@ -3,6 +3,7 @@ package com.redline.worldcore.client.debug;
 import com.redline.worldcore.api.cube.CubeStatus;
 import com.redline.worldcore.api.ticket.CubeTicketLevel;
 import com.redline.worldcore.client.lighting.ClientDynamicLightLayer;
+import com.redline.worldcore.client.sync.ClientCubeSectionStore;
 import com.redline.worldcore.client.sync.ClientCubeSyncState;
 import com.redline.worldcore.network.CubeClientSyncPayload;
 import com.redline.worldcore.server.compat.CubicClientSyncBridge;
@@ -49,7 +50,7 @@ public final class CubeDebugOverlay {
         int x = 6;
         int y = 6;
         int width = 340;
-        int lines = 11;
+        int lines = 12;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
         draw(graphics, minecraft, x, y, "RWC compact", GOOD);
         y += 10;
@@ -78,6 +79,12 @@ public final class CubeDebugOverlay {
                 + " lvl=" + ClientDynamicLightLayer.activeLightLevel()
                 + " blocks=" + ClientDynamicLightLayer.appliedBlocks()
                 + " cube=" + ClientDynamicLightLayer.activeCubeString(), MUTED);
+        y += 10;
+        ClientCubeSectionStore.SnapshotStats sectionStats = ClientCubeSectionStore.stats();
+        draw(graphics, minecraft, x, y, "native sections=" + sectionStats.sections()
+                + " recv=" + sectionStats.receivedSnapshots()
+                + " unload=" + sectionStats.unloads()
+                + " bytes~=" + sectionStats.receivedBytesEstimate(), MUTED);
         y += 10;
         draw(graphics, minecraft, x, y, "entities tracked=" + payload.trackedEntities()
                 + " here=" + payload.entitiesInPlayerCube()
@@ -115,7 +122,7 @@ public final class CubeDebugOverlay {
         int y = 6;
         int width = 430;
         int shownEntries = Math.min(8, payload.entries().size());
-        int lines = shownEntries + 21;
+        int lines = shownEntries + 22;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
 
         draw(graphics, minecraft, x, y, "Redline World Core debug overlay", GOOD);
@@ -229,6 +236,13 @@ public final class CubeDebugOverlay {
                 + " speed=" + payload.maxMaterializedCubesPerTick()
                 + "/t sync=" + payload.syncPacketIntervalTicks()
                 + "t", MUTED);
+        y += 10;
+        ClientCubeSectionStore.SnapshotStats sectionStats = ClientCubeSectionStore.stats();
+        draw(graphics, minecraft, x, y, "nativeSectionStore sections=" + sectionStats.sections()
+                + " recv=" + sectionStats.receivedSnapshots()
+                + " replaced=" + sectionStats.replacedSnapshots()
+                + " unload=" + sectionStats.unloads()
+                + " bytes~=" + sectionStats.receivedBytesEstimate(), MUTED);
         y += 10;
         draw(graphics, minecraft, x, y, "writes player=" + payload.playerWritesSaved()
                 + " ignoredMat=" + payload.materializerWritesIgnored()
