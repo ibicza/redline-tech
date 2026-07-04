@@ -150,6 +150,13 @@ public final class RedlineWorldCoreCommands {
                                         .executes(context -> clientSyncOverlay(context.getSource(), CubicClientSyncBridge.OVERLAY_COMPACT)))
                                 .then(Commands.literal("full")
                                         .executes(context -> clientSyncOverlay(context.getSource(), CubicClientSyncBridge.OVERLAY_FULL))))
+                        .then(Commands.literal("shell")
+                                .then(Commands.literal("full")
+                                        .executes(context -> clientSyncShellMode(context.getSource(), "full")))
+                                .then(Commands.literal("near")
+                                        .executes(context -> clientSyncShellMode(context.getSource(), "near")))
+                                .then(Commands.literal("native")
+                                        .executes(context -> clientSyncShellMode(context.getSource(), "native"))))
                         .then(Commands.literal("configure")
                                 .then(Commands.argument("horizontalRadius", IntegerArgumentType.integer(0, 10))
                                         .then(Commands.argument("verticalRadius", IntegerArgumentType.integer(0, 4))
@@ -1336,8 +1343,10 @@ public final class RedlineWorldCoreCommands {
     private static int clientSyncStatus(CommandSourceStack source) {
         source.sendSuccess(() -> Component.literal("RWC client sync bridge: trackedPlayers="
                 + CubicClientSyncBridge.trackedPlayers()
+                + ", nativeReadyCubes=" + CubicClientSyncBridge.totalNativeReadyCubes()
                 + ", materializedCubes=" + CubicClientSyncBridge.totalMaterializedCubes()
-                + ", queuedMaterializations=" + CubicClientSyncBridge.totalQueuedMaterializations()), false);
+                + ", queuedMaterializations=" + CubicClientSyncBridge.totalQueuedMaterializations()
+                + ", shellMode=" + CubicClientSyncBridge.vanillaShellModeName()), false);
         source.sendSuccess(() -> Component.literal("RWC stream window: horizontalRadius="
                 + CubicClientSyncBridge.streamHorizontalRadius()
                 + ", verticalRadius=" + CubicClientSyncBridge.streamVerticalRadius()
@@ -1352,6 +1361,9 @@ public final class RedlineWorldCoreCommands {
                 + ", commandWritesSaved=" + CubicClientSyncBridge.commandWritesSaved()
                 + ", clientInvalidationsQueued=" + CubicClientSyncBridge.clientInvalidationsQueued()
                 + ", clientMirrorsCleaned=" + CubicClientSyncBridge.clientMirrorsCleaned()
+                + ", nativeReadyRecorded=" + CubicClientSyncBridge.nativeReadyRecorded()
+                + ", shellSkippedNative=" + CubicClientSyncBridge.vanillaShellSkippedNativeReady()
+                + ", shellGlobalReadyHits=" + CubicClientSyncBridge.vanillaShellGlobalReadyHits()
                 + ", forcedClientLoads=" + CubicClientSyncBridge.forcedClientLoads()
                 + ", immediatePlayerCubeMaterializations=" + CubicClientSyncBridge.immediatePlayerCubeMaterializations()
                 + ", eagerClientLoads=" + CubicClientSyncBridge.eagerClientLoads()
@@ -1388,6 +1400,18 @@ public final class RedlineWorldCoreCommands {
         CubicClientSyncBridge.setOverlayMode(mode);
         source.sendSuccess(() -> Component.literal("RWC client sync overlay mode: " + CubicClientSyncBridge.overlayModeName()), false);
         return 1;
+    }
+
+    private static int clientSyncShellMode(CommandSourceStack source, String mode) {
+        try {
+            CubicClientSyncBridge.setVanillaShellMode(mode);
+            source.sendSuccess(() -> Component.literal("RWC M17 vanilla shell mode: " + CubicClientSyncBridge.vanillaShellModeName()
+                    + " (full=old compatibility, near=near-player shell, native=cube-native metadata with player-cube shell fallback)"), false);
+            return 1;
+        } catch (IllegalArgumentException exception) {
+            source.sendFailure(Component.literal(exception.getMessage()));
+            return 0;
+        }
     }
 
     private static int clientSyncConfigure(CommandSourceStack source, int horizontalRadius, int verticalRadius, int maxPerTick, int syncIntervalTicks) {

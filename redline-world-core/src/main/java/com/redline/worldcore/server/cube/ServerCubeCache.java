@@ -128,6 +128,9 @@ public final class ServerCubeCache {
     private final Map<CubePos, CubeHolder> holders = new ConcurrentHashMap<>();
     private final LinkedHashMap<CubePos, CubeTicketLevel> pendingLoads = new LinkedHashMap<>();
     private final LinkedHashSet<CubePos> storageMissCache = new LinkedHashSet<>();
+    private RequiredLevels cachedRequiredLevels;
+    private long cachedRequiredTicketSignature;
+    private int cachedRequiredTicketCount;
     private final LinkedHashSet<CubePos> lightDirtyQueue = new LinkedHashSet<>();
     private final LinkedHashMap<ColumnPos, Long> skyLightDirtyColumns = new LinkedHashMap<>();
     private final CubeDirtyTracker dirtyTracker = new CubeDirtyTracker(
@@ -334,7 +337,7 @@ public final class ServerCubeCache {
         RuntimeProfiler.recordSince("cube_loading.tick_begin", phaseStart);
 
         phaseStart = RuntimeProfiler.markStart();
-        RequiredLevels required = collectRequiredLevels(tickets);
+        RequiredLevels required = collectRequiredLevelsCached(tickets);
         RuntimeProfiler.recordSince("cube_loading.collect_required", phaseStart);
         requestedLastTick = required.levels().size();
         requestLimitHitLastTick = required.limitHit();
@@ -1074,6 +1077,9 @@ public final class ServerCubeCache {
         }
         CubeHolder loaded = loadHolder(cubePos, level);
         holders.put(cubePos, loaded);
+        if (pendingLoads.remove(cubePos) != null) {
+            RuntimeProfiler.addCount("cube_loading.pending_removed_by_client_ensure", 1);
+        }
         totalLoaded++;
         RuntimeProfiler.addCount("client.ensure_loaded_loads", 1);
         if (loaded.state() == CubeHolderState.GENERATED) {
@@ -1093,6 +1099,61 @@ public final class ServerCubeCache {
         dirtyTracker.recordSaved(new CubeSaveWork(holder.cubePos(), Long.MAX_VALUE), Math.max(1L, (System.nanoTime() - startNanos) / 1_000L));
         totalSaved++;
         return true;
+    }
+
+    private RequiredLevels collectRequiredLevelsCached(Collection<CubeTicket> tickets) {
+        TicketSignature signature = ticketSignature(tickets);
+        if (cachedRequiredLevels != null
+                && cachedRequiredTicketSignature == signature.signature()
+                && cachedRequiredTicketCount == signature.count()) {
+            RuntimeProfiler.addCount("cube_loading.required_cache_hits", 1);
+            RuntimeProfiler.addCount("cube_loading.requested_cubes_reused", cachedRequiredLevels.levels().size());
+            return cachedRequiredLevels;
+        }
+        RuntimeProfiler.addCount("cube_loading.required_cache_misses", 1);
+        RequiredLevels computed = collectRequiredLevels(tickets);
+        cachedRequiredLevels = computed;
+        cachedRequiredTicketSignature = signature.signature();
+        cachedRequiredTicketCount = signature.count();
+        RuntimeProfiler.addCount("cube_loading.requested_cubes_rebuilt", computed.levels().size());
+        return computed;
+    }
+
+    private static TicketSignature ticketSignature(Collection<CubeTicket> tickets) {
+        long signature = 0xCBF29CE484222325L;
+        int count = 0;
+        for (CubeTicket ticket : tickets) {
+            if (ticket.level() == CubeTicketLevel.UNLOADED) {
+                continue;
+            }
+            long hash = ticket.id().getMostSignificantBits() ^ Long.rotateLeft(ticket.id().getLeastSignificantBits(), 17);
+            hash ^= ((long) ticket.type().ordinal()) * 0x9E3779B97F4A7C15L;
+            hash ^= ((long) ticket.level().ordinal()) * 0xC2B2AE3D27D4EB4FL;
+            hash ^= ticket.shape().type().ordinal() * 0x165667B19E3779F9L;
+            hash ^= mixTicketCoord(ticket.shape().min().x(), ticket.shape().min().y(), ticket.shape().min().z());
+            hash ^= Long.rotateLeft(mixTicketCoord(ticket.shape().max().x(), ticket.shape().max().y(), ticket.shape().max().z()), 29);
+            signature ^= mix64(hash + count * 0xD6E8FEB86659FD93L);
+            signature *= 0x100000001B3L;
+            count++;
+        }
+        signature ^= ((long) count) * 0x9E3779B97F4A7C15L;
+        return new TicketSignature(signature, count);
+    }
+
+    private static long mixTicketCoord(int x, int y, int z) {
+        long value = ((long) x * 0x9E3779B97F4A7C15L)
+                ^ ((long) y * 0xC2B2AE3D27D4EB4FL)
+                ^ ((long) z * 0x165667B19E3779F9L);
+        return mix64(value);
+    }
+
+    private static long mix64(long value) {
+        value ^= value >>> 33;
+        value *= 0xFF51AFD7ED558CCDL;
+        value ^= value >>> 33;
+        value *= 0xC4CEB9FE1A85EC53L;
+        value ^= value >>> 33;
+        return value;
     }
 
     private RequiredLevels collectRequiredLevels(Collection<CubeTicket> tickets) {
@@ -1257,10 +1318,14 @@ public final class ServerCubeCache {
 
     private int queueMissingAndRefreshLoaded(Map<CubePos, CubeTicketLevel> required) {
         int queued = 0;
+        int loadedRefreshes = 0;
+        int pendingDuplicateSkips = 0;
+        int pendingLevelPromotions = 0;
         for (Map.Entry<CubePos, CubeTicketLevel> entry : required.entrySet()) {
             CubeHolder holder = holders.get(entry.getKey());
             if (holder != null) {
                 holder.markRequired(entry.getValue(), gameTime);
+                loadedRefreshes++;
                 continue;
             }
 
@@ -1269,9 +1334,18 @@ public final class ServerCubeCache {
                 pendingLoads.put(entry.getKey(), entry.getValue());
                 queued++;
             } else {
-                pendingLoads.put(entry.getKey(), strongerLevel(previous, entry.getValue()));
+                CubeTicketLevel stronger = strongerLevel(previous, entry.getValue());
+                if (stronger == previous) {
+                    pendingDuplicateSkips++;
+                    continue;
+                }
+                pendingLoads.put(entry.getKey(), stronger);
+                pendingLevelPromotions++;
             }
         }
+        RuntimeProfiler.addCount("cube_loading.loaded_request_refreshes", loadedRefreshes);
+        RuntimeProfiler.addCount("cube_loading.pending_duplicate_skips", pendingDuplicateSkips);
+        RuntimeProfiler.addCount("cube_loading.pending_level_promotions", pendingLevelPromotions);
         return queued;
     }
 
@@ -1710,6 +1784,9 @@ public final class ServerCubeCache {
     }
 
     private record RequiredLevels(Map<CubePos, CubeTicketLevel> levels, boolean limitHit) {
+    }
+
+    private record TicketSignature(long signature, int count) {
     }
 
     private record LoadCounters(int loaded, int generated, long elapsedMicros, boolean generatedBudgetHit, boolean timeBudgetHit) {

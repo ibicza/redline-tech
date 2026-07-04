@@ -7,6 +7,7 @@ import com.redline.worldcore.client.sync.ClientCubeSyncState;
 import com.redline.worldcore.network.CubeClientSyncPayload;
 import com.redline.worldcore.server.compat.CubicClientSyncBridge;
 import com.redline.worldcore.server.cube.CubeHolderState;
+import com.redline.worldcore.server.cube.CubeClientStage;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.network.chat.Component;
@@ -233,7 +234,7 @@ public final class CubeDebugOverlay {
                 + " ignoredMat=" + payload.materializerWritesIgnored()
                 + " cmd=" + payload.commandWritesSaved(), MUTED);
         y += 10;
-        draw(graphics, minecraft, x, y, "nearest cube entries: x y z | status/state/ticket | hash | BL/SKY | m", MUTED);
+        draw(graphics, minecraft, x, y, "nearest cube entries: x y z | status/state/ticket/client | hash | BL/SKY | nm", MUTED);
         y += 10;
 
         int shown = 0;
@@ -242,13 +243,14 @@ public final class CubeDebugOverlay {
                 break;
             }
             String line = String.format(
-                    "%d %d %d | %s/%s/%s | %016x | B%d/%d/%d S%d/%d/%d | %s%s",
+                    "%d %d %d | %s/%s/%s/%s | %016x | B%d/%d/%d S%d/%d/%d | %s%s%s",
                     entry.cubeX(),
                     entry.cubeY(),
                     entry.cubeZ(),
                     enumName(CubeStatus.values(), entry.statusOrdinal()),
                     enumName(CubeHolderState.values(), entry.holderStateOrdinal()),
                     enumName(CubeTicketLevel.values(), entry.ticketLevelOrdinal()),
+                    enumName(CubeClientStage.values(), entry.clientStageOrdinal()),
                     entry.hash(),
                     entry.maxBlockLight(),
                     entry.litBlocks(),
@@ -256,10 +258,11 @@ public final class CubeDebugOverlay {
                     entry.maxSkyLight(),
                     entry.skyLitBlocks(),
                     entry.bottomSkyLitBlocks(),
+                    entry.nativeReady() ? "N" : "-",
                     entry.materialized() ? "M" : "-",
                     entry.dirty() ? " dirty" : ""
             );
-            draw(graphics, minecraft, x, y, line, entry.materialized() ? GOOD : WARN);
+            draw(graphics, minecraft, x, y, line, entry.materialized() ? GOOD : (entry.nativeReady() ? TEXT : WARN));
             y += 10;
         }
     }

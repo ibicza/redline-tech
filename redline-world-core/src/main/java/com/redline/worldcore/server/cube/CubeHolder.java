@@ -23,6 +23,9 @@ public final class CubeHolder {
     private boolean dirty;
     private boolean generationHashValid;
     private long generationHash;
+    private CubeClientStage clientStage = CubeClientStage.CUBE_NATIVE_READY;
+    private long clientNativeHash = Long.MIN_VALUE;
+    private long vanillaShellHash = Long.MIN_VALUE;
 
     public CubeHolder(CubePos cubePos, LevelCube cube, CubeTicketLevel ticketLevel, CubeHolderState state, long loadedGameTime) {
         this.cubePos = Objects.requireNonNull(cubePos, "cubePos");
@@ -61,6 +64,49 @@ public final class CubeHolder {
         return dirty;
     }
 
+    public CubeClientStage clientStage() {
+        return clientStage;
+    }
+
+    public boolean clientNativeReady(long hash) {
+        return clientNativeHash == hash && clientStage.ordinal() >= CubeClientStage.CLIENT_NATIVE_READY.ordinal();
+    }
+
+    public boolean vanillaShellReady(long hash) {
+        return vanillaShellHash == hash && clientStage == CubeClientStage.VANILLA_SHELL_READY;
+    }
+
+    public void markClientNativeReady(long hash) {
+        this.clientNativeHash = hash;
+        if (clientStage.ordinal() < CubeClientStage.CLIENT_NATIVE_READY.ordinal()) {
+            clientStage = CubeClientStage.CLIENT_NATIVE_READY;
+        }
+    }
+
+    public void markVanillaShellQueued() {
+        if (clientStage != CubeClientStage.VANILLA_SHELL_READY) {
+            clientStage = CubeClientStage.VANILLA_SHELL_QUEUED;
+        }
+    }
+
+    public void markVanillaShellMaterializing() {
+        if (clientStage != CubeClientStage.VANILLA_SHELL_READY) {
+            clientStage = CubeClientStage.VANILLA_SHELL_MATERIALIZING;
+        }
+    }
+
+    public void markVanillaShellReady(long hash) {
+        this.vanillaShellHash = hash;
+        this.clientNativeHash = hash;
+        this.clientStage = CubeClientStage.VANILLA_SHELL_READY;
+    }
+
+    public void invalidateClientViews() {
+        this.clientNativeHash = Long.MIN_VALUE;
+        this.vanillaShellHash = Long.MIN_VALUE;
+        this.clientStage = CubeClientStage.CUBE_NATIVE_READY;
+    }
+
     /**
      * Cached block-data hash for client mirror checks. Computing CubeGenerationSummary.from(cube).hash() scans
      * all 4096 blocks; the client bridge used to do that for every visible cube every tick.
@@ -85,6 +131,7 @@ public final class CubeHolder {
     public void markDirty() {
         this.dirty = true;
         invalidateGenerationHash();
+        invalidateClientViews();
     }
 
     public void markSaved(CubeHolderState savedState) {

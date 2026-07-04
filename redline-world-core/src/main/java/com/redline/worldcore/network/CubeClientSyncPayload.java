@@ -508,7 +508,9 @@ public record CubeClientSyncPayload(
             int bottomSkyLitBlocks,
             long skyLightHash,
             boolean dirty,
-            boolean materialized
+            boolean nativeReady,
+            boolean materialized,
+            int clientStageOrdinal
     ) {
         private void write(RegistryFriendlyByteBuf buffer) {
             buffer.writeVarInt(cubeX);
@@ -527,7 +529,9 @@ public record CubeClientSyncPayload(
             buffer.writeVarInt(bottomSkyLitBlocks);
             buffer.writeLong(skyLightHash);
             buffer.writeBoolean(dirty);
+            buffer.writeBoolean(nativeReady);
             buffer.writeBoolean(materialized);
+            buffer.writeVarInt(clientStageOrdinal);
         }
 
         private static Entry read(RegistryFriendlyByteBuf buffer) {
@@ -548,7 +552,9 @@ public record CubeClientSyncPayload(
                     buffer.readVarInt(),
                     buffer.readLong(),
                     buffer.readBoolean(),
-                    buffer.readBoolean()
+                    buffer.readBoolean(),
+                    buffer.readBoolean(),
+                    buffer.readVarInt()
             );
         }
     }

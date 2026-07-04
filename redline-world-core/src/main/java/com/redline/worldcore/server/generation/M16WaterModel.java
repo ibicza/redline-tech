@@ -18,7 +18,7 @@ import net.minecraft.world.level.material.Fluids;
  * milestone. This prevents M15.0 style water leaks into not-yet-materialized cube borders.</p>
  */
 public final class M16WaterModel {
-    public static final String VERSION = "M16.11 optimized shore tiles + cached vanilla-style rivers v1";
+    public static final String VERSION = "M16.14 request-dedupe + shore tile hints v1";
 
     private static final long OCEAN_SEED = 0x4F4345414E4D4150L;
     private static final long RIVER_SEED = 0x5249564552533031L;
@@ -42,6 +42,9 @@ public final class M16WaterModel {
     private static final int OCEAN_SHORE_CACHE_LIMIT = 16384;
     private static final int LAKE_BASIN_CACHE_LIMIT = 8192;
     private static final int SHORE_SHAPE_CACHE_LIMIT = 65536;
+    private static final int SHORE_TILE_HINT_CACHE_LIMIT = 32768;
+    private static final int SHORE_TILE_SHIFT = 4;
+    private static final int SHORE_TILE_SIZE = 1 << SHORE_TILE_SHIFT;
 
     private static final ThreadLocal<LinkedHashMap<Long, M16WaterSample>> SAMPLE_CACHE = ThreadLocal.withInitial(() -> new LinkedHashMap<>(512, 0.75F, true) {
         @Override
@@ -75,6 +78,13 @@ public final class M16WaterModel {
         @Override
         protected boolean removeEldestEntry(Map.Entry<Long, ShoreShape> eldest) {
             return size() > SHORE_SHAPE_CACHE_LIMIT;
+        }
+    });
+
+    private static final ThreadLocal<LinkedHashMap<Long, ShoreTileHint>> SHORE_TILE_HINT_CACHE = ThreadLocal.withInitial(() -> new LinkedHashMap<>(512, 0.75F, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Long, ShoreTileHint> eldest) {
+            return size() > SHORE_TILE_HINT_CACHE_LIMIT;
         }
     });
 
@@ -182,7 +192,8 @@ public final class M16WaterModel {
             RuntimeProfiler.recordMicros("water.column_shape", micros);
             return M16WaterColumnShape.waterBody(water);
         }
-        if (!mightNeedDryShoreShape(profile, terrain)) {
+        ShoreTileHint shoreHint = shoreTileHint(context, profile, terrain);
+        if (!mightNeedDryShoreShape(profile, terrain, shoreHint)) {
             long micros = (System.nanoTime() - start) / 1_000L;
             M16WaterPerfDebug.recordColumnShape(micros);
             RuntimeProfiler.recordMicros("water.column_shape", micros);
@@ -192,7 +203,7 @@ public final class M16WaterModel {
         M16WaterPerfDebug.recordDryShoreScan();
         RuntimeProfiler.addCount("water.dry_shore_scans", 1);
         long shoreStart = RuntimeProfiler.markStart();
-        ShoreShape shore = nearestShoreShape(context, profile, terrain);
+        ShoreShape shore = nearestShoreShape(context, profile, terrain, shoreHint);
         RuntimeProfiler.recordSince("water.nearest_shore_shape", shoreStart);
         long micros = (System.nanoTime() - start) / 1_000L;
         M16WaterPerfDebug.recordColumnShape(micros);
@@ -200,14 +211,18 @@ public final class M16WaterModel {
         return M16WaterColumnShape.dry(water, shore.active(), shore.surfaceY(), shore.softDepth(), shore.raise(), shore.topState(), shore.subState());
     }
 
-    private static boolean mightNeedDryShoreShape(M15WorldgenProfile profile, M15TerrainSample terrain) {
-        // Dry shore shaping is useful only near sea-level water.  Running the neighbor scanner on every dry mountain
-        // column near a river line was one of the M16.9 river lag sources.
-        if (terrain.surfaceY() > profile.seaLevel() + 52) {
+    private static boolean mightNeedDryShoreShape(M15WorldgenProfile profile, M15TerrainSample terrain, ShoreTileHint hint) {
+        // M16.14: most dry columns do not need any shore solver at all.  A conservative tile hint rejects whole 16x16
+        // areas that have no nearby river valley, lake rim or ocean coast, preventing hundreds of thousands of tiny
+        // direct shore probes during normal flight.
+        if (!hint.mayHaveShore()) {
+            return false;
+        }
+        if (terrain.surfaceY() > profile.seaLevel() + 40 && !hint.mayLake()) {
             return false;
         }
         if (terrain.surfaceY() < profile.seaLevel() - 24) {
-            return true;
+            return hint.mayOcean();
         }
         return true;
     }
@@ -787,7 +802,105 @@ public final class M16WaterModel {
         return baseState;
     }
 
-    private static ShoreShape nearestShoreShape(CubeGenerationContext context, M15WorldgenProfile profile, M15TerrainSample terrain) {
+    private static ShoreTileHint shoreTileHint(CubeGenerationContext context, M15WorldgenProfile profile, M15TerrainSample terrain) {
+        int tileX = Math.floorDiv(terrain.x(), SHORE_TILE_SIZE);
+        int tileZ = Math.floorDiv(terrain.z(), SHORE_TILE_SIZE);
+        long key = sampleKey(context, tileX, tileZ) ^ 0x53484F524554494CL;
+        LinkedHashMap<Long, ShoreTileHint> cache = SHORE_TILE_HINT_CACHE.get();
+        ShoreTileHint cached = cache.get(key);
+        if (cached != null) {
+            RuntimeProfiler.addCount("water.shore_tile_hint_cache_hits", 1);
+            return cached;
+        }
+        ShoreTileHint computed = computeShoreTileHint(context, profile, tileX, tileZ);
+        cache.put(key, computed);
+        RuntimeProfiler.addCount("water.shore_tile_hint_uncached", 1);
+        return computed;
+    }
+
+    private static ShoreTileHint computeShoreTileHint(CubeGenerationContext context, M15WorldgenProfile profile, int tileX, int tileZ) {
+        int centerX = tileX * SHORE_TILE_SIZE + SHORE_TILE_SIZE / 2;
+        int centerZ = tileZ * SHORE_TILE_SIZE + SHORE_TILE_SIZE / 2;
+        boolean mayRiver = false;
+        boolean mayOcean = false;
+        boolean mayLake = false;
+
+        int[][] probes = {
+                {0, 0}, {-8, -8}, {0, -8}, {8, -8}, {-8, 0}, {8, 0}, {-8, 8}, {0, 8}, {8, 8}
+        };
+        for (int[] probe : probes) {
+            M15TerrainSample sample = M15TerrainModel.sampleDry(context, centerX + probe[0], centerZ + probe[1]);
+            if (!mayRiver) {
+                RiverField field = riverField(context, sample.x(), sample.z(), sample);
+                if (field.profile != M16RiverProfile.NONE && Double.isFinite(field.distance)) {
+                    int valleyWidth = Math.max(field.width + 12, (int) Math.round(field.width * Math.min(field.valleyScale, 2.05D)) + 12);
+                    mayRiver = field.distance <= valleyWidth && sample.surfaceY() <= profile.seaLevel() + 18;
+                }
+            }
+            if (!mayOcean && sample.surfaceY() <= profile.seaLevel() + 44) {
+                mayOcean = rawOceanCandidate(context, profile, sample) || rawOceanMask(context, sample) > 0.32D;
+            }
+            if (mayRiver && mayOcean) {
+                break;
+            }
+        }
+
+        if (!mayOcean) {
+            int[] offsets = {-64, -32, 0, 32, 64};
+            outer:
+            for (int dz : offsets) {
+                for (int dx : offsets) {
+                    M15TerrainSample sample = M15TerrainModel.sampleDry(context, centerX + dx, centerZ + dz);
+                    if (sample.surfaceY() <= profile.seaLevel() + 6 && rawOceanCandidate(context, profile, sample)) {
+                        mayOcean = true;
+                        break outer;
+                    }
+                }
+            }
+        }
+
+        mayLake = mayLakeShoreNearTile(context, profile, centerX, centerZ);
+        if (!mayRiver && !mayOcean && !mayLake) {
+            RuntimeProfiler.addCount("water.shore_tile_hint_negative", 1);
+        }
+        return new ShoreTileHint(mayRiver, mayOcean, mayLake);
+    }
+
+    private static boolean mayLakeShoreNearTile(CubeGenerationContext context, M15WorldgenProfile profile, int x, int z) {
+        M15TerrainSample terrain = M15TerrainModel.sampleDry(context, x, z);
+        if (terrain.surfaceY() <= profile.seaLevel() + 2 || terrain.surfaceY() > profile.highMountainStartY() + 128) {
+            return false;
+        }
+        int cellX = Math.floorDiv(x, 256);
+        int cellZ = Math.floorDiv(z, 256);
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                int cx = cellX + dx;
+                int cz = cellZ + dz;
+                if (M15Noise.hashToRange(context.seed() ^ LAKE_SEED, cx, 0, cz, 5) != 0) {
+                    continue;
+                }
+                int centerX = cx * 256 + 48 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 11L), cx, 0, cz, 160);
+                int centerZ = cz * 256 + 48 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 29L), cx, 0, cz, 160);
+                int rx = 14 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 47L), cx, 0, cz, 82);
+                int rz = 12 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 61L), cx, 0, cz, 76);
+                double nx = (x - centerX) / (double) rx;
+                double nz = (z - centerZ) / (double) rz;
+                double dist = Math.sqrt(nx * nx + nz * nz);
+                double maxRadius = Math.max(rx, rz);
+                if (dist > 1.0D && (dist - 1.0D) * maxRadius <= Math.max(112.0D, maxRadius * 1.85D)) {
+                    M15TerrainSample centerTerrain = M15TerrainModel.sampleDry(context, centerX, centerZ);
+                    int lakeSurface = centerTerrain.surfaceY() - 1;
+                    if (lakeSurface > profile.seaLevel() + 3 && lakeSurface <= terrain.surfaceY() + 12) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static ShoreShape nearestShoreShape(CubeGenerationContext context, M15WorldgenProfile profile, M15TerrainSample terrain, ShoreTileHint hint) {
         long key = sampleKey(context, terrain.x(), terrain.z());
         LinkedHashMap<Long, ShoreShape> cache = SHORE_SHAPE_CACHE.get();
         ShoreShape cached = cache.get(key);
@@ -796,14 +909,14 @@ public final class M16WaterModel {
             return cached;
         }
 
-        ShoreShape best = directRiverValleyShape(context, profile, terrain);
-        if (!best.active()) {
+        ShoreShape best = hint.mayRiver() ? directRiverValleyShape(context, profile, terrain) : ShoreShape.NONE;
+        if (hint.mayOcean() && !best.active()) {
             ShoreShape ocean = directOceanShoreShape(context, profile, terrain);
             if (ocean.active()) {
                 best = ocean;
             }
         }
-        if (!best.active() || !best.raise()) {
+        if (hint.mayLake() && (!best.active() || !best.raise())) {
             ShoreShape lake = directLakeShoreShape(context, profile, terrain);
             if (lake.active() && (!best.active() || betterShoreShape(terrain.surfaceY(), lake, best))) {
                 best = lake;
@@ -1121,6 +1234,12 @@ public final class M16WaterModel {
             }
         }
         return false;
+    }
+
+    private record ShoreTileHint(boolean mayRiver, boolean mayOcean, boolean mayLake) {
+        private boolean mayHaveShore() {
+            return mayRiver || mayOcean || mayLake;
+        }
     }
 
     private record ShoreShape(boolean active, int surfaceY, int softDepth, boolean raise, BlockState topState, BlockState subState) {
