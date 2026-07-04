@@ -19,6 +19,7 @@ import com.redline.worldcore.server.generation.M15WorldgenAutoTest;
 import com.redline.worldcore.server.generation.M15WorldgenProfile;
 import com.redline.worldcore.server.generation.M16WaterAutoTest;
 import com.redline.worldcore.server.generation.M16WaterModel;
+import com.redline.worldcore.server.generation.M16WaterPerfDebug;
 import com.redline.worldcore.server.generation.M16WaterSample;
 import com.redline.worldcore.server.generation.M16WaterType;
 import com.redline.worldcore.api.pos.ColumnPos;
@@ -67,6 +68,7 @@ import com.redline.worldcore.server.pregen.CubePregenManager;
 import com.redline.worldcore.server.pregen.CubePregenSnapshot;
 import com.redline.worldcore.server.pregen.VerticalBackfillDaemon;
 import com.redline.worldcore.server.pregen.VerticalBackfillSnapshot;
+import com.redline.worldcore.server.profiler.RuntimeProfiler;
 import com.redline.worldcore.server.ticket.CubeTicketDebugFormatter;
 import com.redline.worldcore.server.ticket.CubeTicketManager;
 import com.redline.worldcore.server.ticket.CubeTicketSnapshot;
@@ -107,6 +109,13 @@ public final class RedlineWorldCoreCommands {
                 .requires(source -> source.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                 .then(Commands.literal("status")
                         .executes(context -> status(context.getSource())))
+                .then(Commands.literal("profile")
+                        .then(Commands.literal("start")
+                                .executes(context -> profileStart(context.getSource())))
+                        .then(Commands.literal("stop")
+                                .executes(context -> profileStop(context.getSource())))
+                        .then(Commands.literal("status")
+                                .executes(context -> profileStatus(context.getSource()))))
                 .then(Commands.literal("cube")
                         .executes(context -> cube(context.getSource()))
                         .then(Commands.literal("pos")
@@ -1170,6 +1179,35 @@ public final class RedlineWorldCoreCommands {
         }
     }
 
+    private static int profileStart(CommandSourceStack source) {
+        boolean started = RuntimeProfiler.start();
+        if (started) {
+            source.sendSuccess(() -> Component.literal("RWC profiler started. Reproduce the lag, then run /rwc profile stop."), false);
+            return 1;
+        }
+        source.sendSuccess(() -> Component.literal(RuntimeProfiler.statusLine()), false);
+        return 0;
+    }
+
+    private static int profileStop(CommandSourceStack source) {
+        RuntimeProfiler.StopResult result = RuntimeProfiler.stopAndWrite(source.getServer());
+        if (result.written()) {
+            String file = result.file() == null ? "<unknown>" : result.file().toString();
+            source.sendSuccess(() -> Component.literal("RWC profiler stopped: " + file
+                    + " | duration=" + result.elapsedMicros() + "us"
+                    + " | timers=" + result.timers()
+                    + " | counters=" + result.counters()), false);
+            return 1;
+        }
+        source.sendFailure(Component.literal("RWC profiler did not write a report: " + result.message()));
+        return 0;
+    }
+
+    private static int profileStatus(CommandSourceStack source) {
+        source.sendSuccess(() -> Component.literal(RuntimeProfiler.statusLine()), false);
+        return RuntimeProfiler.running() ? 1 : 0;
+    }
+
     private static int status(CommandSourceStack source) {
         source.sendSuccess(() -> Component.literal("Redline World Core loaded: " + RedlineWorldCore.MOD_ID), false);
         source.sendSuccess(() -> Component.literal("Default cube Y range: "
@@ -2116,6 +2154,7 @@ public final class RedlineWorldCoreCommands {
             source.sendSuccess(() -> Component.literal("Profile: seaLevel=" + profile.seaLevel()
                     + ", surfaceRange=" + profile.lowestSurfaceY() + ".." + profile.highestSurfaceY()
                     + ", staticWater=ocean/lake, riverWater=activeAfterNeighborMaterialization, safeSand=true, waterSurfaceSupportOverride=true"), false);
+            source.sendSuccess(() -> Component.literal("M16.7 perf: " + M16WaterPerfDebug.oneLine()), false);
             source.sendSuccess(() -> Component.literal("Use /rwc water sample <x> <z>, /rwc water nearest river|ocean|lake|waterfall <radius>, /rwc water teleport_nearest ..."), false);
             return 1;
         } catch (RuntimeException exception) {

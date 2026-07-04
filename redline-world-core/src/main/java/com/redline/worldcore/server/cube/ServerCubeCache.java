@@ -32,9 +32,11 @@ import com.redline.worldcore.server.lighting.SkyLightLayer;
 import com.redline.worldcore.server.lighting.SkyLightSummary;
 import com.redline.worldcore.server.lighting.StaticBlockLightLayer;
 import com.redline.worldcore.server.lighting.StaticLightSummary;
+import com.redline.worldcore.server.profiler.RuntimeProfiler;
 import com.redline.worldcore.server.storage.CubeRegionStorage;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.nio.file.Path;
@@ -114,6 +116,9 @@ public final class ServerCubeCache {
     /** M10.1 keeps automatic vertical sky-light rebuilds tiny; manual commands may still rebuild large ranges immediately. */
     public static final int MAX_SKY_LIGHT_COLUMNS_PER_TICK = 1;
 
+    /** Bounded negative cache for deterministic generated cubes that have no Region3D entry yet. */
+    public static final int STORAGE_MISS_CACHE_LIMIT = 65536;
+
     /** Debounces automatic sky rebuilds while player tickets are still streaming many cubes into the same columns. */
     public static final int SKY_LIGHT_DIRTY_DELAY_TICKS = 40;
 
@@ -122,6 +127,7 @@ public final class ServerCubeCache {
     private final CubicWorldgenPipeline generator;
     private final Map<CubePos, CubeHolder> holders = new ConcurrentHashMap<>();
     private final LinkedHashMap<CubePos, CubeTicketLevel> pendingLoads = new LinkedHashMap<>();
+    private final LinkedHashSet<CubePos> storageMissCache = new LinkedHashSet<>();
     private final LinkedHashSet<CubePos> lightDirtyQueue = new LinkedHashSet<>();
     private final LinkedHashMap<ColumnPos, Long> skyLightDirtyColumns = new LinkedHashMap<>();
     private final CubeDirtyTracker dirtyTracker = new CubeDirtyTracker(
@@ -317,30 +323,70 @@ public final class ServerCubeCache {
     }
 
     public synchronized CubeLoadingTickResult tick(Collection<CubeTicket> tickets, ServerLevel level) {
+        long tickProfileStart = RuntimeProfiler.markStart();
         gameTime++;
+
+        long phaseStart = RuntimeProfiler.markStart();
         dirtyTracker.beginTick();
         blockEntityTracker.beginTick();
         scheduledTickTracker.beginTick();
         drainAsyncDirtySaveCompletions(false);
+        RuntimeProfiler.recordSince("cube_loading.tick_begin", phaseStart);
 
+        phaseStart = RuntimeProfiler.markStart();
         RequiredLevels required = collectRequiredLevels(tickets);
+        RuntimeProfiler.recordSince("cube_loading.collect_required", phaseStart);
         requestedLastTick = required.levels().size();
         requestLimitHitLastTick = required.limitHit();
+        RuntimeProfiler.addCount("cube_loading.requested_cubes", requestedLastTick);
+        RuntimeProfiler.addCount("cube_loading.input_tickets", tickets.size());
 
+        phaseStart = RuntimeProfiler.markStart();
         purgePendingNoLongerRequired(required.levels());
+        RuntimeProfiler.recordSince("cube_loading.purge_pending", phaseStart);
+
+        phaseStart = RuntimeProfiler.markStart();
         int queuedThisTick = queueMissingAndRefreshLoaded(required.levels());
+        RuntimeProfiler.recordSince("cube_loading.queue_missing", phaseStart);
+
+        phaseStart = RuntimeProfiler.markStart();
+        reprioritizePendingLoads(required.levels(), level);
+        RuntimeProfiler.recordSince("cube_loading.reprioritize_pending", phaseStart);
+
+        phaseStart = RuntimeProfiler.markStart();
         int unloadedThisTick = unloadNoLongerRequired(required.levels());
+        RuntimeProfiler.recordSince("cube_loading.unload_no_longer_required", phaseStart);
+
         LoadCounters loadCounters = loadPending(required.levels());
+
+        phaseStart = RuntimeProfiler.markStart();
         int capturedBlockEntities = captureVanillaBlockEntities(level);
+        RuntimeProfiler.recordSince("cube_loading.capture_block_entities", phaseStart);
+        RuntimeProfiler.addCount("cube_loading.captured_block_entities", capturedBlockEntities);
         if (capturedBlockEntities > 0) {
             // Capturing real vanilla NBT changes CubeNBT-owned BE data and must be persisted/indexed.
         }
+
+        phaseStart = RuntimeProfiler.markStart();
         updateBlockEntityTickGates();
         updateScheduledTickGates();
+        RuntimeProfiler.recordSince("cube_loading.update_tick_gates", phaseStart);
+
+        phaseStart = RuntimeProfiler.markStart();
         int rebuiltContentThisTick = rebuildDirtyContentQueue();
+        RuntimeProfiler.recordSince("cube_loading.rebuild_dirty_content", phaseStart);
+
+        phaseStart = RuntimeProfiler.markStart();
         int rebuiltLightThisTick = rebuildDirtyLightQueue();
+        RuntimeProfiler.recordSince("cube_loading.rebuild_dirty_light", phaseStart);
+
+        phaseStart = RuntimeProfiler.markStart();
         SkyLightQueueCounters skyCounters = rebuildDirtySkyLightColumns();
+        RuntimeProfiler.recordSince("cube_loading.rebuild_dirty_sky", phaseStart);
+
+        phaseStart = RuntimeProfiler.markStart();
         int savedDirtyThisTick = flushDirtySaveQueue(loadCounters, rebuiltContentThisTick, rebuiltLightThisTick, skyCounters);
+        RuntimeProfiler.recordSince("cube_loading.flush_dirty_save", phaseStart);
 
         queuedLastTick = queuedThisTick;
         loadedLastTick = loadCounters.loaded();
@@ -359,6 +405,17 @@ public final class ServerCubeCache {
         skyLightRebuildMicrosLastTick = skyCounters.elapsedMicros();
         skyLightRebuildMicrosMax = Math.max(skyLightRebuildMicrosMax, skyCounters.elapsedMicros());
         skyLightDirtyLastTick = skyLightDirtyColumns.size();
+
+        RuntimeProfiler.addCount("cube_loading.queued", queuedThisTick);
+        RuntimeProfiler.addCount("cube_loading.loaded", loadCounters.loaded());
+        RuntimeProfiler.addCount("cube_loading.generated", loadCounters.generated());
+        RuntimeProfiler.addCount("cube_loading.unloaded", unloadedThisTick);
+        RuntimeProfiler.addCount("cube_loading.rebuilt_content", rebuiltContentThisTick);
+        RuntimeProfiler.addCount("cube_loading.rebuilt_static_light", rebuiltLightThisTick);
+        RuntimeProfiler.addCount("cube_loading.rebuilt_sky_columns", skyCounters.rebuiltColumns());
+        RuntimeProfiler.addCount("cube_loading.saved_dirty", savedDirtyThisTick);
+        RuntimeProfiler.addCount("cube_loading.pending_after_tick", pendingLoads.size());
+        RuntimeProfiler.recordSince("cube_loading.tick_total", tickProfileStart);
 
         return new CubeLoadingTickResult(gameTime, requestedLastTick, queuedThisTick, loadCounters.loaded(), loadCounters.generated(), unloadedThisTick, requestLimitHitLastTick);
     }
@@ -403,7 +460,7 @@ public final class ServerCubeCache {
             return Optional.of(holder.cube().getBlockState(worldPos));
         }
 
-        Optional<LevelCube> persisted = storage.get(cubePos);
+        Optional<LevelCube> persisted = storageGet(cubePos);
         if (persisted.isEmpty()) {
             return Optional.empty();
         }
@@ -557,6 +614,7 @@ public final class ServerCubeCache {
         holder.markDirty();
         if (saveImmediately) {
             storage.put(holder.cube());
+            rememberStoragePresent(holder.cubePos());
             holder.markSaved(CubeHolderState.REGION3D_SAVED);
             totalSaved++;
         }
@@ -581,6 +639,7 @@ public final class ServerCubeCache {
         totalSkyLightRebuilt++;
         if (saveImmediately) {
             storage.put(holder.cube());
+            rememberStoragePresent(holder.cubePos());
             holder.markSaved(CubeHolderState.REGION3D_SAVED);
             totalSaved++;
         }
@@ -657,6 +716,7 @@ public final class ServerCubeCache {
                     continue;
                 }
                 storage.put(holder.cube());
+                rememberStoragePresent(holder.cubePos());
                 holder.markSaved(CubeHolderState.REGION3D_SAVED);
                 dirtyTracker.recordSaved(holder.cubePos(), 0L);
                 saved++;
@@ -720,10 +780,40 @@ public final class ServerCubeCache {
         if (!settings.containsCubeY(cubePos.y())) {
             return Optional.empty();
         }
-        return storage.get(cubePos);
+        return storageGet(cubePos);
     }
 
+    private Optional<LevelCube> storageGet(CubePos cubePos) {
+        if (storageMissCache.remove(cubePos)) {
+            // Reinsert to keep simple LRU behaviour for recently checked generated-missing cubes.
+            storageMissCache.add(cubePos);
+            RuntimeProfiler.addCount("cube_io.storage_miss_cache_hits", 1);
+            return Optional.empty();
+        }
+        Optional<LevelCube> loaded = storage.get(cubePos);
+        if (loaded.isPresent()) {
+            storageMissCache.remove(cubePos);
+            return loaded;
+        }
+        rememberStorageMiss(cubePos);
+        return Optional.empty();
+    }
 
+    private void rememberStorageMiss(CubePos cubePos) {
+        storageMissCache.add(cubePos);
+        if (storageMissCache.size() > STORAGE_MISS_CACHE_LIMIT) {
+            Iterator<CubePos> iterator = storageMissCache.iterator();
+            if (iterator.hasNext()) {
+                iterator.next();
+                iterator.remove();
+            }
+        }
+        RuntimeProfiler.addCount("cube_io.storage_misses_cached", 1);
+    }
+
+    private void rememberStoragePresent(CubePos cubePos) {
+        storageMissCache.remove(cubePos);
+    }
 
 
     /**
@@ -741,7 +831,7 @@ public final class ServerCubeCache {
         if (existing != null) {
             return !existing.cube().status().isAtLeast(targetStatus) && !existing.dirty();
         }
-        Optional<LevelCube> persisted = storage.get(cubePos);
+        Optional<LevelCube> persisted = storageGet(cubePos);
         if (persisted.isPresent() && persisted.get().status().isAtLeast(targetStatus)) {
             storage.unloadFromMemory(cubePos);
             return false;
@@ -769,6 +859,7 @@ public final class ServerCubeCache {
             boolean saved = false;
             if (saveImmediately && existing.dirty()) {
                 storage.put(existing.cube());
+                rememberStoragePresent(existing.cubePos());
                 existing.markSaved(CubeHolderState.REGION3D_SAVED);
                 totalSaved++;
                 saved = true;
@@ -779,7 +870,7 @@ public final class ServerCubeCache {
             return new PregenCubeResult(cubePos, false, false, false, "loaded_dirty_skip");
         }
 
-        Optional<LevelCube> persisted = storage.get(cubePos);
+        Optional<LevelCube> persisted = storageGet(cubePos);
         if (persisted.isPresent() && persisted.get().status().isAtLeast(targetStatus)) {
             if (existing == null) {
                 storage.unloadFromMemory(cubePos);
@@ -801,6 +892,7 @@ public final class ServerCubeCache {
         boolean saved = false;
         if (saveImmediately) {
             storage.put(prepared);
+            rememberStoragePresent(cubePos);
             totalSaved++;
             saved = true;
         }
@@ -957,27 +1049,35 @@ public final class ServerCubeCache {
      * from cube-owned terrain instead of showing a temporary flat vanilla column until normal pending-load order catches up.</p>
      */
     public synchronized Optional<CubeHolder> ensureLoadedForClient(CubePos cubePos, CubeTicketLevel level) {
+        long profileStart = RuntimeProfiler.markStart();
         if (!settings.containsCubeY(cubePos.y())) {
+            RuntimeProfiler.recordSince("client.ensure_loaded", profileStart);
             return Optional.empty();
         }
         CubeHolder holder = holders.get(cubePos);
         if (holder != null) {
             holder.markRequired(level, gameTime);
+            RuntimeProfiler.addCount("client.ensure_loaded_hits", 1);
+            RuntimeProfiler.recordSince("client.ensure_loaded", profileStart);
             return Optional.of(holder);
         }
         CubeHolder loaded = loadHolder(cubePos, level);
         holders.put(cubePos, loaded);
         totalLoaded++;
+        RuntimeProfiler.addCount("client.ensure_loaded_loads", 1);
         if (loaded.state() == CubeHolderState.GENERATED) {
             totalGenerated++;
+            RuntimeProfiler.addCount("client.ensure_loaded_generated", 1);
         }
         markSkyLightDirty(cubePos.columnPos());
+        RuntimeProfiler.recordSince("client.ensure_loaded", profileStart);
         return Optional.of(loaded);
     }
 
     private boolean saveCubeNow(CubeHolder holder) {
         long startNanos = System.nanoTime();
         storage.put(holder.cube());
+        rememberStoragePresent(holder.cubePos());
         holder.markSaved(CubeHolderState.REGION3D_SAVED);
         dirtyTracker.recordSaved(new CubeSaveWork(holder.cubePos(), Long.MAX_VALUE), Math.max(1L, (System.nanoTime() - startNanos) / 1_000L));
         totalSaved++;
@@ -986,27 +1086,158 @@ public final class ServerCubeCache {
 
     private RequiredLevels collectRequiredLevels(Collection<CubeTicket> tickets) {
         Map<CubePos, CubeTicketLevel> required = new LinkedHashMap<>();
-        boolean limitHit = false;
 
         for (CubeTicket ticket : tickets) {
             if (ticket.level() == CubeTicketLevel.UNLOADED) {
                 continue;
             }
-            Iterator<CubePos> iterator = ticket.shape().stream().iterator();
-            while (iterator.hasNext()) {
-                CubePos cubePos = iterator.next();
-                if (!settings.containsCubeY(cubePos.y())) {
+            CubePos min = ticket.shape().min();
+            CubePos max = ticket.shape().max();
+            for (int y = min.y(); y <= max.y(); y++) {
+                if (!settings.containsCubeY(y)) {
                     continue;
                 }
-                required.merge(cubePos, ticket.level(), ServerCubeCache::strongerLevel);
-                if (required.size() >= MAX_REQUESTED_CUBES_PER_TICK) {
-                    limitHit = true;
-                    return new RequiredLevels(required, true);
+                for (int z = min.z(); z <= max.z(); z++) {
+                    for (int x = min.x(); x <= max.x(); x++) {
+                        CubePos cubePos = new CubePos(x, y, z);
+                        required.merge(cubePos, ticket.level(), ServerCubeCache::strongerLevel);
+                        if (required.size() >= MAX_REQUESTED_CUBES_PER_TICK) {
+                            return new RequiredLevels(required, true);
+                        }
+                    }
                 }
             }
         }
 
-        return new RequiredLevels(required, limitHit);
+        return new RequiredLevels(required, false);
+    }
+
+    /**
+     * M16.8 gameplay loading priority.
+     *
+     * <p>The ticket shape still requests a cuboid, but the actual pending stream is ordered for playability:
+     * immediate radius around the player first, then the look-ahead corridor with +/-2 cubeY, then surface cubes,
+     * underground cubes, and finally air cubes.  This does not raise the generation budget; it only spends the budget on
+     * cubes the player is most likely to see/enter next.</p>
+     */
+    private void reprioritizePendingLoads(Map<CubePos, CubeTicketLevel> required, ServerLevel level) {
+        if (level == null || pendingLoads.size() <= 1) {
+            return;
+        }
+        List<PlayerLoadFocus> focuses = activePlayerFocuses(level);
+        if (focuses.isEmpty()) {
+            return;
+        }
+        List<Map.Entry<CubePos, CubeTicketLevel>> entries = new ArrayList<>(pendingLoads.entrySet());
+        Map<CubePos, Integer> priorities = new LinkedHashMap<>();
+        Map<CubePos, PlayerLoadFocus> nearest = new LinkedHashMap<>();
+        for (Map.Entry<CubePos, CubeTicketLevel> entry : entries) {
+            CubePos cubePos = entry.getKey();
+            priorities.put(cubePos, loadPriority(cubePos, focuses));
+            nearest.put(cubePos, nearestFocus(cubePos, focuses));
+        }
+        entries.sort(Comparator
+                .comparingInt((Map.Entry<CubePos, CubeTicketLevel> entry) -> priorities.getOrDefault(entry.getKey(), Integer.MAX_VALUE))
+                .thenComparingInt(entry -> Math.abs(entry.getKey().y() - nearest.get(entry.getKey()).cube().y()))
+                .thenComparingInt(entry -> horizontalDistanceSquared(entry.getKey(), nearest.get(entry.getKey()).cube()))
+                .thenComparingInt(entry -> entry.getKey().x())
+                .thenComparingInt(entry -> entry.getKey().z())
+                .thenComparingInt(entry -> entry.getKey().y()));
+        pendingLoads.clear();
+        for (Map.Entry<CubePos, CubeTicketLevel> entry : entries) {
+            if (required.containsKey(entry.getKey())) {
+                pendingLoads.put(entry.getKey(), entry.getValue());
+            }
+        }
+    }
+
+    private List<PlayerLoadFocus> activePlayerFocuses(ServerLevel level) {
+        List<PlayerLoadFocus> focuses = new ArrayList<>();
+        for (ServerPlayer player : level.players()) {
+            CubePos cube = CubePos.fromBlock(player.blockPosition());
+            double lookX = player.getLookAngle().x;
+            double lookZ = player.getLookAngle().z;
+            double len = Math.sqrt(lookX * lookX + lookZ * lookZ);
+            if (len < 1.0E-5D) {
+                lookX = 0.0D;
+                lookZ = 1.0D;
+            } else {
+                lookX /= len;
+                lookZ /= len;
+            }
+            focuses.add(new PlayerLoadFocus(cube, lookX, lookZ));
+        }
+        return focuses;
+    }
+
+    private int loadPriority(CubePos cubePos, List<PlayerLoadFocus> focuses) {
+        int best = Integer.MAX_VALUE;
+        for (PlayerLoadFocus focus : focuses) {
+            int horizontalCheb = Math.max(Math.abs(cubePos.x() - focus.cube().x()), Math.abs(cubePos.z() - focus.cube().z()));
+            int dy = Math.abs(cubePos.y() - focus.cube().y());
+            if (horizontalCheb <= 1 && dy <= 1) {
+                best = Math.min(best, 0 + horizontalCheb * 10 + dy);
+                continue;
+            }
+            if (isLookAhead(cubePos, focus)) {
+                best = Math.min(best, 1_000 + horizontalDistanceSquared(cubePos, focus.cube()) + dy * 8);
+                continue;
+            }
+            int surfaceClass = verticalTerrainClass(cubePos);
+            int base = switch (surfaceClass) {
+                case 0 -> 2_000; // surface and near-surface
+                case 1 -> 3_000; // underground
+                default -> 4_000; // air/high empty cubes last
+            };
+            best = Math.min(best, base + horizontalDistanceSquared(cubePos, focus.cube()) + dy * 16);
+        }
+        return best;
+    }
+
+    private boolean isLookAhead(CubePos cubePos, PlayerLoadFocus focus) {
+        int dy = Math.abs(cubePos.y() - focus.cube().y());
+        if (dy > 2) {
+            return false;
+        }
+        double dx = cubePos.x() - focus.cube().x();
+        double dz = cubePos.z() - focus.cube().z();
+        double distance = Math.sqrt(dx * dx + dz * dz);
+        if (distance < 1.0D || distance > 12.0D) {
+            return false;
+        }
+        double dot = dx * focus.lookX() + dz * focus.lookZ();
+        return dot > distance * 0.35D;
+    }
+
+    /** 0 = surface, 1 = underground, 2 = air/high empty. */
+    private int verticalTerrainClass(CubePos cubePos) {
+        int centerX = cubePos.minBlockX() + 8;
+        int centerZ = cubePos.minBlockZ() + 8;
+        int surfaceCubeY = CubePos.blockToCube(com.redline.worldcore.server.generation.M15TerrainModel.surfaceHeightDry(generationContext(), centerX, centerZ));
+        if (cubePos.y() >= surfaceCubeY - 1 && cubePos.y() <= surfaceCubeY + 1) {
+            return 0;
+        }
+        return cubePos.y() < surfaceCubeY - 1 ? 1 : 2;
+    }
+
+    private static PlayerLoadFocus nearestFocus(CubePos cubePos, List<PlayerLoadFocus> focuses) {
+        PlayerLoadFocus best = focuses.getFirst();
+        int bestDistance = horizontalDistanceSquared(cubePos, best.cube()) + Math.abs(cubePos.y() - best.cube().y()) * 16;
+        for (int index = 1; index < focuses.size(); index++) {
+            PlayerLoadFocus focus = focuses.get(index);
+            int distance = horizontalDistanceSquared(cubePos, focus.cube()) + Math.abs(cubePos.y() - focus.cube().y()) * 16;
+            if (distance < bestDistance) {
+                best = focus;
+                bestDistance = distance;
+            }
+        }
+        return best;
+    }
+
+    private static int horizontalDistanceSquared(CubePos a, CubePos b) {
+        int dx = a.x() - b.x();
+        int dz = a.z() - b.z();
+        return dx * dx + dz * dz;
     }
 
     private void purgePendingNoLongerRequired(Map<CubePos, CubeTicketLevel> required) {
@@ -1034,6 +1265,7 @@ public final class ServerCubeCache {
     }
 
     private LoadCounters loadPending(Map<CubePos, CubeTicketLevel> required) {
+        long profileStart = RuntimeProfiler.markStart();
         int loaded = 0;
         int generated = 0;
         boolean generatedBudgetHit = false;
@@ -1054,6 +1286,7 @@ public final class ServerCubeCache {
                 continue;
             }
 
+            RuntimeProfiler.addCount("cube_loading.pending_iterations", 1);
             CubeHolder holder = loadHolder(entry.getKey(), strongerLevel(entry.getValue(), requiredLevel));
             holders.put(holder.cubePos(), holder);
             touchedColumns.add(holder.cubePos().columnPos());
@@ -1083,40 +1316,64 @@ public final class ServerCubeCache {
         for (ColumnPos columnPos : touchedColumns) {
             markSkyLightDirty(columnPos);
         }
+        RuntimeProfiler.recordSince("cube_loading.load_pending", profileStart);
         return new LoadCounters(loaded, generated, elapsedMicros, generatedBudgetHit, timeBudgetHit);
     }
 
     private CubeHolder loadHolder(CubePos cubePos, CubeTicketLevel level) {
-        Optional<LevelCube> loaded = storage.get(cubePos);
+        long profileStart = RuntimeProfiler.markStart();
+        long phaseStart = RuntimeProfiler.markStart();
+        Optional<LevelCube> loaded = storageGet(cubePos);
+        RuntimeProfiler.recordSince("cube_io.storage_get", phaseStart);
         if (loaded.isPresent()) {
             LevelCube cube = loaded.get();
             if (StaticBlockLightLayer.needsBootstrap(cube)) {
+                phaseStart = RuntimeProfiler.markStart();
                 StaticBlockLightLayer.rebuild(cube);
+                RuntimeProfiler.recordSince("lighting.static_rebuild_on_load", phaseStart);
                 totalLightRebuilt++;
             }
             CubeHolder holder = new CubeHolder(cubePos, cube, level, CubeHolderState.REGION3D_LOADED, gameTime);
+            phaseStart = RuntimeProfiler.markStart();
             blockEntityTracker.rebuildCube(cube, "holder_loaded");
+            RuntimeProfiler.recordSince("cube_loading.block_entity_rebuild", phaseStart);
+            RuntimeProfiler.addCount("cube_loading.region3d_loaded", 1);
+            RuntimeProfiler.recordSince("cube_loading.load_holder_total", profileStart);
             return holder;
         }
 
         if (level.isAtLeast(CubeTicketLevel.GENERATED)) {
+            phaseStart = RuntimeProfiler.markStart();
             LevelCube generated = generator.generate(cubePos);
+            RuntimeProfiler.recordSince("cube_loading.generate_holder", phaseStart);
+            phaseStart = RuntimeProfiler.markStart();
             StaticBlockLightLayer.rebuild(generated);
+            RuntimeProfiler.recordSince("lighting.static_rebuild_generated", phaseStart);
             // M10.1: do not rebuild sky per cube while the loading window streams in.
             // The delayed column queue will compute correct finite-top skylight once the column settles.
             totalLightRebuilt++;
             CubeHolder holder = new CubeHolder(cubePos, generated, level, CubeHolderState.GENERATED, gameTime);
+            phaseStart = RuntimeProfiler.markStart();
             blockEntityTracker.rebuildCube(generated, "holder_generated");
+            RuntimeProfiler.recordSince("cube_loading.block_entity_rebuild", phaseStart);
+            RuntimeProfiler.addCount("cube_loading.generated_holders", 1);
+            RuntimeProfiler.recordSince("cube_loading.load_holder_total", profileStart);
             return holder;
         }
 
         LevelCube placeholder = new LevelCube(cubePos);
         placeholder.setStatus(CubeStatus.EMPTY);
+        phaseStart = RuntimeProfiler.markStart();
         StaticBlockLightLayer.rebuild(placeholder);
+        RuntimeProfiler.recordSince("lighting.static_rebuild_placeholder", phaseStart);
         // M10.1: placeholders also wait for the delayed column queue instead of doing per-cube open-sky work.
         totalLightRebuilt++;
         CubeHolder holder = new CubeHolder(cubePos, placeholder, level, CubeHolderState.PLACEHOLDER, gameTime);
+        phaseStart = RuntimeProfiler.markStart();
         blockEntityTracker.rebuildCube(placeholder, "holder_placeholder");
+        RuntimeProfiler.recordSince("cube_loading.block_entity_rebuild", phaseStart);
+        RuntimeProfiler.addCount("cube_loading.placeholder_holders", 1);
+        RuntimeProfiler.recordSince("cube_loading.load_holder_total", profileStart);
         return holder;
     }
 
@@ -1333,6 +1590,7 @@ public final class ServerCubeCache {
                 dirtyTracker.recordSaveFailed(work, completion.error());
             } else {
                 totalSaved++;
+                rememberStoragePresent(work.cubePos());
                 boolean clean = dirtyTracker.recordSaved(work, completion.elapsedMicros());
                 CubeHolder holder = holders.get(work.cubePos());
                 if (holder != null && clean) {
@@ -1376,6 +1634,7 @@ public final class ServerCubeCache {
                 }
                 long startNanos = System.nanoTime();
                 storage.put(holder.cube());
+                rememberStoragePresent(holder.cubePos());
                 holder.markSaved(CubeHolderState.REGION3D_SAVED);
                 long saveMicros = Math.max(1L, (System.nanoTime() - startNanos) / 1_000L);
                 totalSaved++;
@@ -1394,6 +1653,7 @@ public final class ServerCubeCache {
             }
             long startNanos = System.nanoTime();
             storage.put(holder.cube());
+            rememberStoragePresent(holder.cubePos());
             holder.markSaved(CubeHolderState.REGION3D_SAVED);
             dirtyTracker.recordSaved(new CubeSaveWork(holder.cubePos(), Long.MAX_VALUE), Math.max(1L, (System.nanoTime() - startNanos) / 1_000L));
             saved++;
@@ -1433,6 +1693,9 @@ public final class ServerCubeCache {
 
 
     public record PregenCubeResult(CubePos cubePos, boolean generated, boolean saved, boolean lightReady, String reason) {
+    }
+
+    private record PlayerLoadFocus(CubePos cube, double lookX, double lookZ) {
     }
 
     private record RequiredLevels(Map<CubePos, CubeTicketLevel> levels, boolean limitHit) {

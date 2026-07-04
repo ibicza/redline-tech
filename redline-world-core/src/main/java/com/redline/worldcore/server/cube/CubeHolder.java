@@ -3,6 +3,7 @@ package com.redline.worldcore.server.cube;
 import com.redline.worldcore.api.cube.LevelCube;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.api.ticket.CubeTicketLevel;
+import com.redline.worldcore.server.generation.CubeGenerationHasher;
 
 import java.util.Objects;
 
@@ -20,6 +21,8 @@ public final class CubeHolder {
     private CubeHolderState state;
     private long lastRequiredGameTime;
     private boolean dirty;
+    private boolean generationHashValid;
+    private long generationHash;
 
     public CubeHolder(CubePos cubePos, LevelCube cube, CubeTicketLevel ticketLevel, CubeHolderState state, long loadedGameTime) {
         this.cubePos = Objects.requireNonNull(cubePos, "cubePos");
@@ -58,6 +61,22 @@ public final class CubeHolder {
         return dirty;
     }
 
+    /**
+     * Cached block-data hash for client mirror checks. Computing CubeGenerationSummary.from(cube).hash() scans
+     * all 4096 blocks; the client bridge used to do that for every visible cube every tick.
+     */
+    public long generationHash() {
+        if (!generationHashValid) {
+            generationHash = CubeGenerationHasher.hash(cube);
+            generationHashValid = true;
+        }
+        return generationHash;
+    }
+
+    public void invalidateGenerationHash() {
+        generationHashValid = false;
+    }
+
     public void markRequired(CubeTicketLevel level, long gameTime) {
         this.ticketLevel = Objects.requireNonNull(level, "level");
         this.lastRequiredGameTime = gameTime;
@@ -65,6 +84,7 @@ public final class CubeHolder {
 
     public void markDirty() {
         this.dirty = true;
+        invalidateGenerationHash();
     }
 
     public void markSaved(CubeHolderState savedState) {

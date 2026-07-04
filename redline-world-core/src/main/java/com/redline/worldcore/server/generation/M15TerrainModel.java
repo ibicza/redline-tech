@@ -2,9 +2,13 @@ package com.redline.worldcore.server.generation;
 
 import com.redline.worldcore.api.generation.CubeGenerationContext;
 import com.redline.worldcore.api.pos.CubePos;
+import com.redline.worldcore.server.profiler.RuntimeProfiler;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * M15 seed-only Java terrain model.
@@ -13,7 +17,7 @@ import net.minecraft.world.level.block.state.BlockState;
  * run in a different configured mode.</p>
  */
 public final class M15TerrainModel {
-    public static final String VERSION = "M16.0 seed-only terrain + static safe hydrology v1";
+    public static final String VERSION = "M16.11 cached seed-only terrain + optimized static hydrology v1";
 
     private static final long CONTINENT_SEED = 0x434F4E54494E454EL;
     private static final long EROSION_SEED = 0x45524F53494F4E31L;
@@ -39,6 +43,25 @@ public final class M15TerrainModel {
     private static final BlockState SNOW = Blocks.SNOW_BLOCK.defaultBlockState();
     private static final BlockState LAVA = Blocks.LAVA.defaultBlockState();
 
+    private static final int DRY_SAMPLE_CACHE_LIMIT = 65536;
+
+    private static final ThreadLocal<LinkedHashMap<Long, M15TerrainSample>> DRY_SAMPLE_CACHE = ThreadLocal.withInitial(() -> new LinkedHashMap<>(1024, 0.75F, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Long, M15TerrainSample> eldest) {
+            return size() > DRY_SAMPLE_CACHE_LIMIT;
+        }
+    });
+
+    public static void beginCubeGeneration() {
+        // M16.11: keep the bounded ThreadLocal cache warm across nearby cube generations.
+        // Keys include seed + dimension settings, so this is safe for the integrated server and avoids
+        // recomputing the same dry terrain samples during shore/river neighbor probes.
+    }
+
+    public static void endCubeGeneration() {
+        // Entries are evicted by DRY_SAMPLE_CACHE_LIMIT instead of clearing after every cube.
+    }
+
     public static M15WorldgenProfile profile(CubeGenerationContext context) {
         return M15WorldgenProfile.from(context.settings());
     }
@@ -48,6 +71,22 @@ public final class M15TerrainModel {
     }
 
     public static M15TerrainSample sampleDry(CubeGenerationContext context, int x, int z) {
+        long key = drySampleKey(context, x, z);
+        LinkedHashMap<Long, M15TerrainSample> cache = DRY_SAMPLE_CACHE.get();
+        M15TerrainSample cached = cache.get(key);
+        if (cached != null) {
+            RuntimeProfiler.addCount("terrain.dry_sample_cache_hits", 1);
+            return cached;
+        }
+        long start = RuntimeProfiler.markStart();
+        M15TerrainSample sample = sampleDryUncached(context, x, z);
+        RuntimeProfiler.recordSince("terrain.dry_sample_uncached", start);
+        RuntimeProfiler.addCount("terrain.dry_sample_uncached_calls", 1);
+        cache.put(key, sample);
+        return sample;
+    }
+
+    private static M15TerrainSample sampleDryUncached(CubeGenerationContext context, int x, int z) {
         M15WorldgenProfile profile = profile(context);
         long seed = context.seed();
         double continentalness = M15Noise.fbm2D(seed ^ CONTINENT_SEED, x, z, 1536, 4);
@@ -74,6 +113,15 @@ public final class M15TerrainModel {
         int surfaceY = Mth.clamp((int) Math.round(height), profile.lowestSurfaceY(), profile.highestSurfaceY());
         M15SurfaceZone zone = zone(profile, surfaceY, temperature, humidity, continentalness);
         return new M15TerrainSample(x, z, surfaceY, profile.seaLevel(), continentalness, erosion, temperature, humidity, ridge, zone);
+    }
+
+    private static long drySampleKey(CubeGenerationContext context, int x, int z) {
+        long key = (((long) x) << 32) ^ (z & 0xFFFF_FFFFL);
+        key ^= context.seed() * 0x9E3779B97F4A7C15L;
+        key ^= ((long) context.settings().minCubeY() << 48);
+        key ^= ((long) context.settings().maxCubeY() << 32);
+        key ^= ((long) context.settings().seaLevel() << 16);
+        return key;
     }
 
     public static int surfaceHeight(CubeGenerationContext context, int x, int z) {
@@ -126,6 +174,12 @@ public final class M15TerrainModel {
     }
 
     public static BlockState stateFor(CubeGenerationContext context, int x, int y, int z) {
+        M15TerrainSample sample = sampleDry(context, x, z);
+        M16WaterColumnShape waterShape = M16WaterModel.columnShape(context, sample);
+        return stateFor(context, sample, waterShape, y);
+    }
+
+    public static BlockState stateFor(CubeGenerationContext context, M15TerrainSample sample, M16WaterColumnShape waterShape, int y) {
         M15WorldgenProfile profile = profile(context);
         if (y < profile.minY() || y > profile.maxY()) {
             return AIR;
@@ -134,7 +188,8 @@ public final class M15TerrainModel {
             return BEDROCK;
         }
 
-        M15TerrainSample sample = sampleDry(context, x, z);
+        int x = sample.x();
+        int z = sample.z();
         int surfaceY = sample.surfaceY();
         BlockState baseState;
         if (y > surfaceY) {
@@ -151,7 +206,7 @@ public final class M15TerrainModel {
                 baseState = baseStone(profile, y);
             }
         }
-        return M16WaterModel.overrideState(context, sample, y, baseState);
+        return M16WaterModel.overrideState(context, sample, waterShape, y, baseState);
     }
 
     public static boolean mayContainDeepLavaPocket(long seed, M15WorldgenProfile profile, int cubeX, int cubeY, int cubeZ) {

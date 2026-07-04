@@ -6,6 +6,7 @@ import com.redline.worldcore.api.generation.CubeGenerationContext;
 import com.redline.worldcore.api.generation.CubeGenerator;
 import com.redline.worldcore.api.generation.CubicDimensionSettings;
 import com.redline.worldcore.api.pos.CubePos;
+import com.redline.worldcore.server.profiler.RuntimeProfiler;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -21,24 +22,40 @@ public final class BasicCubicGenerator implements CubeGenerator {
 
     @Override
     public LevelCube generate(CubeGenerationContext context, CubePos cubePos) {
-        LevelCube cube = new LevelCube(cubePos);
-        M15WorldgenProfile profile = M15TerrainModel.profile(context);
+        long profileStart = RuntimeProfiler.markStart();
+        M15TerrainModel.beginCubeGeneration();
+        M16WaterModel.beginCubeGeneration();
+        try {
+            LevelCube cube = new LevelCube(cubePos);
+            M15WorldgenProfile profile = M15TerrainModel.profile(context);
 
-        if (cubePos.minBlockY() > profile.highestSurfaceY() && cubePos.minBlockY() > profile.seaLevel()) {
-            cube.fill(AIR);
+            if (cubePos.minBlockY() > profile.highestSurfaceY() && cubePos.minBlockY() > profile.seaLevel()) {
+                long fastStart = RuntimeProfiler.markStart();
+                cube.fill(AIR);
+                RuntimeProfiler.recordSince("worldgen.fast_air_fill", fastStart);
+                cube.setStatus(CubeStatus.FULL);
+                RuntimeProfiler.addCount("worldgen.fast_air_cubes", 1);
+                return cube;
+            }
+
+            if (canUseSolidFastPath(context, profile, cubePos)) {
+                long fastStart = RuntimeProfiler.markStart();
+                cube.fill(fastPathState(profile, cubePos.minBlockY()));
+                RuntimeProfiler.recordSince("worldgen.fast_solid_fill", fastStart);
+                cube.setStatus(CubeStatus.FULL);
+                RuntimeProfiler.addCount("worldgen.fast_solid_cubes", 1);
+                return cube;
+            }
+
+            fillDetailed(context, cube, cubePos);
             cube.setStatus(CubeStatus.FULL);
+            RuntimeProfiler.addCount("worldgen.detailed_cubes", 1);
             return cube;
+        } finally {
+            M16WaterModel.endCubeGeneration();
+            M15TerrainModel.endCubeGeneration();
+            RuntimeProfiler.recordSince("worldgen.generate_cube_total", profileStart);
         }
-
-        if (canUseSolidFastPath(context, profile, cubePos)) {
-            cube.fill(fastPathState(profile, cubePos.minBlockY()));
-            cube.setStatus(CubeStatus.FULL);
-            return cube;
-        }
-
-        fillDetailed(context, cube, cubePos);
-        cube.setStatus(CubeStatus.FULL);
-        return cube;
     }
 
     /** Backwards-compatible debug helper: uses the M15 default cubic_test height profile and a seed. */
@@ -59,16 +76,42 @@ public final class BasicCubicGenerator implements CubeGenerator {
     }
 
     private static void fillDetailed(CubeGenerationContext context, LevelCube cube, CubePos cubePos) {
+        long detailedStart = RuntimeProfiler.markStart();
+        M15TerrainSample[][] terrainColumns = new M15TerrainSample[CubePos.SIZE][CubePos.SIZE];
+        M16WaterColumnShape[][] waterColumns = new M16WaterColumnShape[CubePos.SIZE][CubePos.SIZE];
+
+        long terrainStart = RuntimeProfiler.markStart();
+        for (int localZ = 0; localZ < CubePos.SIZE; localZ++) {
+            int worldZ = cubePos.minBlockZ() + localZ;
+            for (int localX = 0; localX < CubePos.SIZE; localX++) {
+                int worldX = cubePos.minBlockX() + localX;
+                terrainColumns[localZ][localX] = M15TerrainModel.sampleDry(context, worldX, worldZ);
+            }
+        }
+        RuntimeProfiler.recordSince("worldgen.columns_terrain", terrainStart);
+        RuntimeProfiler.addCount("worldgen.terrain_columns", CubePos.SIZE * CubePos.SIZE);
+
+        long waterStart = RuntimeProfiler.markStart();
+        for (int localZ = 0; localZ < CubePos.SIZE; localZ++) {
+            for (int localX = 0; localX < CubePos.SIZE; localX++) {
+                waterColumns[localZ][localX] = M16WaterModel.columnShape(context, terrainColumns[localZ][localX]);
+            }
+        }
+        RuntimeProfiler.recordSince("worldgen.columns_water", waterStart);
+        RuntimeProfiler.addCount("worldgen.water_columns", CubePos.SIZE * CubePos.SIZE);
+
+        long fillStart = RuntimeProfiler.markStart();
         for (int localY = 0; localY < CubePos.SIZE; localY++) {
             int worldY = cubePos.minBlockY() + localY;
             for (int localZ = 0; localZ < CubePos.SIZE; localZ++) {
-                int worldZ = cubePos.minBlockZ() + localZ;
                 for (int localX = 0; localX < CubePos.SIZE; localX++) {
-                    int worldX = cubePos.minBlockX() + localX;
-                    cube.setBlockState(localX, localY, localZ, M15TerrainModel.stateFor(context, worldX, worldY, worldZ));
+                    cube.setBlockState(localX, localY, localZ, M15TerrainModel.stateFor(context, terrainColumns[localZ][localX], waterColumns[localZ][localX], worldY));
                 }
             }
         }
+        RuntimeProfiler.recordSince("worldgen.vertical_block_fill", fillStart);
+        RuntimeProfiler.addCount("worldgen.blocks_filled", CubePos.SIZE * CubePos.SIZE * CubePos.SIZE);
+        RuntimeProfiler.recordSince("worldgen.fill_detailed_total", detailedStart);
     }
 
     private static boolean canUseSolidFastPath(CubeGenerationContext context, M15WorldgenProfile profile, CubePos cubePos) {

@@ -11,11 +11,11 @@ import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
 import com.redline.worldcore.server.entity.EntityCubeTracker;
 import com.redline.worldcore.server.entity.EntityTrackingSnapshot;
-import com.redline.worldcore.server.generation.CubeGenerationSummary;
 import com.redline.worldcore.server.lighting.SkyLightSummary;
 import com.redline.worldcore.server.lighting.StaticLightSummary;
 import com.redline.worldcore.server.pregen.CubePregenManager;
 import com.redline.worldcore.server.pregen.CubePregenSnapshot;
+import com.redline.worldcore.server.profiler.RuntimeProfiler;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -56,7 +56,7 @@ public final class CubicClientSyncBridge {
 
     public static final int DEFAULT_STREAM_HORIZONTAL_RADIUS = 8;
     public static final int DEFAULT_STREAM_VERTICAL_RADIUS = 2;
-    public static final int DEFAULT_MAX_MATERIALIZED_CUBES_PER_TICK = 8;
+    public static final int DEFAULT_MAX_MATERIALIZED_CUBES_PER_TICK = 10;
     public static final int DEFAULT_SYNC_PACKET_INTERVAL_TICKS = 5;
 
     /**
@@ -65,10 +65,13 @@ public final class CubicClientSyncBridge {
      * fresh cube per tick. This small eager window makes the cubes the player can step/fly into cube-owned before
      * the player crosses the border, without reintroducing a visible vanilla flat fallback.
      */
-    public static final int DEFAULT_EAGER_LOAD_HORIZONTAL_RADIUS = 4;
-    public static final int DEFAULT_EAGER_LOAD_VERTICAL_RADIUS = 2;
-    public static final int DEFAULT_MAX_EAGER_CLIENT_LOADS_PER_TICK = 8;
+    public static final int DEFAULT_EAGER_LOAD_HORIZONTAL_RADIUS = 3;
+    public static final int DEFAULT_EAGER_LOAD_VERTICAL_RADIUS = 1;
+    public static final int DEFAULT_MAX_EAGER_CLIENT_LOADS_PER_TICK = 4;
+    public static final int DEFAULT_MAX_EAGER_CLIENT_GENERATED_LOADS_PER_TICK = 1;
+    public static final int DEFAULT_MAX_EAGER_CLIENT_LOAD_MICROS_PER_TICK = 2_500;
     public static final int MAX_PACKET_ENTRIES = 96;
+    public static final int DEFAULT_MAX_VISIBLE_QUEUE_SCANS_PER_TICK = 384;
 
     /**
      * Client-only mirror writes must not wake vanilla physics. UPDATE_CLIENTS + UPDATE_KNOWN_SHAPE + UPDATE_SUPPRESS_DROPS.
@@ -85,6 +88,8 @@ public final class CubicClientSyncBridge {
     private static int eagerLoadHorizontalRadius = DEFAULT_EAGER_LOAD_HORIZONTAL_RADIUS;
     private static int eagerLoadVerticalRadius = DEFAULT_EAGER_LOAD_VERTICAL_RADIUS;
     private static int maxEagerClientLoadsPerTick = DEFAULT_MAX_EAGER_CLIENT_LOADS_PER_TICK;
+    private static int maxEagerClientGeneratedLoadsPerTick = DEFAULT_MAX_EAGER_CLIENT_GENERATED_LOADS_PER_TICK;
+    private static int maxVisibleQueueScansPerTick = DEFAULT_MAX_VISIBLE_QUEUE_SCANS_PER_TICK;
     private static int overlayMode = OVERLAY_FULL;
 
     private static boolean materializationInProgress;
@@ -285,10 +290,15 @@ public final class CubicClientSyncBridge {
         eagerLoadHorizontalRadius = Math.min(streamHorizontalRadius, DEFAULT_EAGER_LOAD_HORIZONTAL_RADIUS);
         eagerLoadVerticalRadius = Math.min(streamVerticalRadius, DEFAULT_EAGER_LOAD_VERTICAL_RADIUS);
         maxEagerClientLoadsPerTick = Math.min(maxMaterializedCubesPerTick, DEFAULT_MAX_EAGER_CLIENT_LOADS_PER_TICK);
+        maxEagerClientGeneratedLoadsPerTick = Math.min(maxEagerClientLoadsPerTick, DEFAULT_MAX_EAGER_CLIENT_GENERATED_LOADS_PER_TICK);
+        maxVisibleQueueScansPerTick = Mth.clamp(maxMaterializedCubesPerTick * 48, 128, DEFAULT_MAX_VISIBLE_QUEUE_SCANS_PER_TICK);
         for (PlayerBridgeState state : PLAYER_STATES.values()) {
             state.materializationQueue.clear();
             state.queued.clear();
             state.dirtyInvalidationsAccounted.clear();
+            state.visibleOrder = List.of();
+            state.visibleOrderCenter = null;
+            state.visibleCursor = 0;
         }
     }
 
@@ -306,18 +316,30 @@ public final class CubicClientSyncBridge {
     }
 
     private static void tickPlayer(ServerLevel level, ServerPlayer player, ServerCubeCache cache, PlayerBridgeState state) {
+        long profileStart = RuntimeProfiler.markStart();
         state.tickCounter++;
         state.materializedLastTick = 0;
 
         CubePos playerCube = CubePos.fromBlock(player.blockPosition().getX(), player.blockPosition().getY(), player.blockPosition().getZ());
+        long phaseStart = RuntimeProfiler.markStart();
         ensurePlayerCubeVisible(level, cache, playerCube, state);
-        ensureEagerNeighborhoodLoaded(level, cache, playerCube, state);
+        RuntimeProfiler.recordSince("client.ensure_player_cube_visible", phaseStart);
+        phaseStart = RuntimeProfiler.markStart();
+        ensureEagerNeighborhoodLoaded(level, player, cache, playerCube, state);
+        RuntimeProfiler.recordSince("client.eager_neighborhood", phaseStart);
+        phaseStart = RuntimeProfiler.markStart();
         queueVisibleLoadedCubes(cache, playerCube, state);
+        RuntimeProfiler.recordSince("client.queue_visible_loaded", phaseStart);
+        phaseStart = RuntimeProfiler.markStart();
         materializeQueued(level, cache, state);
+        RuntimeProfiler.recordSince("client.materialize_queued_total", phaseStart);
 
         if (state.tickCounter % syncPacketIntervalTicks == 0) {
+            phaseStart = RuntimeProfiler.markStart();
             PacketDistributor.sendToPlayer(player, buildPayload(cache, playerCube, state));
+            RuntimeProfiler.recordSince("client.sync_packet_build_send", phaseStart);
         }
+        RuntimeProfiler.recordSince("client.tick_player_total", profileStart);
     }
 
     private static void ensurePlayerCubeVisible(ServerLevel level, ServerCubeCache cache, CubePos playerCube, PlayerBridgeState state) {
@@ -326,12 +348,13 @@ public final class CubicClientSyncBridge {
             return;
         }
         forcedClientLoads++;
-        long hash = CubeGenerationSummary.from(holder.get().cube()).hash();
+        long hash = holder.get().generationHash();
         boolean clientDirty = cache.clientSyncDirty(playerCube);
         if (!clientDirty && state.materializedHashes.getOrDefault(playerCube, Long.MIN_VALUE) == hash) {
             return;
         }
         materializeCube(level, holder.get().cube());
+        RuntimeProfiler.addCount("client.immediate_player_cube_materialized", 1);
         rememberMaterialized(state, playerCube, hash);
         scheduleWaterTicksWhenNeighborhoodReady(level, holder.get().cube(), state);
         if (clientDirty) {
@@ -342,7 +365,7 @@ public final class CubicClientSyncBridge {
         immediatePlayerCubeMaterializations++;
     }
 
-    private static void ensureEagerNeighborhoodLoaded(ServerLevel level, ServerCubeCache cache, CubePos playerCube, PlayerBridgeState state) {
+    private static void ensureEagerNeighborhoodLoaded(ServerLevel level, ServerPlayer player, ServerCubeCache cache, CubePos playerCube, PlayerBridgeState state) {
         eagerClientLoadsLastTick = 0;
         eagerClientGeneratedLastTick = 0;
 
@@ -361,15 +384,34 @@ public final class CubicClientSyncBridge {
                 }
             }
         }
+        double lookX = player.getLookAngle().x;
+        double lookZ = player.getLookAngle().z;
+        double lookLen = Math.sqrt(lookX * lookX + lookZ * lookZ);
+        if (lookLen < 1.0E-5D) {
+            lookX = 0.0D;
+            lookZ = 1.0D;
+        } else {
+            lookX /= lookLen;
+            lookZ /= lookLen;
+        }
+        final double finalLookX = lookX;
+        final double finalLookZ = lookZ;
         eager.sort(Comparator
-                .comparingInt((CubePos cubePos) -> manhattan(cubePos, playerCube))
+                .comparingInt((CubePos cubePos) -> eagerPriority(cubePos, playerCube, finalLookX, finalLookZ))
                 .thenComparingInt(cubePos -> Math.abs(cubePos.y() - playerCube.y()))
+                .thenComparingInt(cubePos -> horizontalDistanceSquared(cubePos, playerCube))
                 .thenComparingInt(CubePos::x)
                 .thenComparingInt(CubePos::z));
 
         int loaded = 0;
+        int generated = 0;
+        long startNanos = System.nanoTime();
         for (CubePos cubePos : eager) {
-            if (loaded >= maxEagerClientLoadsPerTick) {
+            if (loaded >= maxEagerClientLoadsPerTick || generated >= maxEagerClientGeneratedLoadsPerTick) {
+                break;
+            }
+            if (loaded > 0 && (System.nanoTime() - startNanos) / 1_000L >= DEFAULT_MAX_EAGER_CLIENT_LOAD_MICROS_PER_TICK) {
+                RuntimeProfiler.addCount("client.eager_time_budget_hits", 1);
                 break;
             }
             Optional<CubeHolder> holder = cache.ensureLoadedForClient(cubePos, com.redline.worldcore.api.ticket.CubeTicketLevel.FULL);
@@ -379,32 +421,36 @@ public final class CubicClientSyncBridge {
             loaded++;
             eagerClientLoads++;
             eagerClientLoadsLastTick++;
+            RuntimeProfiler.addCount("client.eager_loaded", 1);
             if (holder.get().state() == com.redline.worldcore.server.cube.CubeHolderState.GENERATED) {
+                generated++;
                 eagerClientGeneratedLoads++;
                 eagerClientGeneratedLastTick++;
+                RuntimeProfiler.addCount("client.eager_generated", 1);
             }
         }
     }
 
     private static void queueVisibleLoadedCubes(ServerCubeCache cache, CubePos playerCube, PlayerBridgeState state) {
-        List<CubePos> visible = new ArrayList<>();
-        for (int y = playerCube.y() - streamVerticalRadius; y <= playerCube.y() + streamVerticalRadius; y++) {
-            for (int z = playerCube.z() - streamHorizontalRadius; z <= playerCube.z() + streamHorizontalRadius; z++) {
-                for (int x = playerCube.x() - streamHorizontalRadius; x <= playerCube.x() + streamHorizontalRadius; x++) {
-                    visible.add(new CubePos(x, y, z));
-                }
-            }
+        List<CubePos> visible = visibleOrder(playerCube, state);
+        if (visible.isEmpty()) {
+            return;
         }
-        visible.sort(Comparator
-                .comparingInt((CubePos cubePos) -> manhattan(cubePos, playerCube))
-                .thenComparingInt(CubePos::y));
+        int scanned = 0;
+        int index = Math.min(state.visibleCursor, visible.size() - 1);
+        while (scanned < maxVisibleQueueScansPerTick && scanned < visible.size()) {
+            CubePos cubePos = visible.get(index);
+            index++;
+            if (index >= visible.size()) {
+                index = 0;
+            }
+            scanned++;
 
-        for (CubePos cubePos : visible) {
             Optional<CubeHolder> holder = cache.holder(cubePos);
             if (holder.isEmpty()) {
                 continue;
             }
-            long hash = CubeGenerationSummary.from(holder.get().cube()).hash();
+            long hash = holder.get().generationHash();
             boolean clientDirty = cache.clientSyncDirty(cubePos);
             if (!clientDirty && state.materializedHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash) {
                 continue;
@@ -413,10 +459,38 @@ public final class CubicClientSyncBridge {
                 continue;
             }
             state.materializationQueue.addLast(cubePos);
+            RuntimeProfiler.addCount("client.materialization_enqueued", 1);
             if (clientDirty && state.dirtyInvalidationsAccounted.add(cubePos)) {
                 clientInvalidationsQueued++;
             }
         }
+        state.visibleCursor = index;
+        RuntimeProfiler.addCount("client.visible_queue_scanned", scanned);
+    }
+
+    private static List<CubePos> visibleOrder(CubePos playerCube, PlayerBridgeState state) {
+        int configHash = streamHorizontalRadius * 31 + streamVerticalRadius;
+        if (playerCube.equals(state.visibleOrderCenter) && state.visibleOrderConfigHash == configHash && !state.visibleOrder.isEmpty()) {
+            return state.visibleOrder;
+        }
+        List<CubePos> visible = new ArrayList<>((streamHorizontalRadius * 2 + 1) * (streamHorizontalRadius * 2 + 1) * (streamVerticalRadius * 2 + 1));
+        for (int y = playerCube.y() - streamVerticalRadius; y <= playerCube.y() + streamVerticalRadius; y++) {
+            for (int z = playerCube.z() - streamHorizontalRadius; z <= playerCube.z() + streamHorizontalRadius; z++) {
+                for (int x = playerCube.x() - streamHorizontalRadius; x <= playerCube.x() + streamHorizontalRadius; x++) {
+                    visible.add(new CubePos(x, y, z));
+                }
+            }
+        }
+        visible.sort(Comparator
+                .comparingInt((CubePos cubePos) -> materializationPriority(cubePos, playerCube))
+                .thenComparingInt(cubePos -> Math.abs(cubePos.y() - playerCube.y()))
+                .thenComparingInt(cubePos -> horizontalDistanceSquared(cubePos, playerCube)));
+        state.visibleOrderCenter = playerCube;
+        state.visibleOrderConfigHash = configHash;
+        state.visibleOrder = visible;
+        state.visibleCursor = 0;
+        RuntimeProfiler.addCount("client.visible_order_rebuilt", 1);
+        return visible;
     }
 
     private static void materializeQueued(ServerLevel level, ServerCubeCache cache, PlayerBridgeState state) {
@@ -429,12 +503,13 @@ public final class CubicClientSyncBridge {
                 continue;
             }
 
-            long hash = CubeGenerationSummary.from(holder.get().cube()).hash();
+            long hash = holder.get().generationHash();
             boolean clientDirty = cache.clientSyncDirty(cubePos);
             if (!clientDirty && state.materializedHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash) {
                 continue;
             }
             materializeCube(level, holder.get().cube());
+            RuntimeProfiler.addCount("client.materialized_cubes", 1);
             rememberMaterialized(state, cubePos, hash);
             scheduleWaterTicksWhenNeighborhoodReady(level, holder.get().cube(), state);
             if (clientDirty) {
@@ -450,7 +525,10 @@ public final class CubicClientSyncBridge {
     }
 
     private static void materializeCube(ServerLevel level, LevelCube cube) {
+        long profileStart = RuntimeProfiler.markStart();
         CubePos cubePos = cube.cubePos();
+        int scanned = 0;
+        int changed = 0;
         materializationInProgress = true;
         try {
             for (int localY = 0; localY < CubePos.SIZE; localY++) {
@@ -460,20 +538,28 @@ public final class CubicClientSyncBridge {
                 }
                 for (int localZ = 0; localZ < CubePos.SIZE; localZ++) {
                     for (int localX = 0; localX < CubePos.SIZE; localX++) {
+                        scanned++;
                         BlockState state = cube.getBlockState(localX, localY, localZ);
                         BlockPos blockPos = new BlockPos(cubePos.minBlockX() + localX, worldY, cubePos.minBlockZ() + localZ);
                         if (!level.getBlockState(blockPos).equals(state)) {
                             level.setBlock(blockPos, state, SET_BLOCK_FLAGS);
+                            changed++;
                         }
                     }
                 }
             }
         } finally {
             materializationInProgress = false;
+            RuntimeProfiler.addCount("client.materialized_blocks_scanned", scanned);
+            RuntimeProfiler.addCount("client.materialized_blocks_changed", changed);
+            RuntimeProfiler.recordSince("client.materialize_cube", profileStart);
         }
     }
 
     private static void scheduleWaterTicksWhenNeighborhoodReady(ServerLevel level, LevelCube cube, PlayerBridgeState state) {
+        if (!enableGeneratedWaterWakeupTicks()) {
+            return;
+        }
         CubePos cubePos = cube.cubePos();
         if (!state.materializedHashes.containsKey(new CubePos(cubePos.x() + 1, cubePos.y(), cubePos.z()))
                 || !state.materializedHashes.containsKey(new CubePos(cubePos.x() - 1, cubePos.y(), cubePos.z()))
@@ -532,7 +618,7 @@ public final class CubicClientSyncBridge {
 
         for (CubeHolder holder : nearby) {
             CubePos cubePos = holder.cubePos();
-            long hash = CubeGenerationSummary.from(holder.cube()).hash();
+            long hash = holder.generationHash();
             boolean materialized = state.materializedHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash;
             StaticLightSummary light = StaticLightSummary.from(holder.cube());
             SkyLightSummary sky = SkyLightSummary.from(holder.cube());
@@ -671,6 +757,50 @@ public final class CubicClientSyncBridge {
         );
     }
 
+    private static boolean enableGeneratedWaterWakeupTicks() {
+        // M16.10 rivers are static vanilla-style source water. Keeping the old wake-up scan costs up to 4096
+        // fluid checks per materialized cube and is only useful for the removed waterfall/flowing-water prototypes.
+        return false;
+    }
+
+    private static int materializationPriority(CubePos cubePos, CubePos playerCube) {
+        int horizontalCheb = Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z()));
+        int dy = Math.abs(cubePos.y() - playerCube.y());
+        if (horizontalCheb <= 1 && dy <= 1) {
+            return horizontalCheb * 10 + dy;
+        }
+        if (dy <= 1) {
+            return 1_000 + horizontalDistanceSquared(cubePos, playerCube);
+        }
+        return 2_000 + manhattan(cubePos, playerCube) * 8;
+    }
+
+    private static int eagerPriority(CubePos cubePos, CubePos playerCube, double lookX, double lookZ) {
+        int horizontalCheb = Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z()));
+        int dy = Math.abs(cubePos.y() - playerCube.y());
+        if (horizontalCheb <= 1 && dy <= 1) {
+            return horizontalCheb * 10 + dy;
+        }
+        if (dy <= 2) {
+            double dx = cubePos.x() - playerCube.x();
+            double dz = cubePos.z() - playerCube.z();
+            double distance = Math.sqrt(dx * dx + dz * dz);
+            if (distance > 0.5D) {
+                double dot = dx * lookX + dz * lookZ;
+                if (dot > distance * 0.35D) {
+                    return 1_000 + horizontalDistanceSquared(cubePos, playerCube) + dy * 8;
+                }
+            }
+        }
+        return 2_000 + manhattan(cubePos, playerCube) * 16;
+    }
+
+    private static int horizontalDistanceSquared(CubePos first, CubePos second) {
+        int dx = first.x() - second.x();
+        int dz = first.z() - second.z();
+        return dx * dx + dz * dz;
+    }
+
     private static int manhattan(CubePos first, CubePos second) {
         return Math.abs(first.x() - second.x()) + Math.abs(first.y() - second.y()) + Math.abs(first.z() - second.z());
     }
@@ -737,6 +867,10 @@ public final class CubicClientSyncBridge {
         private final Set<CubePos> queued = new HashSet<>();
         private final Set<CubePos> dirtyInvalidationsAccounted = new HashSet<>();
         private final Map<CubePos, Long> materializedHashes = new HashMap<>();
+        private CubePos visibleOrderCenter;
+        private List<CubePos> visibleOrder = List.of();
+        private int visibleOrderConfigHash;
+        private int visibleCursor;
         private int tickCounter;
         private int materializedLastTick;
     }

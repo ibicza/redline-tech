@@ -1,7 +1,11 @@
 package com.redline.worldcore.server.generation;
 
 import com.redline.worldcore.api.generation.CubeGenerationContext;
+import com.redline.worldcore.server.profiler.RuntimeProfiler;
 import net.minecraft.util.Mth;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.Fluids;
@@ -14,13 +18,16 @@ import net.minecraft.world.level.material.Fluids;
  * milestone. This prevents M15.0 style water leaks into not-yet-materialized cube borders.</p>
  */
 public final class M16WaterModel {
-    public static final String VERSION = "M16.6 hydrology landform integration: ocean shelf + lake rim + river valley rewrite v1";
+    public static final String VERSION = "M16.11 optimized shore tiles + cached vanilla-style rivers v1";
 
     private static final long OCEAN_SEED = 0x4F4345414E4D4150L;
     private static final long RIVER_SEED = 0x5249564552533031L;
     private static final long GREAT_RIVER_SEED = 0x4752454154524956L;
     private static final long LAKE_SEED = 0x4C414B45534D3136L;
     private static final long WATERFALL_SEED = 0x574154455246414CL;
+    private static final long LAKE_SHAPE_SEED = 0x4C414B4553484150L;
+    private static final long LAKE_SHORE_SEED = 0x4C414B4553484F52L;
+    private static final long RIVER_BED_SEED = 0x5249564552424544L;
 
     private static final BlockState WATER = Blocks.WATER.defaultBlockState();
     private static final BlockState SAND = Blocks.SAND.defaultBlockState();
@@ -28,23 +35,99 @@ public final class M16WaterModel {
     private static final BlockState STONE = Blocks.STONE.defaultBlockState();
     private static final BlockState GRAVEL = Blocks.GRAVEL.defaultBlockState();
     private static final BlockState DIRT = Blocks.DIRT.defaultBlockState();
+    private static final BlockState CLAY = Blocks.CLAY.defaultBlockState();
+
+    private static final int SAMPLE_CACHE_LIMIT = 65536;
+    private static final int RIVER_FIELD_CACHE_LIMIT = 65536;
+    private static final int OCEAN_SHORE_CACHE_LIMIT = 16384;
+    private static final int LAKE_BASIN_CACHE_LIMIT = 8192;
+    private static final int SHORE_SHAPE_CACHE_LIMIT = 65536;
+
+    private static final ThreadLocal<LinkedHashMap<Long, M16WaterSample>> SAMPLE_CACHE = ThreadLocal.withInitial(() -> new LinkedHashMap<>(512, 0.75F, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Long, M16WaterSample> eldest) {
+            return size() > SAMPLE_CACHE_LIMIT;
+        }
+    });
+
+    private static final ThreadLocal<LinkedHashMap<Long, RiverField>> RIVER_FIELD_CACHE = ThreadLocal.withInitial(() -> new LinkedHashMap<>(512, 0.75F, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Long, RiverField> eldest) {
+            return size() > RIVER_FIELD_CACHE_LIMIT;
+        }
+    });
+
+    private static final ThreadLocal<LinkedHashMap<Long, Double>> OCEAN_SHORE_CACHE = ThreadLocal.withInitial(() -> new LinkedHashMap<>(256, 0.75F, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Long, Double> eldest) {
+            return size() > OCEAN_SHORE_CACHE_LIMIT;
+        }
+    });
+
+    private static final ThreadLocal<LinkedHashMap<Long, Boolean>> LAKE_BASIN_CACHE = ThreadLocal.withInitial(() -> new LinkedHashMap<>(256, 0.75F, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Long, Boolean> eldest) {
+            return size() > LAKE_BASIN_CACHE_LIMIT;
+        }
+    });
+
+    private static final ThreadLocal<LinkedHashMap<Long, ShoreShape>> SHORE_SHAPE_CACHE = ThreadLocal.withInitial(() -> new LinkedHashMap<>(1024, 0.75F, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Long, ShoreShape> eldest) {
+            return size() > SHORE_SHAPE_CACHE_LIMIT;
+        }
+    });
+
+    public static void beginCubeGeneration() {
+        // M16.11: keep bounded per-thread caches warm across adjacent cube generation. Every key includes the seed
+        // and dimension settings, so nearby client/eager generation can reuse river/ocean/shore samples safely.
+    }
+
+    public static void endCubeGeneration() {
+        // Bounded LRU maps evict old entries; clearing after every cube was responsible for millions of repeated
+        // river/water samples around shore scans.
+    }
 
     public static M16WaterSample sample(CubeGenerationContext context, M15TerrainSample terrain) {
+        long key = sampleKey(context, terrain.x(), terrain.z());
+        LinkedHashMap<Long, M16WaterSample> cache = SAMPLE_CACHE.get();
+        M16WaterSample cached = cache.get(key);
+        if (cached != null) {
+            M16WaterPerfDebug.recordSampleCacheHit();
+            RuntimeProfiler.addCount("water.sample_cache_hits", 1);
+            return cached;
+        }
+        long start = System.nanoTime();
+        M16WaterSample sample = sampleUncached(context, terrain);
+        cache.put(key, sample);
+        long micros = (System.nanoTime() - start) / 1_000L;
+        M16WaterPerfDebug.recordSample(micros);
+        RuntimeProfiler.recordMicros("water.sample_uncached", micros);
+        RuntimeProfiler.addCount("water.sample_uncached_calls", 1);
+        return sample;
+    }
+
+    private static M16WaterSample sampleUncached(CubeGenerationContext context, M15TerrainSample terrain) {
         M15WorldgenProfile profile = M15TerrainModel.profile(context);
         int x = terrain.x();
         int z = terrain.z();
-        int sea = profile.seaLevel();
         int drySurfaceY = terrain.surfaceY();
 
+        long oceanStart = RuntimeProfiler.markStart();
         M16WaterSample ocean = oceanSample(context, profile, terrain);
+        RuntimeProfiler.recordSince("water.sample.ocean", oceanStart);
         // M16.1 ownership: oceans own their volume first. Rivers may lead into oceans later, but they must not
         // rasterize a separate river/lake/waterfall body inside an ocean cell.
         if (ocean.hasWater()) {
             return ocean;
         }
 
+        long riverStart = RuntimeProfiler.markStart();
         M16WaterSample river = riverSample(context, profile, terrain);
+        RuntimeProfiler.recordSince("water.sample.river", riverStart);
+        long lakeStart = RuntimeProfiler.markStart();
         M16WaterSample lake = lakeSample(context, profile, terrain, river);
+        RuntimeProfiler.recordSince("water.sample.lake", lakeStart);
 
         M16WaterSample best = chooseBest(ocean, river, lake);
         if (best.waterType() == M16WaterType.RIVER && isWaterfallCandidate(context, profile, terrain, best)) {
@@ -76,14 +159,67 @@ public final class M16WaterModel {
         return best;
     }
 
+    private static long sampleKey(CubeGenerationContext context, int x, int z) {
+        long key = (((long) x) << 32) ^ (z & 0xFFFF_FFFFL);
+        key ^= context.seed() * 0x9E3779B97F4A7C15L;
+        key ^= ((long) context.settings().minCubeY() << 48);
+        key ^= ((long) context.settings().maxCubeY() << 32);
+        key ^= ((long) context.settings().seaLevel() << 16);
+        return key;
+    }
+
     public static M16WaterSample sample(CubeGenerationContext context, int x, int z) {
         return sample(context, M15TerrainModel.sampleDry(context, x, z));
     }
 
-    public static BlockState overrideState(CubeGenerationContext context, M15TerrainSample terrain, int y, BlockState baseState) {
+    public static M16WaterColumnShape columnShape(CubeGenerationContext context, M15TerrainSample terrain) {
+        long start = System.nanoTime();
+        M15WorldgenProfile profile = M15TerrainModel.profile(context);
         M16WaterSample water = sample(context, terrain);
+        if (water.hasWater()) {
+            long micros = (System.nanoTime() - start) / 1_000L;
+            M16WaterPerfDebug.recordColumnShape(micros);
+            RuntimeProfiler.recordMicros("water.column_shape", micros);
+            return M16WaterColumnShape.waterBody(water);
+        }
+        if (!mightNeedDryShoreShape(profile, terrain)) {
+            long micros = (System.nanoTime() - start) / 1_000L;
+            M16WaterPerfDebug.recordColumnShape(micros);
+            RuntimeProfiler.recordMicros("water.column_shape", micros);
+            RuntimeProfiler.addCount("water.dry_shore_fast_skips", 1);
+            return M16WaterColumnShape.dry(water, false, Integer.MAX_VALUE, 0, false, Blocks.AIR.defaultBlockState(), Blocks.AIR.defaultBlockState());
+        }
+        M16WaterPerfDebug.recordDryShoreScan();
+        RuntimeProfiler.addCount("water.dry_shore_scans", 1);
+        long shoreStart = RuntimeProfiler.markStart();
+        ShoreShape shore = nearestShoreShape(context, profile, terrain);
+        RuntimeProfiler.recordSince("water.nearest_shore_shape", shoreStart);
+        long micros = (System.nanoTime() - start) / 1_000L;
+        M16WaterPerfDebug.recordColumnShape(micros);
+        RuntimeProfiler.recordMicros("water.column_shape", micros);
+        return M16WaterColumnShape.dry(water, shore.active(), shore.surfaceY(), shore.softDepth(), shore.raise(), shore.topState(), shore.subState());
+    }
+
+    private static boolean mightNeedDryShoreShape(M15WorldgenProfile profile, M15TerrainSample terrain) {
+        // Dry shore shaping is useful only near sea-level water.  Running the neighbor scanner on every dry mountain
+        // column near a river line was one of the M16.9 river lag sources.
+        if (terrain.surfaceY() > profile.seaLevel() + 52) {
+            return false;
+        }
+        if (terrain.surfaceY() < profile.seaLevel() - 24) {
+            return true;
+        }
+        return true;
+    }
+
+    public static BlockState overrideState(CubeGenerationContext context, M15TerrainSample terrain, int y, BlockState baseState) {
+        return overrideState(context, terrain, columnShape(context, terrain), y, baseState);
+    }
+
+    public static BlockState overrideState(CubeGenerationContext context, M15TerrainSample terrain, M16WaterColumnShape column, int y, BlockState baseState) {
+        M16WaterSample water = column.water();
         if (!water.hasWater()) {
-            return adjustedDryShoreState(context, terrain, y, baseState);
+            return adjustedDryShoreState(terrain, column, y, baseState);
         }
 
         // M16.5: water bodies are no longer painted over the finished terrain.  The hydrology owner first
@@ -118,12 +254,22 @@ public final class M16WaterModel {
         if (minY > profile.highestSurfaceY() + 16 || maxY < profile.lowestSurfaceY() - 160) {
             return false;
         }
+        // Conservative cheap path for deep solid fast-fill checks. Do not call full water sample here; the fast path
+        // itself must remain fast. Detailed surface cubes still go through the full 16x16 column planner.
         int baseX = cubeX << 4;
         int baseZ = cubeZ << 4;
         for (int dz = 0; dz <= 16; dz += 8) {
             for (int dx = 0; dx <= 16; dx += 8) {
-                M16WaterSample sample = sample(context, baseX + Math.min(dx, 15), baseZ + Math.min(dz, 15));
-                if (sample.hasWater() && maxY >= sample.effectiveSurfaceY() && minY <= sample.waterSurfaceY()) {
+                M15TerrainSample terrain = M15TerrainModel.sampleDry(context, baseX + Math.min(dx, 15), baseZ + Math.min(dz, 15));
+                if (rawOceanCandidate(context, profile, terrain) && maxY >= profile.seaLevel() - 40 && minY <= profile.seaLevel()) {
+                    return true;
+                }
+                RiverField field = riverField(context, terrain.x(), terrain.z(), terrain);
+                if (field.profile != M16RiverProfile.NONE
+                        && field.distance <= riverWaterRadius(field)
+                        && terrain.surfaceY() <= profile.seaLevel() + 32
+                        && maxY >= profile.seaLevel() - Math.max(2, field.baseWaterDepth + 2)
+                        && minY <= profile.seaLevel()) {
                     return true;
                 }
             }
@@ -184,11 +330,13 @@ public final class M16WaterModel {
         // M16.6: ocean floor must be a coastal shelf, not a full-depth wall right next to dry land.
         // Depth is driven first by distance to the nearest non-ocean/dry shore, then only by deep-ocean mask.
         double shoreDistance = oceanShoreDistance(context, profile, x, z);
-        double shoreN = Mth.clamp(shoreDistance / 128.0D, 0.0D, 1.0D);
-        int shelfDepth = 1 + (int) Math.round(shoreN * shoreN * 30.0D);
-        int deepDepth = 6 + (int) Math.round(oceanMask * 24.0D)
-                + M15Noise.hashToRange(context.seed() ^ OCEAN_SEED, x >> 4, 0, z >> 4, 8);
-        int depth = Mth.clamp(Math.min(deepDepth, shelfDepth + (int) Math.round(oceanMask * 8.0D)), 1, 48);
+        double shoreN = Mth.clamp(shoreDistance / 112.0D, 0.0D, 1.0D);
+        // M16.8: coastline floor is explicitly shelf-shaped.  Close to land it must stay shallow; depth grows
+        // gradually with shore distance, then ocean mask can add deeper water farther away.
+        int shelfDepth = 1 + (int) Math.round(shoreN * shoreN * 20.0D + shoreN * 6.0D);
+        int deepDepth = 5 + (int) Math.round(oceanMask * 22.0D)
+                + M15Noise.hashToRange(context.seed() ^ OCEAN_SEED, x >> 4, 0, z >> 4, 6);
+        int depth = Mth.clamp(Math.min(deepDepth, shelfDepth), 1, 36);
         int bedY = Math.max(profile.minY() + 16, profile.seaLevel() - depth);
         return new M16WaterSample(x, z, terrain.surfaceY(), bedY, profile.seaLevel(), profile.seaLevel() - bedY, profile.seaLevel() - bedY,
                 64 + (int) Math.round(oceanMask * 128.0D), oceanMask, shoreDistance, Double.POSITIVE_INFINITY, 0,
@@ -219,11 +367,15 @@ public final class M16WaterModel {
                 }
                 int centerX = cx * 256 + 48 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 11L), cx, 0, cz, 160);
                 int centerZ = cz * 256 + 48 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 29L), cx, 0, cz, 160);
-                int rx = 18 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 47L), cx, 0, cz, 44);
-                int rz = 18 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 61L), cx, 0, cz, 44);
+                int rx = 14 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 47L), cx, 0, cz, 82);
+                int rz = 12 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 61L), cx, 0, cz, 76);
                 double nx = (x - centerX) / (double) rx;
                 double nz = (z - centerZ) / (double) rz;
-                double dist = nx * nx + nz * nz;
+                double ellipseDist = nx * nx + nz * nz;
+                double lobes = M15Noise.fbm2D(context.seed() ^ LAKE_SHAPE_SEED, x, z, 48, 3) * 0.18D
+                        + M15Noise.fbm2D(context.seed() ^ (LAKE_SHAPE_SEED + 19L), x + centerX, z - centerZ, 21, 2) * 0.08D;
+                double edgeScale = Mth.clamp(1.0D + lobes, 0.72D, 1.28D);
+                double dist = ellipseDist / (edgeScale * edgeScale);
                 if (dist > 1.0D) {
                     continue;
                 }
@@ -242,15 +394,17 @@ public final class M16WaterModel {
                     continue;
                 }
                 double edge = Math.sqrt(dist);
-                int maxUnsupportedDrop = edge > 0.72D ? 2 : edge > 0.45D ? 6 : 14;
+                int maxUnsupportedDrop = edge > 0.78D ? 2 : edge > 0.52D ? 7 : 16;
                 if (lakeSurface - terrain.surfaceY() > maxUnsupportedDrop) {
                     // Do not let a lake spill as a floating slab over an open valley/cliff.  If a basin cannot be
                     // supported by the local terrain, this cell is not owned by the lake.
                     continue;
                 }
                 double strength = 1.0D - dist;
-                int waterDepth = 2 + (int) Math.round(strength * (4 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 79L), cx, 0, cz, 7)));
-                int carveDepth = waterDepth + 1 + (int) Math.round(strength * 5.0D);
+                int baseDepth = 3 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 79L), cx, 0, cz, 13);
+                double bedRoughness = M15Noise.fbm2D(context.seed() ^ (LAKE_SHAPE_SEED + 41L), x, z, 19, 2) * 1.4D;
+                int waterDepth = Math.max(1, 1 + (int) Math.round(Math.sqrt(strength) * baseDepth + bedRoughness));
+                int carveDepth = waterDepth + 1 + (int) Math.round(strength * 6.0D);
                 int targetBedY = Math.max(profile.minY() + 16, lakeSurface - waterDepth);
                 int bedY = Math.min(terrain.surfaceY(), targetBedY);
                 if (lakeSurface - bedY > 18) {
@@ -269,6 +423,22 @@ public final class M16WaterModel {
     }
 
     private static boolean lakeBasinLooksValid(CubeGenerationContext context, M15WorldgenProfile profile, int centerX, int centerZ, int rx, int rz, int lakeSurface) {
+        long key = basinKey(context, centerX, centerZ, rx, rz, lakeSurface);
+        LinkedHashMap<Long, Boolean> cache = LAKE_BASIN_CACHE.get();
+        Boolean cached = cache.get(key);
+        if (cached != null) {
+            RuntimeProfiler.addCount("water.lake_basin_cache_hits", 1);
+            return cached;
+        }
+        long start = RuntimeProfiler.markStart();
+        boolean result = lakeBasinLooksValidUncached(context, profile, centerX, centerZ, rx, rz, lakeSurface);
+        RuntimeProfiler.recordSince("water.lake_basin_validation", start);
+        RuntimeProfiler.addCount("water.lake_basin_validations", 1);
+        cache.put(key, result);
+        return result;
+    }
+
+    private static boolean lakeBasinLooksValidUncached(CubeGenerationContext context, M15WorldgenProfile profile, int centerX, int centerZ, int rx, int rz, int lakeSurface) {
         // M16.3 basin guard: a lake is allowed to fill a shallow depression, but it must not become a floating
         // saucer glued to a cliff. We sample the rim and a few inner points before accepting the lake owner.
         int validRim = 0;
@@ -296,6 +466,16 @@ public final class M16WaterModel {
         return validRim >= 7 && validInner >= 6;
     }
 
+    private static long basinKey(CubeGenerationContext context, int centerX, int centerZ, int rx, int rz, int lakeSurface) {
+        long key = (((long) centerX) << 32) ^ (centerZ & 0xFFFF_FFFFL);
+        key ^= context.seed() * 0x9E3779B97F4A7C15L;
+        key ^= ((long) rx & 0xFFFFL) << 48;
+        key ^= ((long) rz & 0xFFFFL) << 32;
+        key ^= ((long) lakeSurface & 0xFFFFL) << 16;
+        key ^= ((long) context.settings().seaLevel() & 0xFFFFL);
+        return key;
+    }
+
     private static M16WaterSample riverSample(CubeGenerationContext context, M15WorldgenProfile profile, M15TerrainSample terrain) {
         int x = terrain.x();
         int z = terrain.z();
@@ -305,49 +485,67 @@ public final class M16WaterModel {
             return none(terrain, 0.0D, Math.max(0.0D, terrain.surfaceY() - profile.seaLevel()));
         }
 
-        double t = Mth.clamp(field.distance / Math.max(1.0D, waterRadius), 0.0D, 1.0D);
-        // Bowl-shaped river cross-section: deep in the center, shallow on the edges. This avoids vertical canal walls.
-        double bowl = Math.max(0.12D, 1.0D - t * t);
-        int waterDepth = Math.max(1, (int) Math.round(field.baseWaterDepth * bowl));
-        int carveDepth = Math.max(waterDepth + 1, (int) Math.round(field.baseCarveDepth * (0.28D + 0.72D * bowl)));
-        int valleyWidth = Math.max(field.width + 10, (int) Math.round(field.width * field.valleyScale));
+        // M16.9: vanilla-style rivers are flat water bodies.  Vanilla overworld rivers are not a sloped fluid
+        // network; their water is effectively a sea-level cut through terrain.  Keeping one water level removes
+        // waterfall-like steps and also deletes the previous expensive centreline smoothing/straightness probes.
+        int waterSurfaceY = profile.seaLevel();
+        int maxCut = switch (field.profile) {
+            case GREAT_RIVER -> 11;
+            case PLAINS_RIVER -> 9;
+            case SMALL_RIVER -> 7;
+            case STREAM -> 5;
+            default -> 7;
+        };
+        if (terrain.surfaceY() > waterSurfaceY + maxCut) {
+            return none(terrain, 0.0D, Math.max(0.0D, terrain.surfaceY() - profile.seaLevel()));
+        }
 
-        int[] center = projectedRiverCenter(context, field, x, z);
-        int centerX = center[0];
-        int centerZ = center[1];
-        int smoothedSurface = smoothedRiverSurface(context, centerX, centerZ);
-        int rawWaterSurfaceY = smoothedSurface - Math.max(1, carveDepth - waterDepth);
-        boolean straight = isStraightRiverSegment(context, field, centerX, centerZ);
-        int waterSurfaceY = quantizeRiverWaterSurface(context, field.profile, centerX, centerZ, rawWaterSurfaceY, straight);
-        if (!straight) {
-            // A bend must not be a local waterfall. Hold its level close to neighbouring straight runs.
-            waterSurfaceY = Math.max(waterSurfaceY, bendSafeWaterSurface(context, field, centerX, centerZ, rawWaterSurfaceY));
-        }
-        if (field.profile == M16RiverProfile.GREAT_RIVER && terrain.surfaceY() < profile.seaLevel() + 16) {
-            waterSurfaceY = Math.min(profile.seaLevel(), waterSurfaceY);
-        }
-        // Keep river levels tied to the projected centreline.  Do not clamp every edge cell to its dry terrain:
-        // that was the main reason rivers had water only on the sides or punctured centres.  If a local cell is
-        // lower than the river bed, the terrain integration pass will infill the bed; if it is higher, it is carved.
-        waterSurfaceY = Mth.clamp(waterSurfaceY, profile.minY() + 16, profile.highestSurfaceY() + 16);
-        int targetBedY = Math.max(profile.minY() + 16, waterSurfaceY - waterDepth);
-        int bedY = targetBedY;
+        double t = Mth.clamp(field.distance / Math.max(1.0D, waterRadius), 0.0D, 1.0D);
+        double bowl = Math.max(0.12D, 1.0D - t * t);
+        double roughness = M15Noise.fbm2D(context.seed() ^ RIVER_BED_SEED, x, z, 13, 2) * 0.9D;
+        int waterDepth = Math.max(1, (int) Math.round(field.baseWaterDepth * bowl + roughness));
+        int carveDepth = Math.max(waterDepth + 1, (int) Math.round(field.baseCarveDepth * (0.28D + 0.72D * bowl)));
+        int valleyWidth = Math.max(field.width + 8, (int) Math.round(field.width * field.valleyScale));
+        int bedY = Math.max(profile.minY() + 16, waterSurfaceY - waterDepth);
         return new M16WaterSample(x, z, terrain.surfaceY(), bedY, waterSurfaceY, waterSurfaceY - bedY, carveDepth, valleyWidth,
                 0.0D, field.distance, field.distance, field.width,
                 M16WaterType.RIVER, field.profile, field.profile == M16RiverProfile.GREAT_RIVER,
-                field.profile == M16RiverProfile.CANYON_RIVER, false);
+                false, false);
     }
 
     private static RiverField riverField(CubeGenerationContext context, int x, int z, M15TerrainSample terrain) {
+        long key = sampleKey(context, x, z);
+        LinkedHashMap<Long, RiverField> cache = RIVER_FIELD_CACHE.get();
+        RiverField cached = cache.get(key);
+        if (cached != null) {
+            RuntimeProfiler.addCount("water.river_field_cache_hits", 1);
+            return cached;
+        }
+        long start = RuntimeProfiler.markStart();
+        RiverField field = riverFieldUncached(context, x, z, terrain);
+        RuntimeProfiler.recordSince("water.river_field_uncached", start);
+        RuntimeProfiler.addCount("water.river_field_uncached_calls", 1);
+        cache.put(key, field);
+        return field;
+    }
+
+    private static RiverField riverFieldUncached(CubeGenerationContext context, int x, int z, M15TerrainSample terrain) {
+        M15WorldgenProfile world = M15TerrainModel.profile(context);
         double signedGreat = riverLineValue(context, true, x, z);
         double signedNormal = riverLineValue(context, false, x, z);
         double greatLine = Math.abs(signedGreat);
         double normalLine = Math.abs(signedNormal);
-        double mountain = M15Noise.smoothstep(0.35D, 0.82D, terrain.ridge() + Math.max(0.0D, terrain.continentalness()) * 0.25D);
-        double wet = M15Noise.smoothstep(-0.25D, 0.75D, terrain.humidity());
+        double wet = M15Noise.smoothstep(-0.30D, 0.70D, terrain.humidity());
         int coarseX = Math.floorDiv(x, 512);
         int coarseZ = Math.floorDiv(z, 512);
-        boolean great = greatLine < 0.030D && terrain.continentalness() > -0.38D;
+
+        // M16.9: no mountain/canyon/waterfall river profiles.  Rivers are intentionally lowland, flat,
+        // vanilla-like sea-level channels.  Width/depth still vary per coarse cell, but water level does not.
+        boolean great = greatLine < 0.022D
+                && terrain.continentalness() > -0.36D
+                && terrain.surfaceY() <= world.seaLevel() + 24
+                && wet > 0.18D;
+
         M16RiverProfile profile;
         int width;
         int depth;
@@ -359,50 +557,38 @@ public final class M16WaterModel {
         boolean greatLineOwner;
         if (great) {
             profile = M16RiverProfile.GREAT_RIVER;
-            width = 64 + M15Noise.hashToRange(context.seed() ^ GREAT_RIVER_SEED, coarseX, 0, coarseZ, 57);
-            depth = 12 + M15Noise.hashToRange(context.seed() ^ (GREAT_RIVER_SEED + 31L), coarseX, 0, coarseZ, 21);
-            carve = depth + 8 + M15Noise.hashToRange(context.seed() ^ (GREAT_RIVER_SEED + 47L), coarseX, 0, coarseZ, 32);
-            distance = greatLine * 1500.0D;
-            valleyScale = 2.8D;
+            width = 36 + M15Noise.hashToRange(context.seed() ^ GREAT_RIVER_SEED, coarseX, 0, coarseZ, 42);
+            depth = 4 + M15Noise.hashToRange(context.seed() ^ (GREAT_RIVER_SEED + 31L), coarseX, 0, coarseZ, 10);
+            carve = depth + 3 + M15Noise.hashToRange(context.seed() ^ (GREAT_RIVER_SEED + 47L), coarseX, 0, coarseZ, 12);
+            distance = greatLine * 1480.0D;
+            valleyScale = 2.0D;
             signedLine = signedGreat;
-            distanceScale = 1500.0D;
+            distanceScale = 1480.0D;
             greatLineOwner = true;
         } else {
-            if (normalLine > 0.070D || terrain.continentalness() < -0.52D || wet < 0.20D) {
+            if (normalLine > 0.066D || terrain.continentalness() < -0.52D || wet < 0.18D || terrain.surfaceY() > world.seaLevel() + 32) {
                 return new RiverField(M16RiverProfile.NONE, Integer.MAX_VALUE / 4, Double.POSITIVE_INFINITY, 0, 0, 1.0D,
                         0.0D, 620.0D, false);
             }
             int roll = M15Noise.hashToRange(context.seed() ^ RIVER_SEED, coarseX, 0, coarseZ, 100);
-            if (mountain > 0.72D && roll < 34) {
-                profile = M16RiverProfile.CANYON_RIVER;
-                width = 16 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 13L), coarseX, 0, coarseZ, 35);
-                depth = 8 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 17L), coarseX, 0, coarseZ, 13);
-                carve = 32 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 19L), coarseX, 0, coarseZ, 96);
-                valleyScale = 4.2D;
-            } else if (mountain > 0.55D) {
-                profile = M16RiverProfile.MOUNTAIN_RIVER;
-                width = 8 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 23L), coarseX, 0, coarseZ, 18);
-                depth = 4 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 29L), coarseX, 0, coarseZ, 8);
-                carve = depth + 4 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 31L), coarseX, 0, coarseZ, 18);
-                valleyScale = 2.6D;
-            } else if (roll < 12) {
+            if (roll < 16) {
                 profile = M16RiverProfile.STREAM;
-                width = 3 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 37L), coarseX, 0, coarseZ, 4);
-                depth = 1 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 41L), coarseX, 0, coarseZ, 2);
-                carve = depth + 1;
-                valleyScale = 1.8D;
-            } else if (roll < 42) {
+                width = 4 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 37L), coarseX, 0, coarseZ, 5);
+                depth = 1 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 41L), coarseX, 0, coarseZ, 3);
+                carve = depth + 2;
+                valleyScale = 1.9D;
+            } else if (roll < 50) {
                 profile = M16RiverProfile.SMALL_RIVER;
-                width = 6 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 43L), coarseX, 0, coarseZ, 9);
-                depth = 2 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 53L), coarseX, 0, coarseZ, 5);
-                carve = depth + 2 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 59L), coarseX, 0, coarseZ, 8);
-                valleyScale = 2.2D;
+                width = 8 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 43L), coarseX, 0, coarseZ, 13);
+                depth = 2 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 53L), coarseX, 0, coarseZ, 6);
+                carve = depth + 2 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 59L), coarseX, 0, coarseZ, 7);
+                valleyScale = 2.15D;
             } else {
                 profile = M16RiverProfile.PLAINS_RIVER;
-                width = 14 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 61L), coarseX, 0, coarseZ, 24);
-                depth = 4 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 67L), coarseX, 0, coarseZ, 11);
-                carve = depth + 3 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 71L), coarseX, 0, coarseZ, 16);
-                valleyScale = 2.8D;
+                width = 16 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 61L), coarseX, 0, coarseZ, 26);
+                depth = 3 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 67L), coarseX, 0, coarseZ, 9);
+                carve = depth + 3 + M15Noise.hashToRange(context.seed() ^ (RIVER_SEED + 71L), coarseX, 0, coarseZ, 12);
+                valleyScale = 2.55D;
             }
             distance = normalLine * 620.0D;
             signedLine = signedNormal;
@@ -460,11 +646,11 @@ public final class M16WaterModel {
 
     private static double riverWaterRadius(RiverField field) {
         return switch (field.profile) {
-            case GREAT_RIVER -> field.width * 0.50D;
-            case CANYON_RIVER -> field.width * 0.43D;
-            case MOUNTAIN_RIVER -> field.width * 0.44D;
-            case STREAM -> field.width * 0.46D;
-            case SMALL_RIVER, PLAINS_RIVER -> field.width * 0.48D;
+            case GREAT_RIVER -> field.width * 0.43D;
+            case CANYON_RIVER -> field.width * 0.38D;
+            case MOUNTAIN_RIVER -> field.width * 0.40D;
+            case STREAM -> field.width * 0.42D;
+            case SMALL_RIVER, PLAINS_RIVER -> field.width * 0.44D;
             case NONE -> 0.0D;
         };
     }
@@ -575,16 +761,14 @@ public final class M16WaterModel {
     }
 
 
-    private static BlockState adjustedDryShoreState(CubeGenerationContext context, M15TerrainSample terrain, int y, BlockState baseState) {
-        M15WorldgenProfile profile = M15TerrainModel.profile(context);
-        ShoreShape shore = nearestShoreShape(context, profile, terrain);
-        if (!shore.active()) {
+    private static BlockState adjustedDryShoreState(M15TerrainSample terrain, M16WaterColumnShape shore, int y, BlockState baseState) {
+        if (!shore.dryShoreActive()) {
             return baseState;
         }
         int currentSurfaceY = terrain.surfaceY();
-        int adjustedSurfaceY = shore.raise() && shore.surfaceY() > currentSurfaceY
-                ? shore.surfaceY()
-                : Math.min(currentSurfaceY, shore.surfaceY());
+        int adjustedSurfaceY = shore.dryShoreRaise() && shore.dryShoreSurfaceY() > currentSurfaceY
+                ? shore.dryShoreSurfaceY()
+                : Math.min(currentSurfaceY, shore.dryShoreSurfaceY());
         if (adjustedSurfaceY == currentSurfaceY) {
             return baseState;
         }
@@ -592,73 +776,193 @@ public final class M16WaterModel {
             return Blocks.AIR.defaultBlockState();
         }
         if (y == adjustedSurfaceY) {
-            return shore.topState();
+            return shore.dryShoreTopState();
         }
         if (adjustedSurfaceY > currentSurfaceY && y > currentSurfaceY) {
-            return shore.subState();
+            return shore.dryShoreSubState();
         }
-        if (y >= adjustedSurfaceY - shore.softDepth()) {
-            return shore.subState();
+        if (y >= adjustedSurfaceY - shore.dryShoreSoftDepth()) {
+            return shore.dryShoreSubState();
         }
         return baseState;
     }
 
     private static ShoreShape nearestShoreShape(CubeGenerationContext context, M15WorldgenProfile profile, M15TerrainSample terrain) {
+        long key = sampleKey(context, terrain.x(), terrain.z());
+        LinkedHashMap<Long, ShoreShape> cache = SHORE_SHAPE_CACHE.get();
+        ShoreShape cached = cache.get(key);
+        if (cached != null) {
+            RuntimeProfiler.addCount("water.shore_shape_cache_hits", 1);
+            return cached;
+        }
+
         ShoreShape best = directRiverValleyShape(context, profile, terrain);
+        if (!best.active()) {
+            ShoreShape ocean = directOceanShoreShape(context, profile, terrain);
+            if (ocean.active()) {
+                best = ocean;
+            }
+        }
+        if (!best.active() || !best.raise()) {
+            ShoreShape lake = directLakeShoreShape(context, profile, terrain);
+            if (lake.active() && (!best.active() || betterShoreShape(terrain.surfaceY(), lake, best))) {
+                best = lake;
+            }
+        }
+        cache.put(key, best);
+        return best;
+    }
+
+    private static ShoreShape directOceanShoreShape(CubeGenerationContext context, M15WorldgenProfile profile, M15TerrainSample terrain) {
+        int current = terrain.surfaceY();
+        if (current > profile.seaLevel() + 56 || current < profile.seaLevel() - 28) {
+            return ShoreShape.NONE;
+        }
         int x = terrain.x();
         int z = terrain.z();
-        int[] radii = {4, 8, 12, 16, 24, 32, 48, 64, 96};
+        int[] radii = {4, 8, 16, 32, 48, 64};
+        ShoreShape best = ShoreShape.NONE;
         for (int r : radii) {
-            int step = r <= 16 ? 8 : 16;
+            int step = r <= 8 ? 8 : 16;
             for (int dz = -r; dz <= r; dz += step) {
                 for (int dx = -r; dx <= r; dx += step) {
                     if (Math.abs(dx) != r && Math.abs(dz) != r) {
                         continue;
                     }
-                    M16WaterSample sample = sample(context, x + dx, z + dz);
-                    if (!sample.hasWater()) {
+                    M15TerrainSample sample = M15TerrainModel.sampleDry(context, x + dx, z + dz);
+                    if (!rawOceanCandidate(context, profile, sample) || sample.surfaceY() > profile.seaLevel() + 2) {
                         continue;
                     }
                     double distance = Math.sqrt((double) dx * dx + (double) dz * dz);
-                    ShoreShape candidate = shoreShapeFor(profile, terrain, sample, distance);
-                    if (candidate.active() && (!best.active() || betterShoreShape(terrain.surfaceY(), candidate, best))) {
+                    M16WaterSample pseudoOcean = new M16WaterSample(
+                            terrain.x(), terrain.z(), terrain.surfaceY(), profile.seaLevel() - 2, profile.seaLevel(),
+                            2, 2, 128, 1.0D, distance, Double.POSITIVE_INFINITY, 0,
+                            M16WaterType.OCEAN, M16RiverProfile.NONE, false, false, false
+                    );
+                    ShoreShape candidate = shoreShapeFor(context, profile, terrain, pseudoOcean, distance);
+                    if (candidate.active() && (!best.active() || betterShoreShape(current, candidate, best))) {
                         best = candidate;
                     }
                 }
+            }
+            if (best.active()) {
+                RuntimeProfiler.addCount("water.direct_ocean_shore_hits", 1);
+                return best;
             }
         }
         return best;
     }
 
-    private static ShoreShape shoreShapeFor(M15WorldgenProfile profile, M15TerrainSample terrain, M16WaterSample water, double distance) {
+    private static ShoreShape directLakeShoreShape(CubeGenerationContext context, M15WorldgenProfile profile, M15TerrainSample terrain) {
+        if (terrain.surfaceY() <= profile.seaLevel() + 2 || terrain.surfaceY() > profile.highMountainStartY() + 120) {
+            return ShoreShape.NONE;
+        }
+        int x = terrain.x();
+        int z = terrain.z();
+        int cellX = Math.floorDiv(x, 256);
+        int cellZ = Math.floorDiv(z, 256);
+        ShoreShape best = ShoreShape.NONE;
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                int cx = cellX + dx;
+                int cz = cellZ + dz;
+                if (M15Noise.hashToRange(context.seed() ^ LAKE_SEED, cx, 0, cz, 5) != 0) {
+                    continue;
+                }
+                int centerX = cx * 256 + 48 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 11L), cx, 0, cz, 160);
+                int centerZ = cz * 256 + 48 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 29L), cx, 0, cz, 160);
+                int rx = 14 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 47L), cx, 0, cz, 82);
+                int rz = 12 + M15Noise.hashToRange(context.seed() ^ (LAKE_SEED + 61L), cx, 0, cz, 76);
+                double nx = (x - centerX) / (double) rx;
+                double nz = (z - centerZ) / (double) rz;
+                double ellipseDist = nx * nx + nz * nz;
+                double lobes = M15Noise.fbm2D(context.seed() ^ LAKE_SHAPE_SEED, x, z, 48, 3) * 0.18D
+                        + M15Noise.fbm2D(context.seed() ^ (LAKE_SHAPE_SEED + 19L), x + centerX, z - centerZ, 21, 2) * 0.08D;
+                double edgeScale = Mth.clamp(1.0D + lobes, 0.72D, 1.28D);
+                double dist = ellipseDist / (edgeScale * edgeScale);
+                double maxRadius = Math.max(rx, rz);
+                double approach = Math.max(96.0D, maxRadius * 1.65D);
+                if (dist <= 1.0D || (Math.sqrt(dist) - 1.0D) * maxRadius > approach) {
+                    continue;
+                }
+                M15TerrainSample centerTerrain = M15TerrainModel.sampleDry(context, centerX, centerZ);
+                int lakeSurface = centerTerrain.surfaceY() - 1;
+                if (lakeSurface <= profile.seaLevel() + 3 || lakeSurface > terrain.surfaceY() + 10) {
+                    continue;
+                }
+                if (!lakeBasinLooksValid(context, profile, centerX, centerZ, rx, rz, lakeSurface)) {
+                    continue;
+                }
+                double distance = Math.max(1.0D, (Math.sqrt(dist) - 1.0D) * maxRadius);
+                M16WaterSample pseudoLake = new M16WaterSample(
+                        terrain.x(), terrain.z(), terrain.surfaceY(), lakeSurface - 3, lakeSurface,
+                        3, 4, (int) Math.round(maxRadius), 0.0D, distance, Double.POSITIVE_INFINITY, 0,
+                        M16WaterType.LAKE, M16RiverProfile.NONE, false, false, false
+                );
+                ShoreShape candidate = shoreShapeFor(context, profile, terrain, pseudoLake, distance);
+                if (candidate.active() && (!best.active() || betterShoreShape(terrain.surfaceY(), candidate, best))) {
+                    best = candidate;
+                }
+            }
+        }
+        if (best.active()) {
+            RuntimeProfiler.addCount("water.direct_lake_shore_hits", 1);
+        }
+        return best;
+    }
+
+    private static ShoreShape shoreShapeFor(CubeGenerationContext context, M15WorldgenProfile profile, M15TerrainSample terrain, M16WaterSample water, double distance) {
         int waterLevel = water.waterSurfaceY();
         int current = terrain.surfaceY();
         switch (water.waterType()) {
             case OCEAN -> {
-                // Dry land near the sea becomes: beach -> wet beach/shelf -> normal land.  This is intentionally
-                // distance-based so the final coastline is a walkable slope instead of a vertical cut into water.
+                // M16.9: make the immediate beach actually meet the water.  The previous formula always added at
+                // least one block of rise, so coastlines often formed a sharp two-block sand wall.  Here the first
+                // few blocks are flat at water level, then the land ramps up with an eased slope.
                 double approach = 128.0D;
-                if (distance <= approach && current <= waterLevel + 128) {
-                    double n = Mth.clamp(distance / approach, 0.0D, 1.0D);
-                    int rise = 1 + (int) Math.round(n * n * 54.0D + n * 10.0D);
-                    int target = waterLevel + rise;
+                if (distance <= approach && current <= waterLevel + 120) {
+                    double flat = 6.0D + M15Noise.hashToRange(0x42454143484C564CL, terrain.x() >> 4, waterLevel, terrain.z() >> 4, 7);
+                    int target;
+                    if (distance <= flat) {
+                        target = waterLevel;
+                    } else if (distance <= flat + 10.0D) {
+                        target = waterLevel + 1;
+                    } else {
+                        double n = Mth.clamp((distance - flat - 10.0D) / Math.max(1.0D, approach - flat - 10.0D), 0.0D, 1.0D);
+                        double eased = n * n * (3.0D - 2.0D * n);
+                        target = waterLevel + 1 + (int) Math.round(eased * 38.0D);
+                    }
                     if (target < current - 1) {
-                        return new ShoreShape(true, target, 6, false, SAND, SANDSTONE);
+                        return new ShoreShape(true, target, 9, false, SAND, SANDSTONE);
+                    }
+                    if (distance <= flat + 4.0D && current < waterLevel) {
+                        return new ShoreShape(true, waterLevel, 6, true, SAND, SANDSTONE);
                     }
                 }
             }
             case LAKE -> {
                 double approach = Math.max(96.0D, water.valleyWidth() * 1.65D);
                 if (distance <= approach) {
-                    double n = Mth.clamp(distance / approach, 0.0D, 1.0D);
-                    int rise = 1 + (int) Math.round(n * n * 34.0D + n * 8.0D);
-                    int target = waterLevel + rise;
                     boolean low = current <= profile.seaLevel() + 12;
-                    if (target < current - 1) {
-                        return new ShoreShape(true, target, 6, false, low ? SAND : DIRT, low ? SANDSTONE : DIRT);
+                    boolean sandyPatch = low || M15Noise.hashToRange(context == null ? LAKE_SHORE_SEED : context.seed() ^ LAKE_SHORE_SEED,
+                            Math.floorDiv(terrain.x(), 9), waterLevel, Math.floorDiv(terrain.z(), 9), 100) < 38;
+                    double flat = 3.0D + M15Noise.hashToRange(context == null ? 0x4C414B4542454143L : context.seed() ^ 0x4C414B4542454143L,
+                            terrain.x() >> 4, waterLevel, terrain.z() >> 4, 6);
+                    int target;
+                    if (distance <= flat) {
+                        target = waterLevel;
+                    } else if (distance <= flat + 8.0D) {
+                        target = waterLevel + 1;
+                    } else {
+                        double n = Mth.clamp((distance - flat - 8.0D) / Math.max(1.0D, approach - flat - 8.0D), 0.0D, 1.0D);
+                        double eased = n * n * (3.0D - 2.0D * n);
+                        target = waterLevel + 1 + (int) Math.round(eased * 32.0D);
                     }
-                    if (distance <= approach * 0.42D && current < waterLevel + 1) {
-                        return new ShoreShape(true, waterLevel + 1, 5, true, low ? SAND : DIRT, low ? SANDSTONE : DIRT);
+                    if (target < current - 1) {
+                        return new ShoreShape(true, target, 7, false, sandyPatch ? SAND : DIRT, sandyPatch ? SANDSTONE : DIRT);
+                    }
+                    if (distance <= flat + 4.0D && current < waterLevel) {
+                        return new ShoreShape(true, waterLevel, 5, true, sandyPatch ? SAND : DIRT, sandyPatch ? SANDSTONE : DIRT);
                     }
                 }
             }
@@ -678,26 +982,23 @@ public final class M16WaterModel {
             return ShoreShape.NONE;
         }
         double waterRadius = riverWaterRadius(field);
-        int valleyWidth = Math.max(field.width + 12, (int) Math.round(field.width * field.valleyScale));
+        int valleyWidth = Math.max(field.width + 8, (int) Math.round(field.width * Math.min(field.valleyScale, 1.85D)));
         if (field.distance <= waterRadius || field.distance > valleyWidth) {
             return ShoreShape.NONE;
         }
-        int[] center = projectedRiverCenter(context, field, terrain.x(), terrain.z());
-        int centerSurface = smoothedRiverSurface(context, center[0], center[1]);
-        int waterDepth = Math.max(1, field.baseWaterDepth);
-        int carveDepth = Math.max(waterDepth + 1, field.baseCarveDepth);
-        int rawWaterSurfaceY = centerSurface - Math.max(1, carveDepth - waterDepth);
-        boolean straight = isStraightRiverSegment(context, field, center[0], center[1]);
-        int waterLevel = quantizeRiverWaterSurface(context, field.profile, center[0], center[1], rawWaterSurfaceY, straight);
+        int waterLevel = profile.seaLevel();
+        if (terrain.surfaceY() > waterLevel + 10) {
+            return ShoreShape.NONE;
+        }
         double n = Mth.clamp((field.distance - waterRadius) / Math.max(1.0D, valleyWidth - waterRadius), 0.0D, 1.0D);
-        int rise = 1 + (int) Math.round(n * n * Math.max(12.0D, field.baseCarveDepth * 0.75D) + n * 6.0D);
+        int rise = riverBankRise(field.profile, n);
         int target = waterLevel + rise;
         boolean sandy = field.profile == M16RiverProfile.PLAINS_RIVER || field.profile == M16RiverProfile.GREAT_RIVER;
         if (target < terrain.surfaceY() - 1) {
-            return new ShoreShape(true, target, 6, false, sandy ? SAND : DIRT, sandy ? SANDSTONE : DIRT);
+            return new ShoreShape(true, target, 4, false, sandy ? SAND : DIRT, sandy ? SANDSTONE : DIRT);
         }
-        if (field.distance <= waterRadius + 4.0D && terrain.surfaceY() < waterLevel + 1) {
-            return new ShoreShape(true, waterLevel + 1, 5, true, sandy ? SAND : DIRT, sandy ? SANDSTONE : DIRT);
+        if (field.distance <= waterRadius + 5.0D && terrain.surfaceY() < waterLevel) {
+            return new ShoreShape(true, waterLevel, 4, true, sandy ? SAND : DIRT, sandy ? SANDSTONE : DIRT);
         }
         return ShoreShape.NONE;
     }
@@ -705,21 +1006,37 @@ public final class M16WaterModel {
     private static ShoreShape riverShoreShape(M15WorldgenProfile profile, M15TerrainSample terrain, M16WaterSample water, double distance) {
         int current = terrain.surfaceY();
         int waterLevel = water.waterSurfaceY();
-        double bankWidth = Math.max(36.0D, water.valleyWidth() * 0.95D);
+        double bankWidth = Math.max(28.0D, water.valleyWidth() * 0.90D);
         if (distance > bankWidth) {
             return ShoreShape.NONE;
         }
-        double n = Mth.clamp(distance / bankWidth, 0.0D, 1.0D);
-        int rise = 1 + (int) Math.round(n * n * 30.0D + n * 6.0D);
-        int target = waterLevel + rise;
+        double waterRadius = riverWaterRadius(new RiverField(water.riverProfile(), water.riverWidth(), water.riverDistance(), water.waterDepth(), water.carveDepth(),
+                Math.max(1.0D, water.valleyWidth() / Math.max(1.0D, (double) water.riverWidth())), 0.0D, 1.0D, water.greatRiver()));
+        double n = Mth.clamp((distance - waterRadius) / Math.max(1.0D, bankWidth - waterRadius), 0.0D, 1.0D);
+        int target = waterLevel + riverBankRise(water.riverProfile(), n);
         boolean sandy = water.riverProfile() == M16RiverProfile.PLAINS_RIVER || water.riverProfile() == M16RiverProfile.GREAT_RIVER;
         if (target < current - 1) {
-            return new ShoreShape(true, target, 6, false, sandy ? SAND : DIRT, sandy ? SANDSTONE : DIRT);
+            return new ShoreShape(true, target, 5, false, sandy ? SAND : DIRT, sandy ? SANDSTONE : DIRT);
         }
-        if (distance <= bankWidth * 0.30D && current < waterLevel + 1) {
-            return new ShoreShape(true, waterLevel + 1, 5, true, sandy ? SAND : DIRT, sandy ? SANDSTONE : DIRT);
+        if (distance <= Math.max(6.0D, water.riverWidth() * 0.18D) && current < waterLevel) {
+            return new ShoreShape(true, waterLevel, 6, true, sandy ? SAND : DIRT, sandy ? SANDSTONE : DIRT);
         }
         return ShoreShape.NONE;
+    }
+
+    private static int riverBankRise(M16RiverProfile profile, double n) {
+        double eased = n * n * (3.0D - 2.0D * n);
+        int maxRise = switch (profile) {
+            case GREAT_RIVER -> 7;
+            case PLAINS_RIVER -> 6;
+            case SMALL_RIVER -> 5;
+            case STREAM -> 3;
+            default -> 5;
+        };
+        if (n < 0.18D) {
+            return 0;
+        }
+        return Math.max(1, (int) Math.round(eased * maxRise));
     }
 
     private static boolean betterShoreShape(int currentSurfaceY, ShoreShape candidate, ShoreShape previous) {
@@ -744,9 +1061,35 @@ public final class M16WaterModel {
     }
 
     private static double oceanShoreDistance(CubeGenerationContext context, M15WorldgenProfile profile, int x, int z) {
-        int[] radii = {4, 8, 12, 16, 24, 32, 48, 64, 96, 128};
+        int cellX = Math.floorDiv(x, 8);
+        int cellZ = Math.floorDiv(z, 8);
+        long key = sampleKey(context, cellX, cellZ);
+        LinkedHashMap<Long, Double> cache = OCEAN_SHORE_CACHE.get();
+        Double cached = cache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+
+        // Deep ocean has no nearby beach to resolve, so do not walk the whole ring scanner just to return max range.
+        M15TerrainSample center = M15TerrainModel.sampleDry(context, x, z);
+        double centerMask = rawOceanMask(context, center);
+        if (center.surfaceY() <= profile.seaLevel() - 14 && centerMask > 0.72D) {
+            cache.put(key, 160.0D);
+            return 160.0D;
+        }
+
+        long start = RuntimeProfiler.markStart();
+        double result = oceanShoreDistanceUncached(context, profile, x, z);
+        RuntimeProfiler.recordSince("water.ocean_shore_distance", start);
+        RuntimeProfiler.addCount("water.ocean_shore_scans", 1);
+        cache.put(key, result);
+        return result;
+    }
+
+    private static double oceanShoreDistanceUncached(CubeGenerationContext context, M15WorldgenProfile profile, int x, int z) {
+        int[] radii = {4, 8, 16, 32, 48, 64, 96};
         for (int r : radii) {
-            int step = r <= 16 ? 4 : r <= 48 ? 8 : 16;
+            int step = r <= 8 ? 4 : r <= 32 ? 8 : 16;
             for (int dz = -r; dz <= r; dz += step) {
                 for (int dx = -r; dx <= r; dx += step) {
                     if (Math.abs(dx) != r && Math.abs(dz) != r) {
@@ -796,11 +1139,29 @@ public final class M16WaterModel {
 
     private static BlockState bedState(M16WaterSample sample, int y) {
         return switch (sample.waterType()) {
-            case OCEAN, LAKE -> sample.waterDepth() <= 3 ? SAND : SANDSTONE;
+            case OCEAN -> sample.waterDepth() <= 3 ? SAND : SANDSTONE;
+            case LAKE -> lakeBedState(sample);
             case RIVER -> riverBedState(sample);
             case WATERFALL -> STONE;
             case NONE -> Blocks.AIR.defaultBlockState();
         };
+    }
+
+    private static BlockState lakeBedState(M16WaterSample sample) {
+        int roll = M15Noise.hashToRange(LAKE_SHAPE_SEED, Math.floorDiv(sample.x(), 5), sample.waterDepth(), Math.floorDiv(sample.z(), 5), 100);
+        if (sample.waterDepth() <= 2) {
+            return roll < 70 ? SAND : GRAVEL;
+        }
+        if (roll < 34) {
+            return SAND;
+        }
+        if (roll < 58) {
+            return GRAVEL;
+        }
+        if (roll < 72) {
+            return CLAY;
+        }
+        return SANDSTONE;
     }
 
     private static BlockState supportState(M16WaterSample sample, int y) {
@@ -813,9 +1174,11 @@ public final class M16WaterModel {
     }
 
     private static BlockState riverBedState(M16WaterSample sample) {
+        int roll = M15Noise.hashToRange(RIVER_BED_SEED, Math.floorDiv(sample.x(), 4), sample.waterDepth(), Math.floorDiv(sample.z(), 4), 100);
         return switch (sample.riverProfile()) {
-            case GREAT_RIVER, PLAINS_RIVER, SMALL_RIVER, STREAM -> SAND;
-            case MOUNTAIN_RIVER, CANYON_RIVER -> STONE;
+            case GREAT_RIVER, PLAINS_RIVER -> roll < 64 ? SAND : roll < 86 ? GRAVEL : CLAY;
+            case SMALL_RIVER, STREAM -> roll < 45 ? SAND : roll < 88 ? GRAVEL : CLAY;
+            case MOUNTAIN_RIVER, CANYON_RIVER -> roll < 70 ? STONE : GRAVEL;
             case NONE -> GRAVEL;
         };
     }
