@@ -3,6 +3,8 @@ package com.redline.worldcore.client.debug;
 import com.redline.worldcore.api.cube.CubeStatus;
 import com.redline.worldcore.api.ticket.CubeTicketLevel;
 import com.redline.worldcore.client.lighting.ClientDynamicLightLayer;
+import com.redline.worldcore.client.sync.ClientCubeNativeMeshBridge;
+import com.redline.worldcore.client.sync.ClientCubeRenderBridge;
 import com.redline.worldcore.client.sync.ClientCubeSectionStore;
 import com.redline.worldcore.client.sync.ClientCubeSyncState;
 import com.redline.worldcore.network.CubeClientSyncPayload;
@@ -83,7 +85,12 @@ public final class CubeDebugOverlay {
         ClientCubeSectionStore.SnapshotStats sectionStats = ClientCubeSectionStore.stats();
         draw(graphics, minecraft, x, y, "native sections=" + sectionStats.sections()
                 + " recv=" + sectionStats.receivedSnapshots()
+                + " batch=" + sectionStats.receivedBatches()
                 + " unload=" + sectionStats.unloads()
+                + " delta=" + sectionStats.appliedDeltas() + "/" + sectionStats.receivedDeltas()
+                + " ack=" + sectionStats.ackEntriesSent() + " q=" + sectionStats.pendingAcks()
+                + " bridge=" + ClientCubeRenderBridge.bridgeReadySections()
+                + " mesh=" + ClientCubeNativeMeshBridge.meshCount()
                 + " bytes~=" + sectionStats.receivedBytesEstimate(), MUTED);
         y += 10;
         draw(graphics, minecraft, x, y, "entities tracked=" + payload.trackedEntities()
@@ -122,7 +129,7 @@ public final class CubeDebugOverlay {
         int y = 6;
         int width = 430;
         int shownEntries = Math.min(8, payload.entries().size());
-        int lines = shownEntries + 22;
+        int lines = shownEntries + 25;
         graphics.fill(x - 3, y - 3, x + width, y + lines * 10 + 5, BACKGROUND);
 
         draw(graphics, minecraft, x, y, "Redline World Core debug overlay", GOOD);
@@ -240,9 +247,41 @@ public final class CubeDebugOverlay {
         ClientCubeSectionStore.SnapshotStats sectionStats = ClientCubeSectionStore.stats();
         draw(graphics, minecraft, x, y, "nativeSectionStore sections=" + sectionStats.sections()
                 + " recv=" + sectionStats.receivedSnapshots()
+                + " batch=" + sectionStats.receivedBatches()
                 + " replaced=" + sectionStats.replacedSnapshots()
                 + " unload=" + sectionStats.unloads()
+                + " delta=" + sectionStats.appliedDeltas() + "/" + sectionStats.receivedDeltas()
+                + " stale=" + sectionStats.staleDeltas()
+                + " ack=" + sectionStats.ackEntriesSent() + "/" + sectionStats.ackEntriesQueued()
+                + " pendingAck=" + sectionStats.pendingAcks()
                 + " bytes~=" + sectionStats.receivedBytesEstimate(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "renderBridge ready=" + ClientCubeRenderBridge.bridgeReadySections()
+                + " immediate=" + ClientCubeRenderBridge.immediateReadySections()
+                + " missing=" + ClientCubeRenderBridge.missingImmediateSections()
+                + " mirrorQ=" + ClientCubeRenderBridge.queuedMirrorSections()
+                + " mirrored=" + ClientCubeRenderBridge.mirroredSections()
+                + " lastBlocks=" + ClientCubeRenderBridge.blocksMirroredLastTick(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "renderBridge totalSections=" + ClientCubeRenderBridge.visualMirrorSectionsCompleted()
+                + " totalBlocks=" + ClientCubeRenderBridge.visualMirrorBlocksWritten()
+                + " budgetHits=" + ClientCubeRenderBridge.visualMirrorBudgetHits()
+                + " invalid=" + ClientCubeRenderBridge.visualMirrorInvalidations()
+                + " scans=" + ClientCubeRenderBridge.scans()
+                + " cube=" + ClientCubeRenderBridge.lastPlayerCubeString(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "nativeMesh ready=" + ClientCubeNativeMeshBridge.readyAroundPlayer()
+                + " meshes=" + ClientCubeNativeMeshBridge.meshCount()
+                + " queue=" + ClientCubeNativeMeshBridge.queueSize()
+                + " lastBlocks=" + ClientCubeNativeMeshBridge.blocksLastTick()
+                + " built=" + ClientCubeNativeMeshBridge.sectionsBuilt()
+                + " faces~=" + ClientCubeNativeMeshBridge.facesEstimated(), MUTED);
+        y += 10;
+        draw(graphics, minecraft, x, y, "nativeMesh budget=" + ClientCubeNativeMeshBridge.budgetHits()
+                + " time=" + ClientCubeNativeMeshBridge.timeBudgetHits()
+                + " invalid=" + ClientCubeNativeMeshBridge.invalidations()
+                + " hashHits=" + ClientCubeNativeMeshBridge.hashHits()
+                + " scans=" + ClientCubeNativeMeshBridge.scans(), MUTED);
         y += 10;
         draw(graphics, minecraft, x, y, "writes player=" + payload.playerWritesSaved()
                 + " ignoredMat=" + payload.materializerWritesIgnored()

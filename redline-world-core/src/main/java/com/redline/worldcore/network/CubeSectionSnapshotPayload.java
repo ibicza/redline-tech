@@ -75,8 +75,9 @@ public record CubeSectionSnapshotPayload(
     }
 
     public long estimatedBytes() {
-        // Good enough for runtime profiling: VarInts are variable-size, but the fixed arrays dominate.
-        return 32L + paletteStateIds.length * 5L + paletteIndices.length * 3L + blockLight.length + skyLight.length;
+        int bits = bitsPerPaletteIndex(paletteStateIds.length);
+        long packedIndexBytes = ((long) paletteIndices.length * bits + 7L) / 8L;
+        return 48L + paletteStateIds.length * 5L + packedIndexBytes + blockLight.length + skyLight.length;
     }
 
     public List<BlockState> decodePalette() {
@@ -87,7 +88,11 @@ public record CubeSectionSnapshotPayload(
         return palette;
     }
 
-    private void write(RegistryFriendlyByteBuf buffer) {
+    public void write(RegistryFriendlyByteBuf buffer) {
+        writeTo(buffer);
+    }
+
+    public void writeTo(RegistryFriendlyByteBuf buffer) {
         buffer.writeVarInt(cubeX);
         buffer.writeVarInt(cubeY);
         buffer.writeVarInt(cubeZ);
@@ -97,12 +102,31 @@ public record CubeSectionSnapshotPayload(
         for (int id : paletteStateIds) {
             buffer.writeVarInt(id);
         }
-        buffer.writeVarInt(paletteIndices.length);
-        for (int index : paletteIndices) {
-            buffer.writeVarInt(index);
-        }
+        writePackedPaletteIndices(buffer);
         buffer.writeByteArray(blockLight);
         buffer.writeByteArray(skyLight);
+    }
+
+    /**
+     * M17.5 compact section index stream.  The in-memory DTO still exposes int[4096] for simple render-bridge code,
+     * but the wire format uses 4/8/12/16 bit packed palette indices instead of one VarInt per block.
+     */
+    private void writePackedPaletteIndices(RegistryFriendlyByteBuf buffer) {
+        int bits = bitsPerPaletteIndex(paletteStateIds.length);
+        buffer.writeVarInt(bits);
+        int valuesPerLong = Math.max(1, 64 / bits);
+        int longCount = (paletteIndices.length + valuesPerLong - 1) / valuesPerLong;
+        buffer.writeVarInt(paletteIndices.length);
+        buffer.writeVarInt(longCount);
+        long mask = (1L << bits) - 1L;
+        int cursor = 0;
+        for (int word = 0; word < longCount; word++) {
+            long packed = 0L;
+            for (int slot = 0; slot < valuesPerLong && cursor < paletteIndices.length; slot++, cursor++) {
+                packed |= ((long) paletteIndices[cursor] & mask) << (slot * bits);
+            }
+            buffer.writeLong(packed);
+        }
     }
 
     private static CubeSectionSnapshotPayload read(RegistryFriendlyByteBuf buffer) {
@@ -116,13 +140,43 @@ public record CubeSectionSnapshotPayload(
         for (int index = 0; index < paletteSize; index++) {
             paletteStateIds[index] = buffer.readVarInt();
         }
-        int indicesSize = buffer.readVarInt();
-        int[] paletteIndices = new int[indicesSize];
-        for (int index = 0; index < indicesSize; index++) {
-            paletteIndices[index] = buffer.readVarInt();
-        }
+        int[] paletteIndices = readPackedPaletteIndices(buffer);
         byte[] blockLight = buffer.readByteArray(CubePos.BLOCK_COUNT);
         byte[] skyLight = buffer.readByteArray(CubePos.BLOCK_COUNT);
         return new CubeSectionSnapshotPayload(cubeX, cubeY, cubeZ, statusOrdinal, hash, paletteStateIds, paletteIndices, blockLight, skyLight);
+    }
+
+    public static CubeSectionSnapshotPayload readFrom(RegistryFriendlyByteBuf buffer) {
+        return read(buffer);
+    }
+
+    private static int[] readPackedPaletteIndices(RegistryFriendlyByteBuf buffer) {
+        int bits = buffer.readVarInt();
+        int indicesSize = buffer.readVarInt();
+        int longCount = buffer.readVarInt();
+        int[] paletteIndices = new int[indicesSize];
+        int valuesPerLong = Math.max(1, 64 / bits);
+        long mask = (1L << bits) - 1L;
+        int cursor = 0;
+        for (int word = 0; word < longCount; word++) {
+            long packed = buffer.readLong();
+            for (int slot = 0; slot < valuesPerLong && cursor < indicesSize; slot++, cursor++) {
+                paletteIndices[cursor] = (int) ((packed >>> (slot * bits)) & mask);
+            }
+        }
+        return paletteIndices;
+    }
+
+    public static int bitsPerPaletteIndex(int paletteSize) {
+        if (paletteSize <= 16) {
+            return 4;
+        }
+        if (paletteSize <= 256) {
+            return 8;
+        }
+        if (paletteSize <= 4096) {
+            return 12;
+        }
+        return 16;
     }
 }

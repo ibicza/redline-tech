@@ -82,11 +82,17 @@ public final class ServerCubeCache {
     /** Keep recently unrequested cubes warm for a short time to avoid thrash while tickets refresh or players move. */
     public static final int UNLOAD_GRACE_TICKS = 100;
 
-    /** M17.1: unloading is a lifecycle sweep, not a full holder scan every server tick. */
-    public static final int MAX_UNLOAD_SWEEP_HOLDERS_PER_TICK = 256;
+    /** M18.0: unloading is still lifecycle work; keep the sweep smaller than rendering/sync budgets. */
+    public static final int MAX_UNLOAD_SWEEP_HOLDERS_PER_TICK = 96;
 
-    /** M17.1: even if a player teleports far away, unloads are batched to avoid chunk-lifecycle spikes. */
-    public static final int MAX_UNLOADS_PER_TICK = 32;
+    /** M18.0: unloads are batched hard so cube_only cannot spend a whole tick evicting old sections. */
+    public static final int MAX_UNLOADS_PER_TICK = 8;
+
+    /** M18.0: stop unload lifecycle work after a small soft budget; continue next tick from the same cursor. */
+    public static final int MAX_UNLOAD_MICROS_PER_TICK = 1_500;
+
+    /** M18.0: holder count drifts constantly while streaming; do not rebuild the unload sweep every tick. */
+    public static final int UNLOAD_SWEEP_REBUILD_SIZE_DELTA = 1024;
 
     /** M17.2: stale pending entries are purged incrementally; a full removeIf showed up as 40-60ms spikes. */
     public static final int MAX_PENDING_PURGE_SCAN_PER_TICK = 512;
@@ -1343,11 +1349,12 @@ public final class ServerCubeCache {
     private static long playerFocusSignature(List<PlayerLoadFocus> focuses) {
         long signature = 0x9E3779B97F4A7C15L;
         for (PlayerLoadFocus focus : focuses) {
-            int lookBucketX = focus.lookX() > 0.45D ? 1 : focus.lookX() < -0.45D ? -1 : 0;
-            int lookBucketZ = focus.lookZ() > 0.45D ? 1 : focus.lookZ() < -0.45D ? -1 : 0;
+            int dirBucketX = focus.dirX() > 0.35D ? 1 : focus.dirX() < -0.35D ? -1 : 0;
+            int dirBucketZ = focus.dirZ() > 0.35D ? 1 : focus.dirZ() < -0.35D ? -1 : 0;
             long value = mixTicketCoord(focus.cube().x(), focus.cube().y(), focus.cube().z());
-            value ^= ((long) (lookBucketX + 2)) << 48;
-            value ^= ((long) (lookBucketZ + 2)) << 52;
+            value ^= ((long) (dirBucketX + 2)) << 48;
+            value ^= ((long) (dirBucketZ + 2)) << 52;
+            value ^= focus.underground() ? 0x5DEECE66DL : 0L;
             signature ^= mix64(value);
             signature *= 0x100000001B3L;
         }
@@ -1360,67 +1367,133 @@ public final class ServerCubeCache {
             CubePos cube = CubePos.fromBlock(player.blockPosition());
             double lookX = player.getLookAngle().x;
             double lookZ = player.getLookAngle().z;
-            double len = Math.sqrt(lookX * lookX + lookZ * lookZ);
-            if (len < 1.0E-5D) {
+            double lookLen = Math.sqrt(lookX * lookX + lookZ * lookZ);
+            if (lookLen < 1.0E-5D) {
                 lookX = 0.0D;
                 lookZ = 1.0D;
             } else {
-                lookX /= len;
-                lookZ /= len;
+                lookX /= lookLen;
+                lookZ /= lookLen;
             }
-            focuses.add(new PlayerLoadFocus(cube, lookX, lookZ));
+            double moveX = player.getDeltaMovement().x;
+            double moveZ = player.getDeltaMovement().z;
+            double moveLen = Math.sqrt(moveX * moveX + moveZ * moveZ);
+            if (moveLen > 1.0E-4D) {
+                moveX /= moveLen;
+                moveZ /= moveLen;
+                // M18.0: flying players care about where they are going almost as much as where the camera points.
+                lookX = lookX * 0.75D + moveX * 0.25D;
+                lookZ = lookZ * 0.75D + moveZ * 0.25D;
+                double mixedLen = Math.sqrt(lookX * lookX + lookZ * lookZ);
+                if (mixedLen > 1.0E-5D) {
+                    lookX /= mixedLen;
+                    lookZ /= mixedLen;
+                }
+            }
+            int surfaceCubeY = verticalTerrainSurfaceCube(cube);
+            focuses.add(new PlayerLoadFocus(cube, lookX, lookZ, cube.y() < surfaceCubeY - 1));
         }
         return focuses;
     }
 
     private int loadPriority(CubePos cubePos, List<PlayerLoadFocus> focuses) {
         int best = Integer.MAX_VALUE;
+        int bestBand = 7;
         for (PlayerLoadFocus focus : focuses) {
             int horizontalCheb = Math.max(Math.abs(cubePos.x() - focus.cube().x()), Math.abs(cubePos.z() - focus.cube().z()));
             int dy = Math.abs(cubePos.y() - focus.cube().y());
-            if (horizontalCheb <= 1 && dy <= 1) {
-                best = Math.min(best, 0 + horizontalCheb * 10 + dy);
-                continue;
+            int band = loadPriorityBand(cubePos, focus, horizontalCheb, dy);
+            int score = band * 10_000
+                    + horizontalDistanceSquared(cubePos, focus.cube()) * 8
+                    + dy * 64
+                    + anglePenalty(cubePos, focus);
+            if (score < best) {
+                best = score;
+                bestBand = band;
             }
-            if (isLookAhead(cubePos, focus)) {
-                best = Math.min(best, 1_000 + horizontalDistanceSquared(cubePos, focus.cube()) + dy * 8);
-                continue;
-            }
-            int surfaceClass = verticalTerrainClass(cubePos);
-            int base = switch (surfaceClass) {
-                case 0 -> 2_000; // surface and near-surface
-                case 1 -> 3_000; // underground
-                default -> 4_000; // air/high empty cubes last
-            };
-            best = Math.min(best, base + horizontalDistanceSquared(cubePos, focus.cube()) + dy * 16);
+        }
+        switch (bestBand) {
+            case 0 -> RuntimeProfiler.addCount("cube_loading.priority_player_cube", 1);
+            case 1 -> RuntimeProfiler.addCount("cube_loading.priority_immediate", 1);
+            case 2 -> RuntimeProfiler.addCount("cube_loading.priority_front_surface", 1);
+            case 3 -> RuntimeProfiler.addCount("cube_loading.priority_peripheral_surface", 1);
+            case 4 -> RuntimeProfiler.addCount("cube_loading.priority_rear_surface", 1);
+            case 5 -> RuntimeProfiler.addCount("cube_loading.priority_air", 1);
+            default -> RuntimeProfiler.addCount("cube_loading.priority_deep", 1);
         }
         return best;
     }
 
-    private boolean isLookAhead(CubePos cubePos, PlayerLoadFocus focus) {
-        int dy = Math.abs(cubePos.y() - focus.cube().y());
-        if (dy > 2) {
-            return false;
+    private int loadPriorityBand(CubePos cubePos, PlayerLoadFocus focus, int horizontalCheb, int dy) {
+        if (cubePos.equals(focus.cube())) {
+            return 0;
         }
+        if (horizontalCheb <= 1 && dy <= 1) {
+            return 1;
+        }
+        int terrainClass = verticalTerrainClass(cubePos);
+        double dot = directionDot(cubePos, focus);
+        if (focus.underground() && dy <= 1) {
+            if (dot > 0.55D) {
+                return 2;
+            }
+            if (dot > -0.15D) {
+                return 3;
+            }
+            return 4;
+        }
+        if (terrainClass == 0) {
+            if (dot > 0.55D) {
+                return 2;
+            }
+            if (dot > -0.15D) {
+                return 3;
+            }
+            return 4;
+        }
+        if (terrainClass == 2) {
+            return 5;
+        }
+        return 6;
+    }
+
+    private static int anglePenalty(CubePos cubePos, PlayerLoadFocus focus) {
+        double dot = directionDot(cubePos, focus);
+        if (dot > 0.75D) {
+            return 0;
+        }
+        if (dot > 0.25D) {
+            return 64;
+        }
+        if (dot > -0.25D) {
+            return 192;
+        }
+        return 384;
+    }
+
+    private static double directionDot(CubePos cubePos, PlayerLoadFocus focus) {
         double dx = cubePos.x() - focus.cube().x();
         double dz = cubePos.z() - focus.cube().z();
         double distance = Math.sqrt(dx * dx + dz * dz);
-        if (distance < 1.0D || distance > 12.0D) {
-            return false;
+        if (distance < 1.0E-5D) {
+            return 1.0D;
         }
-        double dot = dx * focus.lookX() + dz * focus.lookZ();
-        return dot > distance * 0.35D;
+        return (dx * focus.dirX() + dz * focus.dirZ()) / distance;
     }
 
     /** 0 = surface, 1 = underground, 2 = air/high empty. */
     private int verticalTerrainClass(CubePos cubePos) {
-        int centerX = cubePos.minBlockX() + 8;
-        int centerZ = cubePos.minBlockZ() + 8;
-        int surfaceCubeY = CubePos.blockToCube(com.redline.worldcore.server.generation.M15TerrainModel.surfaceHeightDry(generationContext(), centerX, centerZ));
+        int surfaceCubeY = verticalTerrainSurfaceCube(cubePos);
         if (cubePos.y() >= surfaceCubeY - 1 && cubePos.y() <= surfaceCubeY + 1) {
             return 0;
         }
         return cubePos.y() < surfaceCubeY - 1 ? 1 : 2;
+    }
+
+    private int verticalTerrainSurfaceCube(CubePos cubePos) {
+        int centerX = cubePos.minBlockX() + 8;
+        int centerZ = cubePos.minBlockZ() + 8;
+        return CubePos.blockToCube(com.redline.worldcore.server.generation.M15TerrainModel.surfaceHeightDry(generationContext(), centerX, centerZ));
     }
 
     private static PlayerLoadFocus nearestFocus(CubePos cubePos, List<PlayerLoadFocus> focuses) {
@@ -1706,18 +1779,29 @@ public final class ServerCubeCache {
             unloadSweepHolderCount = 0;
             return 0;
         }
-        if (unloadSweepOrder.isEmpty() || unloadSweepHolderCount != holders.size() || unloadSweepCursor >= unloadSweepOrder.size()) {
+        boolean orderDrifted = Math.abs(unloadSweepHolderCount - holders.size()) >= UNLOAD_SWEEP_REBUILD_SIZE_DELTA;
+        if (unloadSweepOrder.isEmpty() || unloadSweepCursor >= unloadSweepOrder.size() || orderDrifted) {
             unloadSweepOrder = new ArrayList<>(holders.keySet());
             unloadSweepCursor = 0;
             unloadSweepHolderCount = holders.size();
             RuntimeProfiler.addCount("cube_loading.unload_sweep_rebuilt", 1);
+            if (orderDrifted) {
+                RuntimeProfiler.addCount("cube_loading.unload_sweep_rebuilt_drift", 1);
+            }
+        } else if (unloadSweepHolderCount != holders.size()) {
+            RuntimeProfiler.addCount("cube_loading.unload_sweep_reused_drift", 1);
         }
 
         int scanned = 0;
         int unloaded = 0;
+        long startNanos = System.nanoTime();
         while (scanned < MAX_UNLOAD_SWEEP_HOLDERS_PER_TICK
                 && unloaded < MAX_UNLOADS_PER_TICK
                 && unloadSweepCursor < unloadSweepOrder.size()) {
+            if ((scanned | unloaded) > 0 && (System.nanoTime() - startNanos) / 1_000L >= MAX_UNLOAD_MICROS_PER_TICK) {
+                RuntimeProfiler.addCount("cube_loading.unload_time_budget_hits", 1);
+                break;
+            }
             CubePos cubePos = unloadSweepOrder.get(unloadSweepCursor++);
             scanned++;
             CubeHolder holder = holders.get(cubePos);
@@ -1735,6 +1819,10 @@ public final class ServerCubeCache {
             }
         }
         RuntimeProfiler.addCount("cube_loading.unload_sweep_scanned", scanned);
+        RuntimeProfiler.addCount("cube_loading.unload_budget", MAX_UNLOADS_PER_TICK);
+        if (unloaded > 0) {
+            RuntimeProfiler.addCount("cube_loading.unloaded_budgeted", unloaded);
+        }
         if (unloadSweepCursor >= unloadSweepOrder.size()) {
             unloadSweepOrder = List.of();
             unloadSweepCursor = 0;
@@ -2057,7 +2145,7 @@ public final class ServerCubeCache {
     public record PregenCubeResult(CubePos cubePos, boolean generated, boolean saved, boolean lightReady, String reason) {
     }
 
-    private record PlayerLoadFocus(CubePos cube, double lookX, double lookZ) {
+    private record PlayerLoadFocus(CubePos cube, double dirX, double dirZ, boolean underground) {
     }
 
     private record RequiredLevels(Map<CubePos, CubeTicketLevel> levels, boolean limitHit, long signature, int ticketCount, boolean rebuilt) {

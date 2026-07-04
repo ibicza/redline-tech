@@ -4,6 +4,9 @@ import com.redline.worldcore.api.cube.LevelCube;
 import com.redline.worldcore.api.dimension.CubicDimensionKeys;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.network.CubeClientSyncPayload;
+import com.redline.worldcore.network.CubeSectionDeltaPayload;
+import com.redline.worldcore.network.CubeSectionSnapshotBatchPayload;
+import com.redline.worldcore.network.ClientCubeSectionAckPayload;
 import com.redline.worldcore.network.CubeSectionSnapshotPayload;
 import com.redline.worldcore.network.CubeSectionUnloadPayload;
 import com.redline.worldcore.server.cube.CubeHolder;
@@ -88,19 +91,35 @@ public final class CubicClientSyncBridge {
     private static final int DEFAULT_HYBRID_SHELL_HORIZONTAL_RADIUS = 5;
     private static final int DEFAULT_HYBRID_SHELL_VERTICAL_RADIUS = 1;
     private static final int DEFAULT_HYBRID_ALWAYS_SHELL_HORIZONTAL_RADIUS = 2;
+    private static final int DEFAULT_HYBRID_FAST_SHELL_HORIZONTAL_RADIUS = 1;
+    private static final int DEFAULT_HYBRID_FAST_SHELL_VERTICAL_RADIUS = 1;
+    private static final int DEFAULT_NATIVE_RENDER_SHELL_HORIZONTAL_RADIUS = 0;
+    private static final int DEFAULT_NATIVE_RENDER_SHELL_VERTICAL_RADIUS = 0;
     private static final int DEFAULT_NATIVE_SECTION_SNAPSHOTS_PER_TICK = 8;
     private static final int DEFAULT_NATIVE_SECTION_SNAPSHOT_MICROS_PER_TICK = 3_000;
+    private static final int DEFAULT_NATIVE_SECTION_PACKET_BYTES_PER_TICK = 96 * 1024;
+    private static final int DEFAULT_NATIVE_SECTION_BATCH_MAX_SNAPSHOTS = 8;
     private static final int MAX_NATIVE_SECTION_QUEUE = 4096;
     private static final int MAX_NATIVE_SECTION_UNLOADS_PER_TICK = 48;
     private static final int MAX_NATIVE_SECTION_UNLOAD_SCAN_PER_TICK = 256;
     private static final int NATIVE_SECTION_RETAIN_EXTRA_HORIZONTAL = 2;
     private static final int NATIVE_SECTION_RETAIN_EXTRA_VERTICAL = 1;
-    private static final int MAX_MATERIALIZE_BLOCKS_PER_SLICE = 2_048;
-    private static final int MAX_PRIORITY_MATERIALIZE_BLOCKS_PER_SLICE = 1_536;
+    /*
+     * M17.5.1: the M17.5 anti-spike guard cut the vanilla shell into very small linear slices.
+     * Visually this looked like a printer/progress-bar because local index order is a straight X/Z line.
+     * Use larger time-budgeted slices again, but keep strict intra-cube yielding and a non-linear 4x4x4 tile order.
+     */
+    private static final int MAX_MATERIALIZE_BLOCKS_PER_SLICE = CubePos.BLOCK_COUNT;
+    private static final int MAX_PRIORITY_MATERIALIZE_BLOCKS_PER_SLICE = CubePos.BLOCK_COUNT;
     private static final int MATERIALIZE_CHECK_INTERVAL_BLOCKS = 8;
-    private static final int MATERIALIZE_SETBLOCK_SLOW_MICROS = 2_000;
-    private static final int MATERIALIZE_SLICE_SOFT_MICROS = 2_500;
-    private static final int MATERIALIZE_SLICE_HARD_MICROS = 5_000;
+    private static final int MATERIALIZE_TILE_SIZE = 4;
+    private static final int MATERIALIZE_TILE_BITS = 2;
+    private static final int MATERIALIZE_TILE_MASK = MATERIALIZE_TILE_SIZE - 1;
+    private static final int MATERIALIZE_SETBLOCK_SLOW_MICROS = 1_000;
+    private static final int MATERIALIZE_BLOCK_ACCESS_SLOW_MICROS = 1_000;
+    private static final int MATERIALIZE_SLICE_SOFT_MICROS = 1_500;
+    private static final int MATERIALIZE_SLICE_HARD_MICROS = 3_000;
+    private static final int MATERIALIZE_BACKOFF_TICKS_AFTER_SLOW_BLOCK = 2;
 
     /**
      * Client-only mirror writes must not wake vanilla physics. UPDATE_CLIENTS + UPDATE_KNOWN_SHAPE + UPDATE_SUPPRESS_DROPS.
@@ -122,7 +141,7 @@ public final class CubicClientSyncBridge {
     private static int maxMaterializeBlocksPerTick = DEFAULT_MAX_MATERIALIZE_BLOCKS_PER_TICK;
     private static int maxMaterializeMicrosPerTick = DEFAULT_MAX_MATERIALIZE_MICROS_PER_TICK;
     private static int overlayMode = OVERLAY_FULL;
-    private static VanillaShellMode vanillaShellMode = VanillaShellMode.HYBRID;
+    private static VanillaShellMode vanillaShellMode = VanillaShellMode.HYBRID_FAST;
     private static int nearShellHorizontalRadius = DEFAULT_NEAR_SHELL_HORIZONTAL_RADIUS;
     private static int nearShellVerticalRadius = DEFAULT_NEAR_SHELL_VERTICAL_RADIUS;
     private static int hybridShellHorizontalRadius = DEFAULT_HYBRID_SHELL_HORIZONTAL_RADIUS;
@@ -144,6 +163,12 @@ public final class CubicClientSyncBridge {
     private static long eagerClientGeneratedLoads;
     private static long nativeSectionSnapshotsPrepared;
     private static long nativeSectionSnapshotBuildRequests;
+    private static long nativeSectionDeltaPacketsSent;
+    private static long nativeSectionDeltaEntriesSent;
+    private static long nativeSectionDeltaBytesSent;
+    private static long nativeSectionAcksReceived;
+    private static long nativeSectionAckEntriesReceived;
+    private static long nativeSectionAckHashSkips;
     private static long nativeSectionPacketsSent;
     private static long nativeSectionUnloadPacketsSent;
     private static long nativeSectionBytesSent;
@@ -297,6 +322,9 @@ public final class CubicClientSyncBridge {
             case "FULL" -> VanillaShellMode.FULL;
             case "NEAR" -> VanillaShellMode.NEAR;
             case "HYBRID" -> VanillaShellMode.HYBRID;
+            case "HYBRID_FAST", "FAST" -> VanillaShellMode.HYBRID_FAST;
+            case "NATIVE_RENDER", "NATIVE_VISUAL", "RENDER_NATIVE" -> VanillaShellMode.NATIVE_RENDER;
+            case "CUBE_ONLY", "NATIVE_RENDER_ONLY", "CUBE_ONLY_RENDER" -> VanillaShellMode.CUBE_ONLY;
             case "NATIVE", "NATIVE_ONLY", "DEBUG_NATIVE" -> VanillaShellMode.NATIVE_ONLY;
             default -> throw new IllegalArgumentException("Unknown RWC vanilla shell mode: " + modeName);
         };
@@ -405,6 +433,12 @@ public final class CubicClientSyncBridge {
             state.nativeSectionQueue.clear();
             state.nativeSectionQueued.clear();
             state.nativeSectionHashes.clear();
+            state.pendingNativeSectionPayloads.clear();
+            state.pendingNativeSectionPayloadBytes = 0L;
+            state.materializeBackoffTicks = 0;
+            state.sentNativeSectionHashes.clear();
+            state.ackedNativeSectionHashes.clear();
+            state.unackedNativeSectionHashes.clear();
             state.dirtyInvalidationsAccounted.clear();
             state.visibleOrder = List.of();
             state.visibleOrderCenter = null;
@@ -419,7 +453,7 @@ public final class CubicClientSyncBridge {
                 DEFAULT_MAX_MATERIALIZED_CUBES_PER_TICK,
                 DEFAULT_SYNC_PACKET_INTERVAL_TICKS
         );
-        vanillaShellMode = VanillaShellMode.HYBRID;
+        vanillaShellMode = VanillaShellMode.HYBRID_FAST;
     }
 
     public static void recordCommandWriteSaved() {
@@ -439,7 +473,7 @@ public final class CubicClientSyncBridge {
         ensureEagerNeighborhoodLoaded(level, player, cache, playerCube, state);
         RuntimeProfiler.recordSince("client.eager_neighborhood", phaseStart);
         phaseStart = RuntimeProfiler.markStart();
-        queueVisibleLoadedCubes(cache, playerCube, state);
+        queueVisibleLoadedCubes(cache, player, playerCube, state);
         RuntimeProfiler.recordSince("client.queue_visible_loaded", phaseStart);
         phaseStart = RuntimeProfiler.markStart();
         prepareNativeSectionSnapshots(player, cache, state);
@@ -550,8 +584,9 @@ public final class CubicClientSyncBridge {
         }
     }
 
-    private static void queueVisibleLoadedCubes(ServerCubeCache cache, CubePos playerCube, PlayerBridgeState state) {
-        List<CubePos> visible = visibleOrder(playerCube, state);
+    private static void queueVisibleLoadedCubes(ServerCubeCache cache, ServerPlayer player, CubePos playerCube, PlayerBridgeState state) {
+        PlayerViewFocus viewFocus = playerViewFocus(cache, player, playerCube);
+        List<CubePos> visible = visibleOrder(cache, playerCube, viewFocus, state);
         if (visible.isEmpty()) {
             return;
         }
@@ -572,13 +607,17 @@ public final class CubicClientSyncBridge {
             long hash = holder.get().generationHash();
             recordNativeReady(state, holder.get(), hash);
             boolean clientDirty = cache.clientSyncDirty(cubePos);
+            boolean vanillaShellRequired = shouldMaterializeVanillaShell(cubePos, playerCube, false);
+            if (shouldSendNativeSectionSnapshot(cubePos, playerCube, vanillaShellRequired)) {
+                enqueueNativeSectionSnapshot(state, cubePos, hash);
+            }
             if (!clientDirty && holder.get().vanillaShellReady(hash)) {
                 rememberMaterialized(state, cubePos, hash);
                 vanillaShellGlobalReadyHits++;
                 RuntimeProfiler.addCount("client.vanilla_shell_global_ready_hits", 1);
                 continue;
             }
-            if (!shouldMaterializeVanillaShell(cubePos, playerCube, false)) {
+            if (!vanillaShellRequired) {
                 vanillaShellSkippedNativeReady++;
                 RuntimeProfiler.addCount("client.vanilla_shell_skipped_native_ready", 1);
                 continue;
@@ -599,9 +638,12 @@ public final class CubicClientSyncBridge {
         RuntimeProfiler.addCount("client.visible_queue_scanned", scanned);
     }
 
-    private static List<CubePos> visibleOrder(CubePos playerCube, PlayerBridgeState state) {
-        int configHash = streamHorizontalRadius * 31 + streamVerticalRadius;
+    private static List<CubePos> visibleOrder(ServerCubeCache cache, CubePos playerCube, PlayerViewFocus focus, PlayerBridgeState state) {
+        int dirBucketX = focus.dirX() > 0.35D ? 1 : focus.dirX() < -0.35D ? -1 : 0;
+        int dirBucketZ = focus.dirZ() > 0.35D ? 1 : focus.dirZ() < -0.35D ? -1 : 0;
+        int configHash = streamHorizontalRadius * 31 + streamVerticalRadius * 17 + (dirBucketX + 2) * 7 + (dirBucketZ + 2) * 13 + (focus.underground() ? 101 : 0);
         if (playerCube.equals(state.visibleOrderCenter) && state.visibleOrderConfigHash == configHash && !state.visibleOrder.isEmpty()) {
+            RuntimeProfiler.addCount("client.visible_order_reused", 1);
             return state.visibleOrder;
         }
         List<CubePos> visible = new ArrayList<>((streamHorizontalRadius * 2 + 1) * (streamHorizontalRadius * 2 + 1) * (streamVerticalRadius * 2 + 1));
@@ -613,7 +655,7 @@ public final class CubicClientSyncBridge {
             }
         }
         visible.sort(Comparator
-                .comparingInt((CubePos cubePos) -> materializationPriority(cubePos, playerCube))
+                .comparingInt((CubePos cubePos) -> materializationPriority(cache, cubePos, playerCube, focus))
                 .thenComparingInt(cubePos -> Math.abs(cubePos.y() - playerCube.y()))
                 .thenComparingInt(cubePos -> horizontalDistanceSquared(cubePos, playerCube)));
         state.visibleOrderCenter = playerCube;
@@ -625,6 +667,11 @@ public final class CubicClientSyncBridge {
     }
 
     private static void materializeQueued(ServerLevel level, ServerCubeCache cache, PlayerBridgeState state, CubePos playerCube) {
+        if (state.materializeBackoffTicks > 0) {
+            state.materializeBackoffTicks--;
+            RuntimeProfiler.addCount("client.materialize_backoff_ticks", 1);
+            return;
+        }
         int queueAtStart = state.materializationQueue.size();
         int completedCubes = 0;
         int priorityWholeCubes = 0;
@@ -655,6 +702,10 @@ public final class CubicClientSyncBridge {
             long hash = holder.get().generationHash();
             recordNativeReady(state, holder.get(), hash);
             boolean clientDirty = cache.clientSyncDirty(cubePos);
+            boolean vanillaShellRequired = shouldMaterializeVanillaShell(cubePos, playerCube, false);
+            if (shouldSendNativeSectionSnapshot(cubePos, playerCube, vanillaShellRequired)) {
+                enqueueNativeSectionSnapshot(state, cubePos, hash);
+            }
             if (!clientDirty && holder.get().vanillaShellReady(hash)) {
                 rememberMaterialized(state, cubePos, hash);
                 vanillaShellGlobalReadyHits++;
@@ -699,6 +750,10 @@ public final class CubicClientSyncBridge {
                 if (blockBudget <= 0) {
                     RuntimeProfiler.addCount("client.materialize_block_budget_hits", 1);
                     break;
+                }
+                if (result.slowBlock()) {
+                    state.materializeBackoffTicks = MATERIALIZE_BACKOFF_TICKS_AFTER_SLOW_BLOCK;
+                    RuntimeProfiler.addCount("client.materialize_slow_block_backoff", 1);
                 }
                 if (result.forcedYield()) {
                     RuntimeProfiler.addCount("client.materialize_budget_forced_yield", 1);
@@ -752,10 +807,13 @@ public final class CubicClientSyncBridge {
         int horizontalCheb = Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z()));
         int dy = Math.abs(cubePos.y() - playerCube.y());
         if (horizontalCheb <= 3 && dy <= 1) {
-            return Math.min(MAX_MATERIALIZE_BLOCKS_PER_SLICE, CubePos.BLOCK_COUNT / 2);
+            // Nearby shell cubes should appear as coherent patches/cubes, not as a block-by-block scanline.
+            return MAX_MATERIALIZE_BLOCKS_PER_SLICE;
         }
-        int base = queueAtStart > 128 ? MAX_MATERIALIZE_BLOCKS_PER_SLICE : CubePos.BLOCK_COUNT / 4;
-        return Math.max(512, Math.min(MAX_MATERIALIZE_BLOCKS_PER_SLICE, base));
+        if (queueAtStart > 128) {
+            return MAX_MATERIALIZE_BLOCKS_PER_SLICE;
+        }
+        return CubePos.BLOCK_COUNT / 2;
     }
 
     private static boolean isNearPlayerMaterialization(CubePos cubePos, CubePos playerCube) {
@@ -801,6 +859,7 @@ public final class CubicClientSyncBridge {
         int scanned = 0;
         int changed = 0;
         boolean forcedYield = false;
+        boolean slowBlock = false;
         materializationInProgress = true;
         try {
             while (task.cursor < CubePos.BLOCK_COUNT && scanned < maxBlocks) {
@@ -821,30 +880,34 @@ public final class CubicClientSyncBridge {
                         break;
                     }
                 }
-                int localIndex = task.cursor++;
+                int localIndex = materializeLocalIndex(task.cursor);
                 int localX = localIndex & CubePos.MASK;
                 int localZ = (localIndex >> CubePos.SIZE_BITS) & CubePos.MASK;
                 int localY = localIndex >> (CubePos.SIZE_BITS * 2);
                 int worldY = cubePos.minBlockY() + localY;
                 if (level.isOutsideBuildHeight(worldY)) {
+                    task.cursor++;
                     continue;
                 }
                 scanned++;
                 BlockState state = cube.getBlockState(localX, localY, localZ);
                 BlockPos blockPos = new BlockPos(cubePos.minBlockX() + localX, worldY, cubePos.minBlockZ() + localZ);
-                if (!level.getBlockState(blockPos).equals(state)) {
-                    long setStart = RuntimeProfiler.markStart();
-                    level.setBlock(blockPos, state, SET_BLOCK_FLAGS);
-                    if (setStart != 0L) {
-                        long setMicros = elapsedMicrosSince(setStart);
-                        if (setMicros >= MATERIALIZE_SETBLOCK_SLOW_MICROS) {
-                            RuntimeProfiler.addCount("client.materialize_setblock_slow", 1);
-                            RuntimeProfiler.recordMicros("client.materialize_setblock_slow_time", setMicros);
-                            forcedYield = true;
-                        }
-                    }
-                    changed++;
+                // M17.6 shell bypass: the old fallback shell compared every vanilla block before writing.
+                // Profiling showed single getBlockState calls stalling for 300ms, which no slice budget can interrupt
+                // once the call has started. Cube hashes already skip completed shells, so the fallback path now writes
+                // blindly and lets vanilla's own setBlock short-circuit equal states when it can.
+                RuntimeProfiler.addCount("client.materialize_getblock_compare_skipped", 1);
+                long setStart = RuntimeProfiler.markStart();
+                level.setBlock(blockPos, state, SET_BLOCK_FLAGS);
+                long setMicros = elapsedMicrosSince(setStart);
+                if (setMicros >= MATERIALIZE_SETBLOCK_SLOW_MICROS) {
+                    RuntimeProfiler.addCount("client.materialize_setblock_slow", 1);
+                    RuntimeProfiler.recordMicros("client.materialize_setblock_slow_time", setMicros);
+                    slowBlock = true;
+                    forcedYield = true;
                 }
+                changed++;
+                task.cursor++;
                 if (forcedYield) {
                     break;
                 }
@@ -857,7 +920,32 @@ public final class CubicClientSyncBridge {
             RuntimeProfiler.addCount("client.materialize_slices", 1);
             RuntimeProfiler.recordSince("client.materialize_cube", profileStart);
         }
-        return new MaterializeSliceResult(task.cursor >= CubePos.BLOCK_COUNT, scanned, changed, forcedYield);
+        return new MaterializeSliceResult(task.cursor >= CubePos.BLOCK_COUNT, scanned, changed, forcedYield, slowBlock);
+    }
+
+    /**
+     * Maps the linear materialization cursor to a top-down 4x4x4 tile order.
+     *
+     * <p>The old order was the normal local block index, so partial fallback-shell slices were visible as a clean
+     * X/Z scanline. This order keeps the same one-pass 4096 block coverage but materializes small spatial chunks
+     * across the cube. If a slice yields, the user sees chunky patches instead of a one-block-wide progress bar.</p>
+     */
+    private static int materializeLocalIndex(int ordinal) {
+        int blockInTile = ordinal & 63;
+        int tileIndex = ordinal >> 6;
+
+        int tileX = tileIndex & MATERIALIZE_TILE_MASK;
+        int tileZ = (tileIndex >> MATERIALIZE_TILE_BITS) & MATERIALIZE_TILE_MASK;
+        int tileY = MATERIALIZE_TILE_MASK - ((tileIndex >> (MATERIALIZE_TILE_BITS * 2)) & MATERIALIZE_TILE_MASK);
+
+        int blockX = blockInTile & MATERIALIZE_TILE_MASK;
+        int blockZ = (blockInTile >> MATERIALIZE_TILE_BITS) & MATERIALIZE_TILE_MASK;
+        int blockY = MATERIALIZE_TILE_MASK - ((blockInTile >> (MATERIALIZE_TILE_BITS * 2)) & MATERIALIZE_TILE_MASK);
+
+        int localX = (tileX << MATERIALIZE_TILE_BITS) | blockX;
+        int localY = (tileY << MATERIALIZE_TILE_BITS) | blockY;
+        int localZ = (tileZ << MATERIALIZE_TILE_BITS) | blockZ;
+        return localX | (localZ << CubePos.SIZE_BITS) | (localY << (CubePos.SIZE_BITS * 2));
     }
 
     private static void scheduleWaterTicksWhenNeighborhoodReady(ServerLevel level, LevelCube cube, PlayerBridgeState state) {
@@ -909,7 +997,6 @@ public final class CubicClientSyncBridge {
         }
         holder.markClientNativeReady(hash);
         rememberNativeReady(state, cubePos, hash);
-        enqueueNativeSectionSnapshot(state, cubePos, hash);
         nativeReadyRecorded++;
         RuntimeProfiler.addCount("client.native_ready_recorded", 1);
     }
@@ -946,6 +1033,7 @@ public final class CubicClientSyncBridge {
     private static void prepareNativeSectionSnapshots(ServerPlayer player, ServerCubeCache cache, PlayerBridgeState state) {
         int prepared = 0;
         int scanned = 0;
+        long bytesPrepared = state.pendingNativeSectionPayloadBytes;
         long startNanos = System.nanoTime();
         while (prepared < DEFAULT_NATIVE_SECTION_SNAPSHOTS_PER_TICK && !state.nativeSectionQueue.isEmpty()) {
             if (prepared > 0 && elapsedMicrosSince(startNanos) >= DEFAULT_NATIVE_SECTION_SNAPSHOT_MICROS_PER_TICK) {
@@ -963,9 +1051,15 @@ public final class CubicClientSyncBridge {
                 continue;
             }
             long hash = holder.get().generationHash();
-            if (state.sentNativeSectionHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash) {
+            if (state.sentNativeSectionHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash
+                    || state.ackedNativeSectionHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash) {
                 state.nativeSectionHashes.put(cubePos, hash);
-                RuntimeProfiler.addCount("client.native_section_packet_skipped_cache_hit", 1);
+                if (state.ackedNativeSectionHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash) {
+                    nativeSectionAckHashSkips++;
+                    RuntimeProfiler.addCount("client.native_section_ack_hash_skips", 1);
+                } else {
+                    RuntimeProfiler.addCount("client.native_section_packet_skipped_cache_hit", 1);
+                }
                 RuntimeProfiler.addCount("client.native_section_snapshot_ready_hits", 1);
                 continue;
             }
@@ -976,28 +1070,56 @@ public final class CubicClientSyncBridge {
             nativeSectionSnapshotBuildRequests++;
             RuntimeProfiler.addCount("client.native_section_snapshot_requests", 1);
             Optional<CubeSectionSnapshot> snapshot = cache.cubeSectionSnapshot(cubePos);
-            if (snapshot.isPresent()) {
-                state.nativeSectionHashes.put(cubePos, hash);
-                trimNativeSectionPreparedHashes(state);
-                sendNativeSectionSnapshot(player, state, snapshot.get());
-                prepared++;
-                nativeSectionSnapshotsPrepared++;
-                RuntimeProfiler.addCount("client.native_section_snapshot_prepared", 1);
+            if (snapshot.isEmpty()) {
+                continue;
+            }
+            CubeSectionSnapshotPayload payload = CubeSectionSnapshotPayload.from(snapshot.get());
+            long estimatedBytes = payload.estimatedBytes();
+            if (!state.pendingNativeSectionPayloads.isEmpty()
+                    && bytesPrepared + estimatedBytes > DEFAULT_NATIVE_SECTION_PACKET_BYTES_PER_TICK) {
+                state.nativeSectionQueue.addFirst(cubePos);
+                state.nativeSectionQueued.add(cubePos);
+                RuntimeProfiler.addCount("client.native_section_byte_budget_hits", 1);
+                break;
+            }
+            state.nativeSectionHashes.put(cubePos, hash);
+            trimNativeSectionPreparedHashes(state);
+            state.pendingNativeSectionPayloads.add(payload);
+            state.pendingNativeSectionPayloadBytes += estimatedBytes;
+            bytesPrepared += estimatedBytes;
+            prepared++;
+            nativeSectionSnapshotsPrepared++;
+            RuntimeProfiler.addCount("client.native_section_snapshot_prepared", 1);
+            if (state.pendingNativeSectionPayloads.size() >= DEFAULT_NATIVE_SECTION_BATCH_MAX_SNAPSHOTS) {
+                break;
             }
         }
+        flushNativeSectionBatch(player, state);
         RuntimeProfiler.addCount("client.native_section_snapshot_queue", state.nativeSectionQueue.size());
         RuntimeProfiler.addCount("client.native_section_snapshot_scanned", scanned);
     }
 
-    private static void sendNativeSectionSnapshot(ServerPlayer player, PlayerBridgeState state, CubeSectionSnapshot snapshot) {
-        CubeSectionSnapshotPayload payload = CubeSectionSnapshotPayload.from(snapshot);
-        PacketDistributor.sendToPlayer(player, payload);
-        state.sentNativeSectionHashes.put(snapshot.cubePos(), snapshot.hash());
+    private static void flushNativeSectionBatch(ServerPlayer player, PlayerBridgeState state) {
+        if (state.pendingNativeSectionPayloads.isEmpty()) {
+            return;
+        }
+        CubeSectionSnapshotBatchPayload batchPayload = new CubeSectionSnapshotBatchPayload(state.pendingNativeSectionPayloads);
+        PacketDistributor.sendToPlayer(player, batchPayload);
+        for (CubeSectionSnapshotPayload snapshot : state.pendingNativeSectionPayloads) {
+            state.sentNativeSectionHashes.put(snapshot.cubePos(), snapshot.hash());
+            state.unackedNativeSectionHashes.put(snapshot.cubePos(), snapshot.hash());
+        }
         trimNativeSectionSentHashes(state);
-        nativeSectionPacketsSent++;
-        nativeSectionBytesSent += payload.estimatedBytes();
-        RuntimeProfiler.addCount("client.native_section_packets_sent", 1);
-        RuntimeProfiler.addCount("client.native_section_bytes_sent", payload.estimatedBytes());
+        long estimatedBytes = batchPayload.estimatedBytes();
+        int count = state.pendingNativeSectionPayloads.size();
+        nativeSectionPacketsSent += count;
+        nativeSectionBytesSent += estimatedBytes;
+        RuntimeProfiler.addCount("client.native_section_packets_sent", count);
+        RuntimeProfiler.addCount("client.native_section_batches_sent", 1);
+        RuntimeProfiler.addCount("client.native_section_batch_entries", count);
+        RuntimeProfiler.addCount("client.native_section_bytes_sent", estimatedBytes);
+        state.pendingNativeSectionPayloads.clear();
+        state.pendingNativeSectionPayloadBytes = 0L;
     }
 
     private static void unloadFarNativeSections(ServerPlayer player, PlayerBridgeState state, CubePos playerCube) {
@@ -1018,6 +1140,8 @@ public final class CubicClientSyncBridge {
         }
         for (CubePos cubePos : toUnload) {
             state.sentNativeSectionHashes.remove(cubePos);
+            state.ackedNativeSectionHashes.remove(cubePos);
+            state.unackedNativeSectionHashes.remove(cubePos);
             state.nativeSectionHashes.remove(cubePos);
             PacketDistributor.sendToPlayer(player, CubeSectionUnloadPayload.of(cubePos));
             nativeSectionUnloadPacketsSent++;
@@ -1044,9 +1168,32 @@ public final class CubicClientSyncBridge {
         while (state.sentNativeSectionHashes.size() > MAX_TRACKED_MATERIALIZED * 2) {
             CubePos first = state.sentNativeSectionHashes.keySet().iterator().next();
             state.sentNativeSectionHashes.remove(first);
+            state.ackedNativeSectionHashes.remove(first);
+            state.unackedNativeSectionHashes.remove(first);
             state.nativeSectionHashes.remove(first);
             RuntimeProfiler.addCount("client.native_section_sent_hash_evictions", 1);
         }
+    }
+
+    private static boolean shouldSendNativeSectionSnapshot(CubePos cubePos, CubePos playerCube, boolean vanillaShellRequired) {
+        int horizontalCheb = Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z()));
+        int dy = Math.abs(cubePos.y() - playerCube.y());
+        return switch (vanillaShellMode) {
+            case FULL -> false;
+            case NEAR -> !vanillaShellRequired && dy <= streamVerticalRadius;
+            case HYBRID -> {
+                if (!vanillaShellRequired) {
+                    yield true;
+                }
+                // M17.5 render bridge prep: keep one slim same-level ring in the native client store so M17.6 can switch
+                // a band at a time from shell-backed rendering to snapshot-backed rendering without another packet pass.
+                yield dy == 0 && horizontalCheb <= hybridShellHorizontalRadius + 1;
+            }
+            case HYBRID_FAST -> dy <= streamVerticalRadius;
+            case NATIVE_RENDER -> dy <= streamVerticalRadius;
+            case CUBE_ONLY -> dy <= streamVerticalRadius;
+            case NATIVE_ONLY -> true;
+        };
     }
 
     private static boolean shouldMaterializeVanillaShell(CubePos cubePos, CubePos playerCube, boolean priority) {
@@ -1070,6 +1217,26 @@ public final class CubicClientSyncBridge {
                     yield true;
                 }
                 RuntimeProfiler.addCount("client.hybrid_shell_skipped_far", 1);
+                yield false;
+            }
+            case HYBRID_FAST -> {
+                if (horizontalCheb <= DEFAULT_HYBRID_FAST_SHELL_HORIZONTAL_RADIUS && dy <= DEFAULT_HYBRID_FAST_SHELL_VERTICAL_RADIUS) {
+                    RuntimeProfiler.addCount("client.hybrid_fast_shell_required", 1);
+                    yield true;
+                }
+                RuntimeProfiler.addCount("client.hybrid_fast_shell_skipped_native_render", 1);
+                yield false;
+            }
+            case NATIVE_RENDER -> {
+                if (horizontalCheb <= DEFAULT_NATIVE_RENDER_SHELL_HORIZONTAL_RADIUS && dy <= DEFAULT_NATIVE_RENDER_SHELL_VERTICAL_RADIUS) {
+                    RuntimeProfiler.addCount("client.native_render_shell_required", 1);
+                    yield true;
+                }
+                RuntimeProfiler.addCount("client.native_render_shell_skipped", 1);
+                yield false;
+            }
+            case CUBE_ONLY -> {
+                RuntimeProfiler.addCount("client.cube_only_shell_skipped", 1);
                 yield false;
             }
             case NATIVE_ONLY -> false;
@@ -1245,16 +1412,20 @@ public final class CubicClientSyncBridge {
         return false;
     }
 
-    private static int materializationPriority(CubePos cubePos, CubePos playerCube) {
+    private static int materializationPriority(ServerCubeCache cache, CubePos cubePos, CubePos playerCube, PlayerViewFocus focus) {
         int horizontalCheb = Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z()));
         int dy = Math.abs(cubePos.y() - playerCube.y());
-        if (horizontalCheb <= 1 && dy <= 1) {
-            return horizontalCheb * 10 + dy;
+        int band = viewPriorityBand(cache, cubePos, playerCube, focus, horizontalCheb, dy);
+        switch (band) {
+            case 0 -> RuntimeProfiler.addCount("client.priority_player_cube", 1);
+            case 1 -> RuntimeProfiler.addCount("client.priority_immediate", 1);
+            case 2 -> RuntimeProfiler.addCount("client.priority_front_surface", 1);
+            case 3 -> RuntimeProfiler.addCount("client.priority_peripheral_surface", 1);
+            case 4 -> RuntimeProfiler.addCount("client.priority_rear_surface", 1);
+            case 5 -> RuntimeProfiler.addCount("client.priority_air", 1);
+            default -> RuntimeProfiler.addCount("client.priority_deep", 1);
         }
-        if (dy <= 1) {
-            return 1_000 + horizontalDistanceSquared(cubePos, playerCube);
-        }
-        return 2_000 + manhattan(cubePos, playerCube) * 8;
+        return band * 10_000 + horizontalDistanceSquared(cubePos, playerCube) * 8 + dy * 64 + viewAnglePenalty(cubePos, playerCube, focus);
     }
 
     private static int eagerPriority(CubePos cubePos, CubePos playerCube, double lookX, double lookZ) {
@@ -1268,13 +1439,113 @@ public final class CubicClientSyncBridge {
             double dz = cubePos.z() - playerCube.z();
             double distance = Math.sqrt(dx * dx + dz * dz);
             if (distance > 0.5D) {
-                double dot = dx * lookX + dz * lookZ;
-                if (dot > distance * 0.35D) {
+                double dot = (dx * lookX + dz * lookZ) / distance;
+                if (dot > 0.55D) {
                     return 1_000 + horizontalDistanceSquared(cubePos, playerCube) + dy * 8;
+                }
+                if (dot > -0.15D) {
+                    return 1_400 + horizontalDistanceSquared(cubePos, playerCube) + dy * 8;
                 }
             }
         }
         return 2_000 + manhattan(cubePos, playerCube) * 16;
+    }
+
+    private static PlayerViewFocus playerViewFocus(ServerCubeCache cache, ServerPlayer player, CubePos playerCube) {
+        double dirX = player.getLookAngle().x;
+        double dirZ = player.getLookAngle().z;
+        double len = Math.sqrt(dirX * dirX + dirZ * dirZ);
+        if (len < 1.0E-5D) {
+            dirX = 0.0D;
+            dirZ = 1.0D;
+        } else {
+            dirX /= len;
+            dirZ /= len;
+        }
+        double moveX = player.getDeltaMovement().x;
+        double moveZ = player.getDeltaMovement().z;
+        double moveLen = Math.sqrt(moveX * moveX + moveZ * moveZ);
+        if (moveLen > 1.0E-4D) {
+            moveX /= moveLen;
+            moveZ /= moveLen;
+            dirX = dirX * 0.75D + moveX * 0.25D;
+            dirZ = dirZ * 0.75D + moveZ * 0.25D;
+            double mixedLen = Math.sqrt(dirX * dirX + dirZ * dirZ);
+            if (mixedLen > 1.0E-5D) {
+                dirX /= mixedLen;
+                dirZ /= mixedLen;
+            }
+        }
+        int surfaceCubeY = terrainSurfaceCube(cache, playerCube);
+        return new PlayerViewFocus(dirX, dirZ, playerCube.y() < surfaceCubeY - 1);
+    }
+
+    private static int viewPriorityBand(ServerCubeCache cache, CubePos cubePos, CubePos playerCube, PlayerViewFocus focus, int horizontalCheb, int dy) {
+        if (cubePos.equals(playerCube)) {
+            return 0;
+        }
+        if (horizontalCheb <= 1 && dy <= 1) {
+            return 1;
+        }
+        int terrainClass = verticalTerrainClass(cache, cubePos);
+        double dot = viewDot(cubePos, playerCube, focus);
+        if (focus.underground() && dy <= 1) {
+            if (dot > 0.55D) {
+                return 2;
+            }
+            if (dot > -0.15D) {
+                return 3;
+            }
+            return 4;
+        }
+        if (terrainClass == 0) {
+            if (dot > 0.55D) {
+                return 2;
+            }
+            if (dot > -0.15D) {
+                return 3;
+            }
+            return 4;
+        }
+        return terrainClass == 2 ? 5 : 6;
+    }
+
+    private static int viewAnglePenalty(CubePos cubePos, CubePos playerCube, PlayerViewFocus focus) {
+        double dot = viewDot(cubePos, playerCube, focus);
+        if (dot > 0.75D) {
+            return 0;
+        }
+        if (dot > 0.25D) {
+            return 64;
+        }
+        if (dot > -0.25D) {
+            return 192;
+        }
+        return 384;
+    }
+
+    private static double viewDot(CubePos cubePos, CubePos playerCube, PlayerViewFocus focus) {
+        double dx = cubePos.x() - playerCube.x();
+        double dz = cubePos.z() - playerCube.z();
+        double distance = Math.sqrt(dx * dx + dz * dz);
+        if (distance < 1.0E-5D) {
+            return 1.0D;
+        }
+        return (dx * focus.dirX() + dz * focus.dirZ()) / distance;
+    }
+
+    private static int verticalTerrainClass(ServerCubeCache cache, CubePos cubePos) {
+        int surfaceCubeY = terrainSurfaceCube(cache, cubePos);
+        if (cubePos.y() >= surfaceCubeY - 1 && cubePos.y() <= surfaceCubeY + 1) {
+            return 0;
+        }
+        return cubePos.y() < surfaceCubeY - 1 ? 1 : 2;
+    }
+
+    private static int terrainSurfaceCube(ServerCubeCache cache, CubePos cubePos) {
+        int centerX = cubePos.minBlockX() + 8;
+        int centerZ = cubePos.minBlockZ() + 8;
+        return CubePos.blockToCube(com.redline.worldcore.server.generation.M15TerrainModel.surfaceHeightDry(cache.generationContext(), centerX, centerZ));
     }
 
     private static int horizontalDistanceSquared(CubePos first, CubePos second) {
@@ -1341,7 +1612,60 @@ public final class CubicClientSyncBridge {
             return false;
         }
         ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
-        return cache.writeBlock(pos, state, true).isPresent();
+        CubePos cubePos = CubePos.fromBlock(pos);
+        long baseHash = cache.holder(cubePos).map(CubeHolder::generationHash).orElse(Long.MIN_VALUE);
+        Optional<CubeHolder> holder = cache.writeBlock(pos, state, true);
+        if (holder.isEmpty()) {
+            return false;
+        }
+        sendNativeSectionDelta(level, cubePos, baseHash, holder.get().generationHash(), CubePos.localIndexFromBlock(pos.getX(), pos.getY(), pos.getZ()), state);
+        return true;
+    }
+
+    private static void sendNativeSectionDelta(ServerLevel level, CubePos cubePos, long baseHash, long newHash, int localIndex, BlockState state) {
+        CubeSectionDeltaPayload payload = CubeSectionDeltaPayload.single(cubePos, baseHash, newHash, localIndex, state);
+        int sent = 0;
+        for (ServerPlayer target : level.players()) {
+            CubePos targetCube = CubePos.fromBlock(target.blockPosition());
+            if (!isWithinNativeSectionRetainRadius(cubePos, targetCube)) {
+                continue;
+            }
+            PacketDistributor.sendToPlayer(target, payload);
+            sent++;
+        }
+        if (sent > 0) {
+            nativeSectionDeltaPacketsSent += sent;
+            nativeSectionDeltaEntriesSent += sent;
+            nativeSectionDeltaBytesSent += payload.estimatedBytes() * sent;
+            RuntimeProfiler.addCount("client.native_section_delta_packets_sent", sent);
+            RuntimeProfiler.addCount("client.native_section_delta_entries_sent", sent);
+            RuntimeProfiler.addCount("client.native_section_delta_bytes_sent", payload.estimatedBytes() * sent);
+        }
+    }
+
+    public static void handleNativeSectionAck(ServerPlayer player, ClientCubeSectionAckPayload payload) {
+        PlayerBridgeState state = PLAYER_STATES.get(player.getUUID());
+        if (state == null) {
+            return;
+        }
+        nativeSectionAcksReceived++;
+        nativeSectionAckEntriesReceived += payload.entries().size();
+        RuntimeProfiler.addCount("client.native_section_ack_packets_received", 1);
+        RuntimeProfiler.addCount("client.native_section_ack_entries_received", payload.entries().size());
+        for (ClientCubeSectionAckPayload.Entry entry : payload.entries()) {
+            CubePos cubePos = entry.cubePos();
+            state.ackedNativeSectionHashes.put(cubePos, entry.hash());
+            state.unackedNativeSectionHashes.remove(cubePos);
+        }
+        trimNativeSectionAckHashes(state);
+    }
+
+    private static void trimNativeSectionAckHashes(PlayerBridgeState state) {
+        while (state.ackedNativeSectionHashes.size() > MAX_TRACKED_MATERIALIZED * 2) {
+            CubePos first = state.ackedNativeSectionHashes.keySet().iterator().next();
+            state.ackedNativeSectionHashes.remove(first);
+            RuntimeProfiler.addCount("client.native_section_ack_hash_evictions", 1);
+        }
     }
 
     private static boolean isCubicTest(ServerLevel level) {
@@ -1352,6 +1676,9 @@ public final class CubicClientSyncBridge {
         FULL,
         NEAR,
         HYBRID,
+        HYBRID_FAST,
+        NATIVE_RENDER,
+        CUBE_ONLY,
         NATIVE_ONLY
     }
 
@@ -1366,6 +1693,11 @@ public final class CubicClientSyncBridge {
         private final Set<CubePos> nativeSectionQueued = new HashSet<>();
         private final Map<CubePos, Long> nativeSectionHashes = new HashMap<>();
         private final Map<CubePos, Long> sentNativeSectionHashes = new HashMap<>();
+        private final Map<CubePos, Long> ackedNativeSectionHashes = new HashMap<>();
+        private final Map<CubePos, Long> unackedNativeSectionHashes = new HashMap<>();
+        private final ArrayList<CubeSectionSnapshotPayload> pendingNativeSectionPayloads = new ArrayList<>();
+        private long pendingNativeSectionPayloadBytes;
+        private int materializeBackoffTicks;
         private CubePos visibleOrderCenter;
         private List<CubePos> visibleOrder = List.of();
         private int visibleOrderConfigHash;
@@ -1383,6 +1715,9 @@ public final class CubicClientSyncBridge {
         }
     }
 
-    private record MaterializeSliceResult(boolean completed, int scanned, int changed, boolean forcedYield) {
+    private record PlayerViewFocus(double dirX, double dirZ, boolean underground) {
+    }
+
+    private record MaterializeSliceResult(boolean completed, int scanned, int changed, boolean forcedYield, boolean slowBlock) {
     }
 }
