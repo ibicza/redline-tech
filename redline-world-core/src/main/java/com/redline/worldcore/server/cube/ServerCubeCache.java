@@ -54,6 +54,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -74,7 +75,7 @@ public final class ServerCubeCache {
     public static final int MAX_LOADS_PER_TICK = 32;
 
     /** At most one freshly generated gameplay cube per tick; persisted/loaded cubes may still stream faster. */
-    public static final int MAX_GENERATED_LOADS_PER_TICK = 1;
+    public static final int MAX_GENERATED_LOADS_PER_TICK = 2;
 
     /** Soft active-load budget. One expensive generated cube can exceed this, but the loader stops immediately after it. */
     public static final int MAX_LOAD_MICROS_PER_TICK = 4_000;
@@ -95,10 +96,13 @@ public final class ServerCubeCache {
     public static final int UNLOAD_SWEEP_REBUILD_SIZE_DELTA = 1024;
 
     /** M17.2: stale pending entries are purged incrementally; a full removeIf showed up as 40-60ms spikes. */
-    public static final int MAX_PENDING_PURGE_SCAN_PER_TICK = 512;
+    public static final int MAX_PENDING_PURGE_SCAN_PER_TICK = 256;
+
+    /** M18.3: pending purge is lifecycle cleanup and must obey a wall-clock budget during fast-flight streaming. */
+    public static final int MAX_PENDING_PURGE_MICROS_PER_TICK = 1_000;
 
     /** M17.3: do not rebuild the pending purge snapshot every tick just because streaming added/removed a few cubes. */
-    public static final int PENDING_PURGE_REBUILD_SIZE_DELTA = 2048;
+    public static final int PENDING_PURGE_REBUILD_SIZE_DELTA = 4096;
 
     /** M17.2: refresh loaded holders from a stable ticket cuboid in slices instead of walking every required cube. */
     public static final int MAX_REQUIRED_REFRESHES_PER_TICK = 384;
@@ -114,6 +118,57 @@ public final class ServerCubeCache {
 
     /** Safety cap for accidental huge debug cuboids before real async distance propagation exists. */
     public static final int MAX_REQUESTED_CUBES_PER_TICK = 32768;
+
+    /** M18.3: high-altitude visual surface projection keeps terrain/water visible even when gameplay Y-radius is small. */
+    public static final boolean SURFACE_PROJECTION_ENABLED = true;
+
+    /**
+     * M18.4.1: surface projection is now trajectory-first and budgeted.  The old 384 columns/tick pass kept
+     * high-altitude terrain visible, but it also overfed worldgen/water while fast-flying.
+     */
+    public static final int SURFACE_PROJECTION_MAX_COLUMNS_PER_PLAYER = 112;
+
+    /** Fast-flight gets a larger forward cone, but still far less than the old full square pass. */
+    public static final int SURFACE_PROJECTION_FAST_MAX_COLUMNS_PER_PLAYER = 176;
+
+    /** Reuse sorted projection columns while the player stays in the same cube and trajectory sector. */
+    public static final int SURFACE_PROJECTION_REBUILD_DIRECTION_BUCKETS = 16;
+
+    /**
+     * M18.4.2: server-side getDeltaMovement() is often near-zero in creative flight/gliding edge cases.
+     * Surface projection therefore also tracks real player position deltas; keep the threshold low so high-altitude
+     * forward streaming does not fall back to camera direction when the player looks down.
+     */
+    public static final double SURFACE_PROJECTION_TRAJECTORY_SPEED_SQ = 0.000025D;
+
+    /** Fast creative/elytra style flight widens the forward cone and cuts rear work. */
+    public static final double SURFACE_PROJECTION_FAST_SPEED_SQ = 0.0025D;
+
+    /** High-altitude flight needs surface lead beyond the normal gameplay X/Z radius, but only in the forward cone. */
+    public static final int SURFACE_PROJECTION_FAST_EXTRA_RADIUS = 4;
+    public static final int SURFACE_PROJECTION_HIGH_ALTITUDE_EXTRA_RADIUS = 6;
+    public static final int SURFACE_PROJECTION_HIGH_ALTITUDE_CUBE_DELTA = 2;
+    public static final int SURFACE_PROJECTION_TRAJECTORY_MAX_COLUMNS_PER_PLAYER = 224;
+
+    /** M18.4.3: direct forward surface spine keeps high-altitude flight from reaching an ungenerated cliff edge. */
+    public static final int SURFACE_PROJECTION_TRAJECTORY_SPINE_COLUMNS_PER_PLAYER = 128;
+
+    /** M18.4.3: promote retained/projected surface cubes ahead of huge normal pending queues. */
+    public static final int SURFACE_PROJECTION_PROMOTE_PENDING_PER_TICK = 384;
+
+    /** Looking straight down still has a yaw; use it instead of collapsing horizontal look to +Z. */
+    public static final double SURFACE_PROJECTION_YAW_FALLBACK_HORIZONTAL_LOOK_LEN = 0.20D;
+
+    /** Keep projection tickets alive long enough for async load/generation/native sync to catch up with fast flight. */
+    public static final int SURFACE_PROJECTION_RETAIN_TICKS = 80;
+    public static final int SURFACE_PROJECTION_RETAIN_MAX_CUBES_PER_PLAYER = 4096;
+
+    /** Only a slim band around the visible surface is requested, never the whole vertical column. */
+    public static final int SURFACE_PROJECTION_BAND_BELOW = 1;
+    public static final int SURFACE_PROJECTION_BAND_ABOVE = 1;
+
+    /** If the player is underground, surface projection becomes a small background task instead of stealing cave budget. */
+    public static final int SURFACE_PROJECTION_UNDERGROUND_RADIUS_CAP = 3;
 
     /** M9 keeps static block-light rebuilds small and predictable during gameplay ticks. */
     public static final int MAX_LIGHT_REBUILDS_PER_TICK = 32;
@@ -174,6 +229,8 @@ public final class ServerCubeCache {
     private long lastReprioritizeFocusSignature = Long.MIN_VALUE;
     private int lastReprioritizePendingSize = -1;
     private long lastReprioritizeGameTime = Long.MIN_VALUE;
+    private final Map<UUID, SurfaceProjectionOrderState> surfaceProjectionStates = new LinkedHashMap<>();
+    private final Map<UUID, PlayerTrajectoryState> playerTrajectoryStates = new LinkedHashMap<>();
     private RequiredLevels cachedRequiredLevels;
     private long cachedRequiredTicketSignature;
     private int cachedRequiredTicketCount;
@@ -401,7 +458,7 @@ public final class ServerCubeCache {
         RuntimeProfiler.recordSince("cube_loading.tick_begin", phaseStart);
 
         phaseStart = RuntimeProfiler.markStart();
-        RequiredLevels required = collectRequiredLevelsCached(tickets);
+        RequiredLevels required = withSurfaceProjection(collectRequiredLevelsCached(tickets), level);
         RuntimeProfiler.recordSince("cube_loading.collect_required", phaseStart);
         requestedLastTick = required.levels().size();
         requestLimitHitLastTick = required.limitHit();
@@ -428,6 +485,8 @@ public final class ServerCubeCache {
         phaseStart = RuntimeProfiler.markStart();
         int unloadedThisTick = unloadNoLongerRequired(required.levels());
         RuntimeProfiler.recordSince("cube_loading.unload_no_longer_required", phaseStart);
+
+        promoteSurfaceProjectionPending(required.levels());
 
         LoadCounters loadCounters = loadPending(required.levels());
 
@@ -1289,6 +1348,373 @@ public final class ServerCubeCache {
         return new RequiredLevels(required, false, signature.signature(), signature.count(), true);
     }
 
+
+    private RequiredLevels withSurfaceProjection(RequiredLevels base, ServerLevel level) {
+        if (!SURFACE_PROJECTION_ENABLED || level == null || level.players().isEmpty()) {
+            return base;
+        }
+        Map<CubePos, CubeTicketLevel> required = new LinkedHashMap<>(base.levels());
+        int added = 0;
+        int retained = 0;
+        long projectionSignature = 0x5355524641434550L;
+        List<PlayerLoadFocus> focuses = activePlayerFocuses(level);
+        Set<UUID> activeProjectionPlayers = new LinkedHashSet<>();
+        for (PlayerLoadFocus focus : focuses) {
+            activeProjectionPlayers.add(focus.playerId());
+            SurfaceProjectionCounters counters = addSurfaceProjectionForFocus(required, focus);
+            added += counters.added();
+            retained += counters.retained();
+            projectionSignature ^= mix64(counters.signature() + (added + retained) * 0x9E3779B97F4A7C15L);
+            if (counters.columnsScanned() > 0) {
+                RuntimeProfiler.addCount("cube_loading.surface_projection_columns_scanned", counters.columnsScanned());
+            }
+            if (counters.added() > 0) {
+                RuntimeProfiler.addCount("cube_loading.surface_projection_cubes_queued", counters.added());
+            }
+            if (counters.retained() > 0) {
+                RuntimeProfiler.addCount("cube_loading.surface_projection_retained", counters.retained());
+            }
+            RuntimeProfiler.addCount("cube_loading.surface_projection_front", counters.front());
+            RuntimeProfiler.addCount("cube_loading.surface_projection_peripheral", counters.peripheral());
+            RuntimeProfiler.addCount("cube_loading.surface_projection_rear", counters.rear());
+            RuntimeProfiler.addCount("cube_loading.surface_projection_surface_hint_hits", counters.columnsScanned());
+            if (focus.fastFlight()) {
+                RuntimeProfiler.addCount("cube_loading.surface_projection_fast_flight_ticks", 1);
+            }
+            if (focus.highAltitude()) {
+                RuntimeProfiler.addCount("cube_loading.surface_projection_high_altitude_ticks", 1);
+            }
+        }
+        surfaceProjectionStates.keySet().removeIf(id -> !activeProjectionPlayers.contains(id));
+        playerTrajectoryStates.keySet().removeIf(id -> !activeProjectionPlayers.contains(id));
+        if (added == 0 && retained == 0) {
+            RuntimeProfiler.addCount("cube_loading.surface_projection_noop", 1);
+            return base;
+        }
+        long signature = base.signature() ^ mix64(projectionSignature) ^ ((long) (added + retained) * 0xC2B2AE3D27D4EB4FL);
+        return new RequiredLevels(required, base.limitHit() || required.size() >= MAX_REQUESTED_CUBES_PER_TICK,
+                signature, base.ticketCount() + 1, true);
+    }
+
+    private SurfaceProjectionCounters addSurfaceProjectionForFocus(Map<CubePos, CubeTicketLevel> required, PlayerLoadFocus focus) {
+        int radius = Math.max(1, settings.horizontalLoadDistance());
+        if (focus.underground()) {
+            radius = Math.min(radius, SURFACE_PROJECTION_UNDERGROUND_RADIUS_CAP);
+        } else if (focus.trajectoryFocus()) {
+            radius += focus.highAltitude() ? SURFACE_PROJECTION_HIGH_ALTITUDE_EXTRA_RADIUS : SURFACE_PROJECTION_FAST_EXTRA_RADIUS;
+        }
+
+        SurfaceProjectionOrderState state = surfaceProjectionStates.computeIfAbsent(focus.playerId(), ignored -> new SurfaceProjectionOrderState());
+        long orderSignature = surfaceProjectionOrderSignature(focus, radius);
+        if (state.signature != orderSignature || state.columns.isEmpty()) {
+            state.columns = buildSurfaceProjectionColumns(focus, radius);
+            state.cursor = 0;
+            state.signature = orderSignature;
+            RuntimeProfiler.addCount("cube_loading.surface_projection_order_rebuilt", 1);
+        } else {
+            RuntimeProfiler.addCount("cube_loading.surface_projection_order_reused", 1);
+        }
+
+        long signature = mixTicketCoord(focus.cube().x(), focus.cube().y(), focus.cube().z());
+        SurfaceProjectionCounters spine = addTrajectorySpineSurfaceProjection(required, focus, state, radius);
+        int retained = retainSurfaceProjectionTickets(required, state);
+        int added = spine.added();
+        int front = spine.front();
+        int peripheral = spine.peripheral();
+        int rear = spine.rear();
+        int scanned = spine.columnsScanned();
+        if (spine.added() > 0 || spine.columnsScanned() > 0) {
+            signature ^= spine.signature() * 0xD6E8FEB86659FD93L;
+        }
+        if (retained > 0) {
+            signature ^= retained * 0x94D049BB133111EBL;
+        }
+
+        int maxColumns = focus.underground()
+                ? Math.min(32, state.columns.size())
+                : Math.min(focus.trajectoryFocus() || focus.highAltitude()
+                        ? SURFACE_PROJECTION_TRAJECTORY_MAX_COLUMNS_PER_PLAYER
+                        : (focus.fastFlight() ? SURFACE_PROJECTION_FAST_MAX_COLUMNS_PER_PLAYER : SURFACE_PROJECTION_MAX_COLUMNS_PER_PLAYER), state.columns.size());
+        while (scanned < maxColumns && scanned < state.columns.size()) {
+            SurfaceProjectionColumn column = state.columns.get(state.cursor++);
+            if (state.cursor >= state.columns.size()) {
+                state.cursor = 0;
+                RuntimeProfiler.addCount("cube_loading.surface_projection_cursor_wrapped", 1);
+            }
+            scanned++;
+            int surfaceY = visibleSurfaceCube(column.x(), column.z());
+            for (int y = surfaceY - SURFACE_PROJECTION_BAND_BELOW; y <= surfaceY + SURFACE_PROJECTION_BAND_ABOVE; y++) {
+                if (!settings.containsCubeY(y)) {
+                    continue;
+                }
+                CubePos cubePos = new CubePos(column.x(), y, column.z());
+                CubeTicketLevel previous = required.get(cubePos);
+                CubeTicketLevel merged = previous == null ? CubeTicketLevel.GENERATED : strongerLevel(previous, CubeTicketLevel.GENERATED);
+                if (previous == null) {
+                    added++;
+                    switch (column.band()) {
+                        case 0 -> front++;
+                        case 1 -> peripheral++;
+                        default -> rear++;
+                    }
+                }
+                required.put(cubePos, merged);
+                rememberSurfaceProjectionTicket(state, cubePos, column.priorityScore());
+                signature ^= mixTicketCoord(cubePos.x(), cubePos.y(), cubePos.z());
+            }
+        }
+        if (state.columns.size() > maxColumns) {
+            RuntimeProfiler.addCount("cube_loading.surface_projection_budget_hits", 1);
+        }
+        return new SurfaceProjectionCounters(scanned, added, retained, front, peripheral, rear, signature ^ orderSignature);
+    }
+
+    private int retainSurfaceProjectionTickets(Map<CubePos, CubeTicketLevel> required, SurfaceProjectionOrderState state) {
+        int retained = 0;
+        Iterator<Map.Entry<CubePos, Integer>> iterator = state.retainedTickets.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<CubePos, Integer> entry = iterator.next();
+            int ttl = entry.getValue() - 1;
+            if (ttl <= 0) {
+                iterator.remove();
+                state.retainedPriorities.remove(entry.getKey());
+                RuntimeProfiler.addCount("cube_loading.surface_projection_retained_expired", 1);
+                continue;
+            }
+            entry.setValue(ttl);
+            CubePos cubePos = entry.getKey();
+            CubeTicketLevel previous = required.get(cubePos);
+            required.put(cubePos, previous == null ? CubeTicketLevel.GENERATED : strongerLevel(previous, CubeTicketLevel.GENERATED));
+            retained++;
+        }
+        return retained;
+    }
+
+    private void rememberSurfaceProjectionTicket(SurfaceProjectionOrderState state, CubePos cubePos, int priorityScore) {
+        state.retainedTickets.put(cubePos, SURFACE_PROJECTION_RETAIN_TICKS);
+        Integer previousPriority = state.retainedPriorities.get(cubePos);
+        if (previousPriority == null || priorityScore < previousPriority) {
+            state.retainedPriorities.put(cubePos, priorityScore);
+        }
+        while (state.retainedTickets.size() > SURFACE_PROJECTION_RETAIN_MAX_CUBES_PER_PLAYER) {
+            Iterator<CubePos> iterator = state.retainedTickets.keySet().iterator();
+            if (!iterator.hasNext()) {
+                break;
+            }
+            CubePos evicted = iterator.next();
+            iterator.remove();
+            state.retainedPriorities.remove(evicted);
+            RuntimeProfiler.addCount("cube_loading.surface_projection_retained_evictions", 1);
+        }
+    }
+
+    private SurfaceProjectionCounters addTrajectorySpineSurfaceProjection(Map<CubePos, CubeTicketLevel> required, PlayerLoadFocus focus,
+                                                                         SurfaceProjectionOrderState state, int radius) {
+        if (focus.underground() || (!focus.trajectoryFocus() && !focus.highAltitude())) {
+            return new SurfaceProjectionCounters(0, 0, 0, 0, 0, 0, 0L);
+        }
+        double dirX = focus.surfaceDirX();
+        double dirZ = focus.surfaceDirZ();
+        double len = Math.sqrt(dirX * dirX + dirZ * dirZ);
+        if (len < 1.0E-5D) {
+            return new SurfaceProjectionCounters(0, 0, 0, 0, 0, 0, 0L);
+        }
+        dirX /= len;
+        dirZ /= len;
+        double perpX = -dirZ;
+        double perpZ = dirX;
+        int maxStep = Math.min(radius, settings.horizontalLoadDistance() + (focus.highAltitude() ? SURFACE_PROJECTION_HIGH_ALTITUDE_EXTRA_RADIUS : SURFACE_PROJECTION_FAST_EXTRA_RADIUS));
+        LinkedHashSet<Long> seenColumns = new LinkedHashSet<>();
+        int scanned = 0;
+        int added = 0;
+        int front = 0;
+        long signature = 0x5452414A5350494EL;
+        for (int step = 1; step <= maxStep && scanned < SURFACE_PROJECTION_TRAJECTORY_SPINE_COLUMNS_PER_PLAYER; step++) {
+            int halfWidth = Math.min(focus.highAltitude() ? 5 : 3, 1 + step / 4);
+            for (int lateral = -halfWidth; lateral <= halfWidth && scanned < SURFACE_PROJECTION_TRAJECTORY_SPINE_COLUMNS_PER_PLAYER; lateral++) {
+                int x = focus.cube().x() + (int) Math.round(dirX * step + perpX * lateral);
+                int z = focus.cube().z() + (int) Math.round(dirZ * step + perpZ * lateral);
+                long key = (((long) x) << 32) ^ (z & 0xFFFFFFFFL);
+                if (!seenColumns.add(key)) {
+                    continue;
+                }
+                scanned++;
+                int priorityScore = -2_000_000 + step * 256 + Math.abs(lateral) * 32;
+                int surfaceY = visibleSurfaceCube(x, z);
+                for (int y = surfaceY - SURFACE_PROJECTION_BAND_BELOW; y <= surfaceY + SURFACE_PROJECTION_BAND_ABOVE; y++) {
+                    if (!settings.containsCubeY(y)) {
+                        continue;
+                    }
+                    CubePos cubePos = new CubePos(x, y, z);
+                    CubeTicketLevel previous = required.get(cubePos);
+                    CubeTicketLevel merged = previous == null ? CubeTicketLevel.GENERATED : strongerLevel(previous, CubeTicketLevel.GENERATED);
+                    if (previous == null) {
+                        added++;
+                        front++;
+                    }
+                    required.put(cubePos, merged);
+                    rememberSurfaceProjectionTicket(state, cubePos, priorityScore);
+                    signature ^= mixTicketCoord(cubePos.x(), cubePos.y(), cubePos.z());
+                }
+            }
+        }
+        if (scanned > 0) {
+            RuntimeProfiler.addCount("cube_loading.surface_projection_trajectory_spine_columns", scanned);
+        }
+        if (added > 0) {
+            RuntimeProfiler.addCount("cube_loading.surface_projection_trajectory_spine_cubes", added);
+        }
+        return new SurfaceProjectionCounters(scanned, added, 0, front, 0, 0, signature);
+    }
+
+    private void promoteSurfaceProjectionPending(Map<CubePos, CubeTicketLevel> required) {
+        if (pendingLoads.isEmpty() || surfaceProjectionStates.isEmpty()) {
+            return;
+        }
+        List<Map.Entry<CubePos, Integer>> candidates = new ArrayList<>();
+        for (SurfaceProjectionOrderState state : surfaceProjectionStates.values()) {
+            for (Map.Entry<CubePos, Integer> entry : state.retainedPriorities.entrySet()) {
+                CubePos cubePos = entry.getKey();
+                if (required.containsKey(cubePos) && pendingLoads.containsKey(cubePos)) {
+                    candidates.add(entry);
+                    if (candidates.size() >= SURFACE_PROJECTION_PROMOTE_PENDING_PER_TICK * 3) {
+                        break;
+                    }
+                }
+            }
+            if (candidates.size() >= SURFACE_PROJECTION_PROMOTE_PENDING_PER_TICK * 3) {
+                break;
+            }
+        }
+        if (candidates.isEmpty()) {
+            return;
+        }
+        candidates.sort(Comparator
+                .comparingInt((Map.Entry<CubePos, Integer> entry) -> entry.getValue())
+                .thenComparingInt(entry -> Math.abs(entry.getKey().y()))
+                .thenComparingInt(entry -> entry.getKey().x())
+                .thenComparingInt(entry -> entry.getKey().z()));
+        int promoted = 0;
+        for (Map.Entry<CubePos, Integer> entry : candidates) {
+            if (promoted >= SURFACE_PROJECTION_PROMOTE_PENDING_PER_TICK) {
+                break;
+            }
+            CubeTicketLevel level = pendingLoads.remove(entry.getKey());
+            if (level == null) {
+                continue;
+            }
+            pendingLoads.putFirst(entry.getKey(), level);
+            promoted++;
+        }
+        if (promoted > 0) {
+            RuntimeProfiler.addCount("cube_loading.surface_projection_pending_promoted", promoted);
+        }
+    }
+
+    private List<SurfaceProjectionColumn> buildSurfaceProjectionColumns(PlayerLoadFocus focus, int radius) {
+        List<SurfaceProjectionColumn> columns = new ArrayList<>((radius * 2 + 1) * (radius * 2 + 1));
+        int skippedRear = 0;
+        for (int z = focus.cube().z() - radius; z <= focus.cube().z() + radius; z++) {
+            for (int x = focus.cube().x() - radius; x <= focus.cube().x() + radius; x++) {
+                int dx = x - focus.cube().x();
+                int dz = z - focus.cube().z();
+                int cheb = Math.max(Math.abs(dx), Math.abs(dz));
+                if (cheb > radius) {
+                    continue;
+                }
+                double dot = horizontalDot(dx, dz, focus.surfaceDirX(), focus.surfaceDirZ());
+                boolean trajectoryLead = focus.trajectoryFocus() || focus.highAltitude();
+                // M18.4.2: high-altitude/fast-flight projection is a forward trajectory cone.  Keep only the tiny
+                // near bubble behind the player; spend the rest of the budget on terrain that will enter view soon.
+                if (trajectoryLead && cheb > 2 && dot < -0.10D) {
+                    skippedRear++;
+                    continue;
+                }
+                if (trajectoryLead && cheb > Math.max(4, settings.horizontalLoadDistance() / 2) && dot < 0.18D) {
+                    skippedRear++;
+                    continue;
+                }
+                int band = projectionBand(dot);
+                int priorityScore = surfaceProjectionPriorityScore(dx, dz, cheb, dot, focus.surfaceDirX(), focus.surfaceDirZ(), band, trajectoryLead);
+                if (trajectoryLead && band == 0 && cheb > settings.horizontalLoadDistance()) {
+                    RuntimeProfiler.addCount("cube_loading.surface_projection_front_lead", 1);
+                }
+                columns.add(new SurfaceProjectionColumn(x, z, priorityScore, band, dot));
+            }
+        }
+        columns.sort(Comparator
+                .comparingInt(SurfaceProjectionColumn::priorityScore)
+                .thenComparingInt(SurfaceProjectionColumn::x)
+                .thenComparingInt(SurfaceProjectionColumn::z));
+        if (skippedRear > 0) {
+            RuntimeProfiler.addCount("cube_loading.surface_projection_rear_skipped", skippedRear);
+        }
+        return columns;
+    }
+
+    private static int surfaceProjectionPriorityScore(int dx, int dz, int cheb, double dot, double dirX, double dirZ, int band, boolean trajectoryLead) {
+        double along = dx * dirX + dz * dirZ;
+        double distSq = (double) dx * dx + (double) dz * dz;
+        double lateralSq = Math.max(0.0D, distSq - along * along);
+        if (trajectoryLead && band == 0 && along > 0.0D) {
+            // Trajectory mode must not hug the player's feet: centerline ahead wins, including the extended lead ring.
+            return (int) Math.round(lateralSq * 512.0D) + (int) Math.round(Math.max(0.0D, along) * 4.0D) + cheb;
+        }
+        if (band == 0 && along > 0.0D) {
+            // Prefer a forward corridor first: centerline ahead before broad side/rear surface.
+            return band * 1_000_000 + (int) Math.round(lateralSq * 256.0D) + (int) Math.round(along * 16.0D) + cheb;
+        }
+        int anglePenalty = dot > 0.55D ? 0 : dot > -0.15D ? 2_000 : 8_000;
+        return band * 1_000_000 + cheb * cheb * 64 + anglePenalty + (int) Math.round((1.0D - dot) * 128.0D);
+    }
+
+    private static long surfaceProjectionOrderSignature(PlayerLoadFocus focus, int radius) {
+        int dirBucketX = (int) Math.round(focus.surfaceDirX() * SURFACE_PROJECTION_REBUILD_DIRECTION_BUCKETS);
+        int dirBucketZ = (int) Math.round(focus.surfaceDirZ() * SURFACE_PROJECTION_REBUILD_DIRECTION_BUCKETS);
+        long value = mixTicketCoord(focus.cube().x(), focus.cube().y(), focus.cube().z());
+        value ^= ((long) radius) * 0x9E3779B97F4A7C15L;
+        value ^= ((long) (dirBucketX + 64)) << 32;
+        value ^= ((long) (dirBucketZ + 64)) << 40;
+        value ^= focus.underground() ? 0x5DEECE66DL : 0L;
+        value ^= focus.fastFlight() ? 0xD1B54A32D192ED03L : 0L;
+        value ^= focus.trajectoryFocus() ? 0x94D049BB133111EBL : 0L;
+        value ^= focus.highAltitude() ? 0xBF58476D1CE4E5B9L : 0L;
+        return mix64(value);
+    }
+
+    private int visibleSurfaceCube(int cubeX, int cubeZ) {
+        int centerX = (cubeX << CubePos.SIZE_BITS) + 8;
+        int centerZ = (cubeZ << CubePos.SIZE_BITS) + 8;
+        int drySurface = com.redline.worldcore.server.generation.M15TerrainModel.surfaceHeightDry(generationContext(), centerX, centerZ);
+        try {
+            com.redline.worldcore.server.generation.M16WaterSample water = com.redline.worldcore.server.generation.M16WaterModel.sample(generationContext(), centerX, centerZ);
+            if (water.hasWater()) {
+                drySurface = Math.max(drySurface, water.waterSurfaceY());
+            }
+        } catch (RuntimeException ignored) {
+            RuntimeProfiler.addCount("cube_loading.surface_projection_surface_hint_misses", 1);
+        }
+        return CubePos.blockToCube(drySurface);
+    }
+
+    private static int projectionBand(double dot) {
+        if (dot > 0.35D) {
+            return 0;
+        }
+        if (dot > -0.25D) {
+            return 1;
+        }
+        return 2;
+    }
+
+    private static double horizontalDot(int dx, int dz, double dirX, double dirZ) {
+        double distance = Math.sqrt((double) dx * dx + (double) dz * dz);
+        if (distance < 1.0E-5D) {
+            return 1.0D;
+        }
+        return (dx * dirX + dz * dirZ) / distance;
+    }
+
     /**
      * M16.8 gameplay loading priority.
      *
@@ -1351,10 +1777,16 @@ public final class ServerCubeCache {
         for (PlayerLoadFocus focus : focuses) {
             int dirBucketX = focus.dirX() > 0.35D ? 1 : focus.dirX() < -0.35D ? -1 : 0;
             int dirBucketZ = focus.dirZ() > 0.35D ? 1 : focus.dirZ() < -0.35D ? -1 : 0;
+            int surfaceBucketX = focus.surfaceDirX() > 0.35D ? 1 : focus.surfaceDirX() < -0.35D ? -1 : 0;
+            int surfaceBucketZ = focus.surfaceDirZ() > 0.35D ? 1 : focus.surfaceDirZ() < -0.35D ? -1 : 0;
             long value = mixTicketCoord(focus.cube().x(), focus.cube().y(), focus.cube().z());
+            value ^= focus.playerId().getMostSignificantBits() ^ Long.rotateLeft(focus.playerId().getLeastSignificantBits(), 17);
             value ^= ((long) (dirBucketX + 2)) << 48;
             value ^= ((long) (dirBucketZ + 2)) << 52;
+            value ^= ((long) (surfaceBucketX + 2)) << 56;
+            value ^= ((long) (surfaceBucketZ + 2)) << 60;
             value ^= focus.underground() ? 0x5DEECE66DL : 0L;
+            value ^= focus.fastFlight() ? 0xABC98388FB8FAC03L : 0L;
             signature ^= mix64(value);
             signature *= 0x100000001B3L;
         }
@@ -1365,35 +1797,105 @@ public final class ServerCubeCache {
         List<PlayerLoadFocus> focuses = new ArrayList<>();
         for (ServerPlayer player : level.players()) {
             CubePos cube = CubePos.fromBlock(player.blockPosition());
+            double yawRad = Math.toRadians(player.getYRot());
+            double yawX = -Math.sin(yawRad);
+            double yawZ = Math.cos(yawRad);
             double lookX = player.getLookAngle().x;
             double lookZ = player.getLookAngle().z;
             double lookLen = Math.sqrt(lookX * lookX + lookZ * lookZ);
-            if (lookLen < 1.0E-5D) {
-                lookX = 0.0D;
-                lookZ = 1.0D;
+            if (lookLen < SURFACE_PROJECTION_YAW_FALLBACK_HORIZONTAL_LOOK_LEN) {
+                lookX = yawX;
+                lookZ = yawZ;
+                RuntimeProfiler.addCount("cube_loading.surface_projection_yaw_fallback", 1);
             } else {
                 lookX /= lookLen;
                 lookZ /= lookLen;
             }
+            int surfaceCubeY = verticalTerrainSurfaceCube(cube);
+            boolean highAltitude = cube.y() > surfaceCubeY + SURFACE_PROJECTION_HIGH_ALTITUDE_CUBE_DELTA;
             double moveX = player.getDeltaMovement().x;
             double moveZ = player.getDeltaMovement().z;
-            double moveLen = Math.sqrt(moveX * moveX + moveZ * moveZ);
-            if (moveLen > 1.0E-4D) {
-                moveX /= moveLen;
-                moveZ /= moveLen;
-                // M18.0: flying players care about where they are going almost as much as where the camera points.
-                lookX = lookX * 0.75D + moveX * 0.25D;
-                lookZ = lookZ * 0.75D + moveZ * 0.25D;
+            double moveLenSq = moveX * moveX + moveZ * moveZ;
+            TrajectoryEstimate trajectory = estimatePlayerTrajectory(player.getUUID(), player.getX(), player.getZ(), moveX, moveZ, moveLenSq, highAltitude);
+            double surfaceDirX = lookX;
+            double surfaceDirZ = lookZ;
+            boolean fastFlight = trajectory.speedSq() >= SURFACE_PROJECTION_FAST_SPEED_SQ || (highAltitude && trajectory.trajectoryFocus());
+            if (trajectory.trajectoryFocus()) {
+                surfaceDirX = trajectory.dirX();
+                surfaceDirZ = trajectory.dirZ();
+                // Gameplay loading still blends camera and trajectory; surface projection itself uses pure trajectory.
+                lookX = lookX * 0.65D + surfaceDirX * 0.35D;
+                lookZ = lookZ * 0.65D + surfaceDirZ * 0.35D;
                 double mixedLen = Math.sqrt(lookX * lookX + lookZ * lookZ);
                 if (mixedLen > 1.0E-5D) {
                     lookX /= mixedLen;
                     lookZ /= mixedLen;
                 }
+                RuntimeProfiler.addCount("cube_loading.surface_projection_trajectory_focus", 1);
+                if (trajectory.positionMotion()) {
+                    RuntimeProfiler.addCount("cube_loading.surface_projection_position_motion_focus", 1);
+                }
             }
-            int surfaceCubeY = verticalTerrainSurfaceCube(cube);
-            focuses.add(new PlayerLoadFocus(cube, lookX, lookZ, cube.y() < surfaceCubeY - 1));
+            focuses.add(new PlayerLoadFocus(player.getUUID(), cube, lookX, lookZ, surfaceDirX, surfaceDirZ, cube.y() < surfaceCubeY - 1, fastFlight, highAltitude, trajectory.trajectoryFocus()));
         }
         return focuses;
+    }
+
+    private TrajectoryEstimate estimatePlayerTrajectory(UUID playerId, double playerX, double playerZ, double velocityX, double velocityZ, double velocityLenSq, boolean highAltitude) {
+        PlayerTrajectoryState state = playerTrajectoryStates.computeIfAbsent(playerId, ignored -> new PlayerTrajectoryState());
+        double positionDx = 0.0D;
+        double positionDz = 0.0D;
+        double positionLenSq = 0.0D;
+        if (state.initialized) {
+            positionDx = playerX - state.lastX;
+            positionDz = playerZ - state.lastZ;
+            positionLenSq = positionDx * positionDx + positionDz * positionDz;
+        }
+        state.lastX = playerX;
+        state.lastZ = playerZ;
+        state.initialized = true;
+
+        double rawX = velocityX;
+        double rawZ = velocityZ;
+        double rawLenSq = velocityLenSq;
+        boolean positionMotion = false;
+        if (positionLenSq > rawLenSq) {
+            rawX = positionDx;
+            rawZ = positionDz;
+            rawLenSq = positionLenSq;
+            positionMotion = true;
+        }
+
+        if (rawLenSq >= SURFACE_PROJECTION_TRAJECTORY_SPEED_SQ) {
+            double rawLen = Math.sqrt(rawLenSq);
+            double dirX = rawX / rawLen;
+            double dirZ = rawZ / rawLen;
+            if (state.hasDirection) {
+                dirX = state.dirX * 0.55D + dirX * 0.45D;
+                dirZ = state.dirZ * 0.55D + dirZ * 0.45D;
+                double mixedLen = Math.sqrt(dirX * dirX + dirZ * dirZ);
+                if (mixedLen > 1.0E-5D) {
+                    dirX /= mixedLen;
+                    dirZ /= mixedLen;
+                }
+            }
+            state.dirX = dirX;
+            state.dirZ = dirZ;
+            state.speedSq = rawLenSq;
+            state.hasDirection = true;
+            state.staleTicks = 0;
+            return new TrajectoryEstimate(dirX, dirZ, rawLenSq, true, positionMotion);
+        }
+
+        if (highAltitude && state.hasDirection && state.staleTicks < 40) {
+            state.staleTicks++;
+            state.speedSq *= 0.92D;
+            RuntimeProfiler.addCount("cube_loading.surface_projection_trajectory_retained", 1);
+            return new TrajectoryEstimate(state.dirX, state.dirZ, Math.max(state.speedSq, SURFACE_PROJECTION_TRAJECTORY_SPEED_SQ), true, false);
+        }
+
+        state.staleTicks++;
+        return new TrajectoryEstimate(state.dirX, state.dirZ, rawLenSq, false, false);
     }
 
     private int loadPriority(CubePos cubePos, List<PlayerLoadFocus> focuses) {
@@ -1538,7 +2040,12 @@ public final class ServerCubeCache {
 
         int scanned = 0;
         int removed = 0;
+        long purgeStartNanos = System.nanoTime();
         while (scanned < MAX_PENDING_PURGE_SCAN_PER_TICK && pendingPurgeCursor < pendingPurgeOrder.size()) {
+            if (scanned > 0 && (System.nanoTime() - purgeStartNanos) / 1_000L >= MAX_PENDING_PURGE_MICROS_PER_TICK) {
+                RuntimeProfiler.addCount("cube_loading.pending_purge_time_budget_hits", 1);
+                break;
+            }
             CubePos cubePos = pendingPurgeOrder.get(pendingPurgeCursor++);
             scanned++;
             if (!required.containsKey(cubePos) && pendingLoads.remove(cubePos) != null) {
@@ -1550,9 +2057,11 @@ public final class ServerCubeCache {
             RuntimeProfiler.addCount("cube_loading.pending_purged", removed);
         }
         if (pendingPurgeCursor >= pendingPurgeOrder.size()) {
-            pendingPurgeOrder = List.of();
+            // M18.3: keep the completed snapshot warm and just wrap the cursor. Rebuilding the order itself showed up
+            // as rare 60-90ms fast-flight spikes; drift checks above still rebuild after meaningful size changes.
             pendingPurgeCursor = 0;
             pendingPurgeSize = pendingLoads.size();
+            RuntimeProfiler.addCount("cube_loading.pending_purge_order_wrapped", 1);
         }
     }
 
@@ -1824,9 +2333,11 @@ public final class ServerCubeCache {
             RuntimeProfiler.addCount("cube_loading.unloaded_budgeted", unloaded);
         }
         if (unloadSweepCursor >= unloadSweepOrder.size()) {
-            unloadSweepOrder = List.of();
+            // M18.3: wrap instead of dropping the order. This prevents frequent large ArrayList rebuilds during
+            // high-speed cube_only flight while drift still forces a rebuild when the holder set changed substantially.
             unloadSweepCursor = 0;
             unloadSweepHolderCount = holders.size();
+            RuntimeProfiler.addCount("cube_loading.unload_sweep_wrapped", 1);
         }
         return unloaded;
     }
@@ -2145,7 +2656,35 @@ public final class ServerCubeCache {
     public record PregenCubeResult(CubePos cubePos, boolean generated, boolean saved, boolean lightReady, String reason) {
     }
 
-    private record PlayerLoadFocus(CubePos cube, double dirX, double dirZ, boolean underground) {
+    private record PlayerLoadFocus(UUID playerId, CubePos cube, double dirX, double dirZ, double surfaceDirX, double surfaceDirZ, boolean underground, boolean fastFlight, boolean highAltitude, boolean trajectoryFocus) {
+    }
+
+    private record SurfaceProjectionColumn(int x, int z, int priorityScore, int band, double dot) {
+    }
+
+    private static final class SurfaceProjectionOrderState {
+        private long signature = Long.MIN_VALUE;
+        private List<SurfaceProjectionColumn> columns = List.of();
+        private int cursor;
+        private final LinkedHashMap<CubePos, Integer> retainedTickets = new LinkedHashMap<>();
+        private final LinkedHashMap<CubePos, Integer> retainedPriorities = new LinkedHashMap<>();
+    }
+
+    private static final class PlayerTrajectoryState {
+        private boolean initialized;
+        private double lastX;
+        private double lastZ;
+        private boolean hasDirection;
+        private double dirX;
+        private double dirZ = 1.0D;
+        private double speedSq;
+        private int staleTicks;
+    }
+
+    private record TrajectoryEstimate(double dirX, double dirZ, double speedSq, boolean trajectoryFocus, boolean positionMotion) {
+    }
+
+    private record SurfaceProjectionCounters(int columnsScanned, int added, int retained, int front, int peripheral, int rear, long signature) {
     }
 
     private record RequiredLevels(Map<CubePos, CubeTicketLevel> levels, boolean limitHit, long signature, int ticketCount, boolean rebuilt) {

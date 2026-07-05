@@ -1413,8 +1413,8 @@ public final class RedlineWorldCoreCommands {
     private static int clientSyncShellMode(CommandSourceStack source, String mode) {
         try {
             CubicClientSyncBridge.setVanillaShellMode(mode);
-            source.sendSuccess(() -> Component.literal("RWC M17 vanilla shell mode: " + CubicClientSyncBridge.vanillaShellModeName()
-                    + " (hybrid_fast=default M17.10 fast bridge, native_render=minimal shell, cube_only=experimental player-cube shell only, hybrid=old bridge, near=near shell, native=debug metadata, full=legacy)"), false);
+            source.sendSuccess(() -> Component.literal("RWC M18.4 vanilla shell mode: " + CubicClientSyncBridge.vanillaShellModeName()
+                    + " (cube_only=main cube-first test mode, native_render=near-cube fallback, hybrid_fast=safe fallback, hybrid/near/full=debug compat, native=metadata debug)"), false);
             return 1;
         } catch (IllegalArgumentException exception) {
             source.sendFailure(Component.literal(exception.getMessage()));

@@ -42,6 +42,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -104,6 +105,20 @@ public final class CubicClientSyncBridge {
     private static final int MAX_NATIVE_SECTION_UNLOAD_SCAN_PER_TICK = 256;
     private static final int NATIVE_SECTION_RETAIN_EXTRA_HORIZONTAL = 2;
     private static final int NATIVE_SECTION_RETAIN_EXTRA_VERTICAL = 1;
+    private static final boolean SURFACE_PROJECTION_ENABLED = true;
+    private static final int SURFACE_PROJECTION_BAND_BELOW = 1;
+    private static final int SURFACE_PROJECTION_BAND_ABOVE = 1;
+    private static final int SURFACE_PROJECTION_UNDERGROUND_RADIUS_CAP = 3;
+    private static final int SURFACE_PROJECTION_MAX_COLUMNS = 112;
+    private static final int SURFACE_PROJECTION_FAST_MAX_COLUMNS = 176;
+    private static final double SURFACE_PROJECTION_TRAJECTORY_SPEED_SQ = 0.000025D;
+    private static final double SURFACE_PROJECTION_FAST_SPEED_SQ = 0.0025D;
+    private static final int SURFACE_PROJECTION_FAST_EXTRA_RADIUS = 4;
+    private static final int SURFACE_PROJECTION_HIGH_ALTITUDE_EXTRA_RADIUS = 6;
+    private static final int SURFACE_PROJECTION_HIGH_ALTITUDE_CUBE_DELTA = 2;
+    private static final int SURFACE_PROJECTION_TRAJECTORY_MAX_COLUMNS = 224;
+    private static final int SURFACE_PROJECTION_TRAJECTORY_SPINE_COLUMNS = 128;
+    private static final double SURFACE_PROJECTION_YAW_FALLBACK_HORIZONTAL_LOOK_LEN = 0.20D;
     /*
      * M17.5.1: the M17.5 anti-spike guard cut the vanilla shell into very small linear slices.
      * Visually this looked like a printer/progress-bar because local index order is a straight X/Z line.
@@ -141,7 +156,7 @@ public final class CubicClientSyncBridge {
     private static int maxMaterializeBlocksPerTick = DEFAULT_MAX_MATERIALIZE_BLOCKS_PER_TICK;
     private static int maxMaterializeMicrosPerTick = DEFAULT_MAX_MATERIALIZE_MICROS_PER_TICK;
     private static int overlayMode = OVERLAY_FULL;
-    private static VanillaShellMode vanillaShellMode = VanillaShellMode.HYBRID_FAST;
+    private static VanillaShellMode vanillaShellMode = VanillaShellMode.CUBE_ONLY;
     private static int nearShellHorizontalRadius = DEFAULT_NEAR_SHELL_HORIZONTAL_RADIUS;
     private static int nearShellVerticalRadius = DEFAULT_NEAR_SHELL_VERTICAL_RADIUS;
     private static int hybridShellHorizontalRadius = DEFAULT_HYBRID_SHELL_HORIZONTAL_RADIUS;
@@ -453,7 +468,7 @@ public final class CubicClientSyncBridge {
                 DEFAULT_MAX_MATERIALIZED_CUBES_PER_TICK,
                 DEFAULT_SYNC_PACKET_INTERVAL_TICKS
         );
-        vanillaShellMode = VanillaShellMode.HYBRID_FAST;
+        vanillaShellMode = VanillaShellMode.CUBE_ONLY;
     }
 
     public static void recordCommandWriteSaved() {
@@ -477,7 +492,7 @@ public final class CubicClientSyncBridge {
         RuntimeProfiler.recordSince("client.queue_visible_loaded", phaseStart);
         phaseStart = RuntimeProfiler.markStart();
         prepareNativeSectionSnapshots(player, cache, state);
-        unloadFarNativeSections(player, state, playerCube);
+        unloadFarNativeSections(player, cache, state, playerCube);
         RuntimeProfiler.recordSince("client.native_section_prepare_total", phaseStart);
         phaseStart = RuntimeProfiler.markStart();
         materializeQueued(level, cache, state, playerCube);
@@ -608,7 +623,7 @@ public final class CubicClientSyncBridge {
             recordNativeReady(state, holder.get(), hash);
             boolean clientDirty = cache.clientSyncDirty(cubePos);
             boolean vanillaShellRequired = shouldMaterializeVanillaShell(cubePos, playerCube, false);
-            if (shouldSendNativeSectionSnapshot(cubePos, playerCube, vanillaShellRequired)) {
+            if (shouldSendNativeSectionSnapshot(cache, cubePos, playerCube, vanillaShellRequired)) {
                 enqueueNativeSectionSnapshot(state, cubePos, hash);
             }
             if (!clientDirty && holder.get().vanillaShellReady(hash)) {
@@ -641,19 +656,30 @@ public final class CubicClientSyncBridge {
     private static List<CubePos> visibleOrder(ServerCubeCache cache, CubePos playerCube, PlayerViewFocus focus, PlayerBridgeState state) {
         int dirBucketX = focus.dirX() > 0.35D ? 1 : focus.dirX() < -0.35D ? -1 : 0;
         int dirBucketZ = focus.dirZ() > 0.35D ? 1 : focus.dirZ() < -0.35D ? -1 : 0;
-        int configHash = streamHorizontalRadius * 31 + streamVerticalRadius * 17 + (dirBucketX + 2) * 7 + (dirBucketZ + 2) * 13 + (focus.underground() ? 101 : 0);
+        int surfaceBucketX = focus.surfaceDirX() > 0.35D ? 1 : focus.surfaceDirX() < -0.35D ? -1 : 0;
+        int surfaceBucketZ = focus.surfaceDirZ() > 0.35D ? 1 : focus.surfaceDirZ() < -0.35D ? -1 : 0;
+        int configHash = streamHorizontalRadius * 31 + streamVerticalRadius * 17
+                + (dirBucketX + 2) * 7 + (dirBucketZ + 2) * 13
+                + (surfaceBucketX + 2) * 113 + (surfaceBucketZ + 2) * 127
+                + (focus.underground() ? 101 : 0) + (focus.fastFlight() ? 1009 : 0)
+                + (focus.highAltitude() ? 2039 : 0) + (focus.trajectoryFocus() ? 4093 : 0);
         if (playerCube.equals(state.visibleOrderCenter) && state.visibleOrderConfigHash == configHash && !state.visibleOrder.isEmpty()) {
             RuntimeProfiler.addCount("client.visible_order_reused", 1);
             return state.visibleOrder;
         }
-        List<CubePos> visible = new ArrayList<>((streamHorizontalRadius * 2 + 1) * (streamHorizontalRadius * 2 + 1) * (streamVerticalRadius * 2 + 1));
+        LinkedHashSet<CubePos> visibleSet = new LinkedHashSet<>((streamHorizontalRadius * 2 + 1) * (streamHorizontalRadius * 2 + 1) * (streamVerticalRadius * 2 + 1));
         for (int y = playerCube.y() - streamVerticalRadius; y <= playerCube.y() + streamVerticalRadius; y++) {
             for (int z = playerCube.z() - streamHorizontalRadius; z <= playerCube.z() + streamHorizontalRadius; z++) {
                 for (int x = playerCube.x() - streamHorizontalRadius; x <= playerCube.x() + streamHorizontalRadius; x++) {
-                    visible.add(new CubePos(x, y, z));
+                    visibleSet.add(new CubePos(x, y, z));
                 }
             }
         }
+        int projected = addSurfaceProjectionVisible(cache, playerCube, focus, visibleSet);
+        if (projected > 0) {
+            RuntimeProfiler.addCount("client.surface_projection_visible_queued", projected);
+        }
+        List<CubePos> visible = new ArrayList<>(visibleSet);
         visible.sort(Comparator
                 .comparingInt((CubePos cubePos) -> materializationPriority(cache, cubePos, playerCube, focus))
                 .thenComparingInt(cubePos -> Math.abs(cubePos.y() - playerCube.y()))
@@ -703,7 +729,7 @@ public final class CubicClientSyncBridge {
             recordNativeReady(state, holder.get(), hash);
             boolean clientDirty = cache.clientSyncDirty(cubePos);
             boolean vanillaShellRequired = shouldMaterializeVanillaShell(cubePos, playerCube, false);
-            if (shouldSendNativeSectionSnapshot(cubePos, playerCube, vanillaShellRequired)) {
+            if (shouldSendNativeSectionSnapshot(cache, cubePos, playerCube, vanillaShellRequired)) {
                 enqueueNativeSectionSnapshot(state, cubePos, hash);
             }
             if (!clientDirty && holder.get().vanillaShellReady(hash)) {
@@ -1122,7 +1148,7 @@ public final class CubicClientSyncBridge {
         state.pendingNativeSectionPayloadBytes = 0L;
     }
 
-    private static void unloadFarNativeSections(ServerPlayer player, PlayerBridgeState state, CubePos playerCube) {
+    private static void unloadFarNativeSections(ServerPlayer player, ServerCubeCache cache, PlayerBridgeState state, CubePos playerCube) {
         if (state.sentNativeSectionHashes.isEmpty()) {
             return;
         }
@@ -1133,7 +1159,7 @@ public final class CubicClientSyncBridge {
             if (scanned++ >= MAX_NATIVE_SECTION_UNLOAD_SCAN_PER_TICK || sent >= MAX_NATIVE_SECTION_UNLOADS_PER_TICK) {
                 break;
             }
-            if (!isWithinNativeSectionRetainRadius(cubePos, playerCube)) {
+            if (!isWithinNativeSectionRetainRadius(cache, cubePos, playerCube)) {
                 toUnload.add(cubePos);
                 sent++;
             }
@@ -1148,6 +1174,22 @@ public final class CubicClientSyncBridge {
             RuntimeProfiler.addCount("client.native_section_unload_packets_sent", 1);
         }
         RuntimeProfiler.addCount("client.native_section_unload_scanned", scanned);
+    }
+
+    private static boolean isWithinNativeSectionRetainRadius(ServerCubeCache cache, CubePos cubePos, CubePos playerCube) {
+        int horizontal = streamHorizontalRadius + NATIVE_SECTION_RETAIN_EXTRA_HORIZONTAL;
+        int vertical = streamVerticalRadius + NATIVE_SECTION_RETAIN_EXTRA_VERTICAL;
+        if (Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z())) > horizontal) {
+            return false;
+        }
+        if (Math.abs(cubePos.y() - playerCube.y()) <= vertical) {
+            return true;
+        }
+        if (isSurfaceProjectionCube(cache, cubePos)) {
+            RuntimeProfiler.addCount("client.surface_projection_retain_native", 1);
+            return true;
+        }
+        return false;
     }
 
     private static boolean isWithinNativeSectionRetainRadius(CubePos cubePos, CubePos playerCube) {
@@ -1175,23 +1217,25 @@ public final class CubicClientSyncBridge {
         }
     }
 
-    private static boolean shouldSendNativeSectionSnapshot(CubePos cubePos, CubePos playerCube, boolean vanillaShellRequired) {
+    private static boolean shouldSendNativeSectionSnapshot(ServerCubeCache cache, CubePos cubePos, CubePos playerCube, boolean vanillaShellRequired) {
         int horizontalCheb = Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z()));
         int dy = Math.abs(cubePos.y() - playerCube.y());
+        boolean projectedSurface = horizontalCheb <= streamHorizontalRadius && isSurfaceProjectionCube(cache, cubePos);
+        if (projectedSurface) {
+            RuntimeProfiler.addCount("client.surface_projection_snapshot_candidate", 1);
+        }
         return switch (vanillaShellMode) {
             case FULL -> false;
-            case NEAR -> !vanillaShellRequired && dy <= streamVerticalRadius;
+            case NEAR -> (!vanillaShellRequired && dy <= streamVerticalRadius) || projectedSurface;
             case HYBRID -> {
                 if (!vanillaShellRequired) {
                     yield true;
                 }
-                // M17.5 render bridge prep: keep one slim same-level ring in the native client store so M17.6 can switch
-                // a band at a time from shell-backed rendering to snapshot-backed rendering without another packet pass.
-                yield dy == 0 && horizontalCheb <= hybridShellHorizontalRadius + 1;
+                yield projectedSurface || (dy == 0 && horizontalCheb <= hybridShellHorizontalRadius + 1);
             }
-            case HYBRID_FAST -> dy <= streamVerticalRadius;
-            case NATIVE_RENDER -> dy <= streamVerticalRadius;
-            case CUBE_ONLY -> dy <= streamVerticalRadius;
+            case HYBRID_FAST -> dy <= streamVerticalRadius || projectedSurface;
+            case NATIVE_RENDER -> dy <= streamVerticalRadius || projectedSurface;
+            case CUBE_ONLY -> dy <= streamVerticalRadius || projectedSurface;
             case NATIVE_ONLY -> true;
         };
     }
@@ -1412,6 +1456,144 @@ public final class CubicClientSyncBridge {
         return false;
     }
 
+
+    private static int addSurfaceProjectionVisible(ServerCubeCache cache, CubePos playerCube, PlayerViewFocus focus, Set<CubePos> visible) {
+        if (!SURFACE_PROJECTION_ENABLED) {
+            return 0;
+        }
+        int radius = streamHorizontalRadius;
+        if (focus.underground()) {
+            radius = Math.min(radius, SURFACE_PROJECTION_UNDERGROUND_RADIUS_CAP);
+        } else if (focus.trajectoryFocus()) {
+            radius += focus.highAltitude() ? SURFACE_PROJECTION_HIGH_ALTITUDE_EXTRA_RADIUS : SURFACE_PROJECTION_FAST_EXTRA_RADIUS;
+        }
+        int addedFromSpine = addTrajectorySpineSurfaceVisible(cache, playerCube, focus, visible, radius);
+        List<SurfaceProjectionColumn> columns = new ArrayList<>((radius * 2 + 1) * (radius * 2 + 1));
+        int skippedRear = 0;
+        for (int z = playerCube.z() - radius; z <= playerCube.z() + radius; z++) {
+            for (int x = playerCube.x() - radius; x <= playerCube.x() + radius; x++) {
+                int dx = x - playerCube.x();
+                int dz = z - playerCube.z();
+                int cheb = Math.max(Math.abs(dx), Math.abs(dz));
+                if (cheb > radius) {
+                    continue;
+                }
+                double dot = horizontalDot(dx, dz, focus.surfaceDirX(), focus.surfaceDirZ());
+                boolean trajectoryLead = focus.trajectoryFocus() || focus.highAltitude();
+                if (trajectoryLead && cheb > 2 && dot < -0.10D) {
+                    skippedRear++;
+                    continue;
+                }
+                if (trajectoryLead && cheb > Math.max(4, streamHorizontalRadius / 2) && dot < 0.18D) {
+                    skippedRear++;
+                    continue;
+                }
+                int band = projectionBand(dot);
+                int priorityScore = surfaceProjectionPriorityScore(dx, dz, cheb, dot, focus.surfaceDirX(), focus.surfaceDirZ(), band, trajectoryLead);
+                if (trajectoryLead && band == 0 && cheb > streamHorizontalRadius) {
+                    RuntimeProfiler.addCount("client.surface_projection_front_lead", 1);
+                }
+                columns.add(new SurfaceProjectionColumn(x, z, priorityScore, band));
+            }
+        }
+        columns.sort(Comparator
+                .comparingInt(SurfaceProjectionColumn::priorityScore)
+                .thenComparingInt(SurfaceProjectionColumn::x)
+                .thenComparingInt(SurfaceProjectionColumn::z));
+        int added = 0;
+        int scanned = 0;
+        int maxColumns = Math.min(focus.underground()
+                ? 32
+                : ((focus.trajectoryFocus() || focus.highAltitude()) ? SURFACE_PROJECTION_TRAJECTORY_MAX_COLUMNS : (focus.fastFlight() ? SURFACE_PROJECTION_FAST_MAX_COLUMNS : SURFACE_PROJECTION_MAX_COLUMNS)), columns.size());
+        for (int i = 0; i < maxColumns; i++) {
+            SurfaceProjectionColumn column = columns.get(i);
+            scanned++;
+            int surfaceY = visibleSurfaceCube(cache, column.x(), column.z());
+            for (int y = surfaceY - SURFACE_PROJECTION_BAND_BELOW; y <= surfaceY + SURFACE_PROJECTION_BAND_ABOVE; y++) {
+                CubePos cubePos = new CubePos(column.x(), y, column.z());
+                if (visible.add(cubePos)) {
+                    added++;
+                    switch (column.band()) {
+                        case 0 -> RuntimeProfiler.addCount("client.surface_projection_front", 1);
+                        case 1 -> RuntimeProfiler.addCount("client.surface_projection_peripheral", 1);
+                        default -> RuntimeProfiler.addCount("client.surface_projection_rear", 1);
+                    }
+                }
+            }
+        }
+        RuntimeProfiler.addCount("client.surface_projection_columns_scanned", scanned);
+        if (skippedRear > 0) {
+            RuntimeProfiler.addCount("client.surface_projection_rear_skipped", skippedRear);
+        }
+        if (focus.fastFlight()) {
+            RuntimeProfiler.addCount("client.surface_projection_fast_flight_visible", 1);
+        }
+        if (columns.size() > maxColumns) {
+            RuntimeProfiler.addCount("client.surface_projection_budget_hits", 1);
+        }
+        return added + addedFromSpine;
+    }
+
+    private static int addTrajectorySpineSurfaceVisible(ServerCubeCache cache, CubePos playerCube, PlayerViewFocus focus, Set<CubePos> visible, int radius) {
+        if (focus.underground() || (!focus.trajectoryFocus() && !focus.highAltitude())) {
+            return 0;
+        }
+        double dirX = focus.surfaceDirX();
+        double dirZ = focus.surfaceDirZ();
+        double len = Math.sqrt(dirX * dirX + dirZ * dirZ);
+        if (len < 1.0E-5D) {
+            return 0;
+        }
+        dirX /= len;
+        dirZ /= len;
+        double perpX = -dirZ;
+        double perpZ = dirX;
+        int maxStep = Math.min(radius, streamHorizontalRadius + (focus.highAltitude() ? SURFACE_PROJECTION_HIGH_ALTITUDE_EXTRA_RADIUS : SURFACE_PROJECTION_FAST_EXTRA_RADIUS));
+        LinkedHashSet<Long> seenColumns = new LinkedHashSet<>();
+        int added = 0;
+        int scanned = 0;
+        for (int step = 1; step <= maxStep && scanned < SURFACE_PROJECTION_TRAJECTORY_SPINE_COLUMNS; step++) {
+            int halfWidth = Math.min(focus.highAltitude() ? 5 : 3, 1 + step / 4);
+            for (int lateral = -halfWidth; lateral <= halfWidth && scanned < SURFACE_PROJECTION_TRAJECTORY_SPINE_COLUMNS; lateral++) {
+                int x = playerCube.x() + (int) Math.round(dirX * step + perpX * lateral);
+                int z = playerCube.z() + (int) Math.round(dirZ * step + perpZ * lateral);
+                long key = (((long) x) << 32) ^ (z & 0xFFFFFFFFL);
+                if (!seenColumns.add(key)) {
+                    continue;
+                }
+                scanned++;
+                int surfaceY = visibleSurfaceCube(cache, x, z);
+                for (int y = surfaceY - SURFACE_PROJECTION_BAND_BELOW; y <= surfaceY + SURFACE_PROJECTION_BAND_ABOVE; y++) {
+                    CubePos cubePos = new CubePos(x, y, z);
+                    if (visible.add(cubePos)) {
+                        added++;
+                    }
+                }
+            }
+        }
+        if (scanned > 0) {
+            RuntimeProfiler.addCount("client.surface_projection_trajectory_spine_columns", scanned);
+        }
+        if (added > 0) {
+            RuntimeProfiler.addCount("client.surface_projection_trajectory_spine_cubes", added);
+        }
+        return added;
+    }
+
+    private static int surfaceProjectionPriorityScore(int dx, int dz, int cheb, double dot, double dirX, double dirZ, int band, boolean trajectoryLead) {
+        double along = dx * dirX + dz * dirZ;
+        double distSq = (double) dx * dx + (double) dz * dz;
+        double lateralSq = Math.max(0.0D, distSq - along * along);
+        if (trajectoryLead && band == 0 && along > 0.0D) {
+            return (int) Math.round(lateralSq * 512.0D) + (int) Math.round(Math.max(0.0D, along) * 4.0D) + cheb;
+        }
+        if (band == 0 && along > 0.0D) {
+            return band * 1_000_000 + (int) Math.round(lateralSq * 256.0D) + (int) Math.round(along * 16.0D) + cheb;
+        }
+        int anglePenalty = dot > 0.35D ? 0 : dot > -0.25D ? 2_000 : 8_000;
+        return band * 1_000_000 + cheb * cheb * 64 + anglePenalty + (int) Math.round((1.0D - dot) * 128.0D);
+    }
+
     private static int materializationPriority(ServerCubeCache cache, CubePos cubePos, CubePos playerCube, PlayerViewFocus focus) {
         int horizontalCheb = Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z()));
         int dy = Math.abs(cubePos.y() - playerCube.y());
@@ -1452,32 +1634,102 @@ public final class CubicClientSyncBridge {
     }
 
     private static PlayerViewFocus playerViewFocus(ServerCubeCache cache, ServerPlayer player, CubePos playerCube) {
+        double yawRad = Math.toRadians(player.getYRot());
+        double yawX = -Math.sin(yawRad);
+        double yawZ = Math.cos(yawRad);
         double dirX = player.getLookAngle().x;
         double dirZ = player.getLookAngle().z;
         double len = Math.sqrt(dirX * dirX + dirZ * dirZ);
-        if (len < 1.0E-5D) {
-            dirX = 0.0D;
-            dirZ = 1.0D;
+        if (len < SURFACE_PROJECTION_YAW_FALLBACK_HORIZONTAL_LOOK_LEN) {
+            dirX = yawX;
+            dirZ = yawZ;
+            RuntimeProfiler.addCount("client.surface_projection_yaw_fallback", 1);
         } else {
             dirX /= len;
             dirZ /= len;
         }
+        int surfaceCubeY = terrainSurfaceCube(cache, playerCube);
+        boolean highAltitude = playerCube.y() > surfaceCubeY + SURFACE_PROJECTION_HIGH_ALTITUDE_CUBE_DELTA;
+        PlayerBridgeState state = PLAYER_STATES.computeIfAbsent(player.getUUID(), ignored -> new PlayerBridgeState());
         double moveX = player.getDeltaMovement().x;
         double moveZ = player.getDeltaMovement().z;
-        double moveLen = Math.sqrt(moveX * moveX + moveZ * moveZ);
-        if (moveLen > 1.0E-4D) {
-            moveX /= moveLen;
-            moveZ /= moveLen;
-            dirX = dirX * 0.75D + moveX * 0.25D;
-            dirZ = dirZ * 0.75D + moveZ * 0.25D;
+        double moveLenSq = moveX * moveX + moveZ * moveZ;
+        TrajectoryEstimate trajectory = estimatePlayerTrajectory(state, player.getX(), player.getZ(), moveX, moveZ, moveLenSq, highAltitude);
+        double surfaceDirX = dirX;
+        double surfaceDirZ = dirZ;
+        boolean fastFlight = trajectory.speedSq() >= SURFACE_PROJECTION_FAST_SPEED_SQ || (highAltitude && trajectory.trajectoryFocus());
+        if (trajectory.trajectoryFocus()) {
+            surfaceDirX = trajectory.dirX();
+            surfaceDirZ = trajectory.dirZ();
+            dirX = dirX * 0.65D + surfaceDirX * 0.35D;
+            dirZ = dirZ * 0.65D + surfaceDirZ * 0.35D;
             double mixedLen = Math.sqrt(dirX * dirX + dirZ * dirZ);
             if (mixedLen > 1.0E-5D) {
                 dirX /= mixedLen;
                 dirZ /= mixedLen;
             }
+            RuntimeProfiler.addCount("client.surface_projection_trajectory_focus", 1);
+            if (trajectory.positionMotion()) {
+                RuntimeProfiler.addCount("client.surface_projection_position_motion_focus", 1);
+            }
         }
-        int surfaceCubeY = terrainSurfaceCube(cache, playerCube);
-        return new PlayerViewFocus(dirX, dirZ, playerCube.y() < surfaceCubeY - 1);
+        return new PlayerViewFocus(dirX, dirZ, surfaceDirX, surfaceDirZ, playerCube.y() < surfaceCubeY - 1, fastFlight, highAltitude, trajectory.trajectoryFocus());
+    }
+
+    private static TrajectoryEstimate estimatePlayerTrajectory(PlayerBridgeState state, double playerX, double playerZ, double velocityX, double velocityZ, double velocityLenSq, boolean highAltitude) {
+        double positionDx = 0.0D;
+        double positionDz = 0.0D;
+        double positionLenSq = 0.0D;
+        if (state.trajectoryInitialized) {
+            positionDx = playerX - state.lastTrajectoryX;
+            positionDz = playerZ - state.lastTrajectoryZ;
+            positionLenSq = positionDx * positionDx + positionDz * positionDz;
+        }
+        state.lastTrajectoryX = playerX;
+        state.lastTrajectoryZ = playerZ;
+        state.trajectoryInitialized = true;
+
+        double rawX = velocityX;
+        double rawZ = velocityZ;
+        double rawLenSq = velocityLenSq;
+        boolean positionMotion = false;
+        if (positionLenSq > rawLenSq) {
+            rawX = positionDx;
+            rawZ = positionDz;
+            rawLenSq = positionLenSq;
+            positionMotion = true;
+        }
+
+        if (rawLenSq >= SURFACE_PROJECTION_TRAJECTORY_SPEED_SQ) {
+            double rawLen = Math.sqrt(rawLenSq);
+            double dirX = rawX / rawLen;
+            double dirZ = rawZ / rawLen;
+            if (state.trajectoryHasDirection) {
+                dirX = state.trajectoryDirX * 0.55D + dirX * 0.45D;
+                dirZ = state.trajectoryDirZ * 0.55D + dirZ * 0.45D;
+                double mixedLen = Math.sqrt(dirX * dirX + dirZ * dirZ);
+                if (mixedLen > 1.0E-5D) {
+                    dirX /= mixedLen;
+                    dirZ /= mixedLen;
+                }
+            }
+            state.trajectoryDirX = dirX;
+            state.trajectoryDirZ = dirZ;
+            state.trajectorySpeedSq = rawLenSq;
+            state.trajectoryHasDirection = true;
+            state.trajectoryStaleTicks = 0;
+            return new TrajectoryEstimate(dirX, dirZ, rawLenSq, true, positionMotion);
+        }
+
+        if (highAltitude && state.trajectoryHasDirection && state.trajectoryStaleTicks < 40) {
+            state.trajectoryStaleTicks++;
+            state.trajectorySpeedSq *= 0.92D;
+            RuntimeProfiler.addCount("client.surface_projection_trajectory_retained", 1);
+            return new TrajectoryEstimate(state.trajectoryDirX, state.trajectoryDirZ, Math.max(state.trajectorySpeedSq, SURFACE_PROJECTION_TRAJECTORY_SPEED_SQ), true, false);
+        }
+
+        state.trajectoryStaleTicks++;
+        return new TrajectoryEstimate(state.trajectoryDirX, state.trajectoryDirZ, rawLenSq, false, false);
     }
 
     private static int viewPriorityBand(ServerCubeCache cache, CubePos cubePos, CubePos playerCube, PlayerViewFocus focus, int horizontalCheb, int dy) {
@@ -1546,6 +1798,46 @@ public final class CubicClientSyncBridge {
         int centerX = cubePos.minBlockX() + 8;
         int centerZ = cubePos.minBlockZ() + 8;
         return CubePos.blockToCube(com.redline.worldcore.server.generation.M15TerrainModel.surfaceHeightDry(cache.generationContext(), centerX, centerZ));
+    }
+
+
+    private static boolean isSurfaceProjectionCube(ServerCubeCache cache, CubePos cubePos) {
+        int surfaceY = visibleSurfaceCube(cache, cubePos.x(), cubePos.z());
+        return cubePos.y() >= surfaceY - SURFACE_PROJECTION_BAND_BELOW && cubePos.y() <= surfaceY + SURFACE_PROJECTION_BAND_ABOVE;
+    }
+
+    private static int visibleSurfaceCube(ServerCubeCache cache, int cubeX, int cubeZ) {
+        int centerX = (cubeX << CubePos.SIZE_BITS) + 8;
+        int centerZ = (cubeZ << CubePos.SIZE_BITS) + 8;
+        int surfaceY = com.redline.worldcore.server.generation.M15TerrainModel.surfaceHeightDry(cache.generationContext(), centerX, centerZ);
+        try {
+            com.redline.worldcore.server.generation.M16WaterSample water = com.redline.worldcore.server.generation.M16WaterModel.sample(cache.generationContext(), centerX, centerZ);
+            if (water.hasWater()) {
+                surfaceY = Math.max(surfaceY, water.waterSurfaceY());
+            }
+            RuntimeProfiler.addCount("client.surface_projection_surface_hint_hits", 1);
+        } catch (RuntimeException ignored) {
+            RuntimeProfiler.addCount("client.surface_projection_surface_hint_misses", 1);
+        }
+        return CubePos.blockToCube(surfaceY);
+    }
+
+    private static int projectionBand(double dot) {
+        if (dot > 0.35D) {
+            return 0;
+        }
+        if (dot > -0.25D) {
+            return 1;
+        }
+        return 2;
+    }
+
+    private static double horizontalDot(int dx, int dz, double dirX, double dirZ) {
+        double distance = Math.sqrt((double) dx * dx + (double) dz * dz);
+        if (distance < 1.0E-5D) {
+            return 1.0D;
+        }
+        return (dx * dirX + dz * dirZ) / distance;
     }
 
     private static int horizontalDistanceSquared(CubePos first, CubePos second) {
@@ -1704,6 +1996,14 @@ public final class CubicClientSyncBridge {
         private int visibleCursor;
         private int tickCounter;
         private int materializedLastTick;
+        private boolean trajectoryInitialized;
+        private double lastTrajectoryX;
+        private double lastTrajectoryZ;
+        private boolean trajectoryHasDirection;
+        private double trajectoryDirX;
+        private double trajectoryDirZ = 1.0D;
+        private double trajectorySpeedSq;
+        private int trajectoryStaleTicks;
     }
 
     private static final class MaterializationTask {
@@ -1715,7 +2015,13 @@ public final class CubicClientSyncBridge {
         }
     }
 
-    private record PlayerViewFocus(double dirX, double dirZ, boolean underground) {
+    private record SurfaceProjectionColumn(int x, int z, int priorityScore, int band) {
+    }
+
+    private record PlayerViewFocus(double dirX, double dirZ, double surfaceDirX, double surfaceDirZ, boolean underground, boolean fastFlight, boolean highAltitude, boolean trajectoryFocus) {
+    }
+
+    private record TrajectoryEstimate(double dirX, double dirZ, double speedSq, boolean trajectoryFocus, boolean positionMotion) {
     }
 
     private record MaterializeSliceResult(boolean completed, int scanned, int changed, boolean forcedYield, boolean slowBlock) {

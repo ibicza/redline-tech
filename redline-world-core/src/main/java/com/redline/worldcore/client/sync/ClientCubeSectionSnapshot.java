@@ -15,6 +15,7 @@ public final class ClientCubeSectionSnapshot {
     private final int[] paletteIndices;
     private final byte[] blockLight;
     private final byte[] skyLight;
+    private final boolean hasVisibleBlocks;
 
     public ClientCubeSectionSnapshot(
             CubePos cubePos,
@@ -32,6 +33,14 @@ public final class ClientCubeSectionSnapshot {
         this.paletteIndices = paletteIndices.clone();
         this.blockLight = blockLight.clone();
         this.skyLight = skyLight.clone();
+        boolean visible = false;
+        for (BlockState state : this.palette) {
+            if (!state.isAir()) {
+                visible = true;
+                break;
+            }
+        }
+        this.hasVisibleBlocks = visible;
     }
 
     public CubePos cubePos() {
@@ -48,6 +57,10 @@ public final class ClientCubeSectionSnapshot {
 
     public int paletteSize() {
         return palette.size();
+    }
+
+    public boolean hasVisibleBlocks() {
+        return hasVisibleBlocks;
     }
 
     public BlockState blockStateAtLocalIndex(int localIndex) {

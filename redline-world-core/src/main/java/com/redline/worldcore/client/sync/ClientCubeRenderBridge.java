@@ -25,6 +25,7 @@ import java.util.Map;
 public final class ClientCubeRenderBridge {
     private static final int HORIZONTAL_RENDER_SCAN_RADIUS = 8;
     private static final int VERTICAL_RENDER_SCAN_RADIUS = 2;
+    private static final boolean SURFACE_PROJECTION_RENDER_ENABLED = true;
     private static final int IMMEDIATE_RADIUS = 2;
     private static final int CLIENT_SHELL_SKIP_HORIZONTAL_RADIUS = 0;
     private static final int CLIENT_SHELL_SKIP_VERTICAL_RADIUS = 0;
@@ -156,7 +157,7 @@ public final class ClientCubeRenderBridge {
             }
             CubePos cubePos = entry.getKey();
             ClientCubeSectionSnapshot snapshot = entry.getValue();
-            if (!isWithinRenderRadius(cubePos, playerCube)) {
+            if (!isWithinRenderRadius(cubePos, playerCube, snapshot)) {
                 continue;
             }
             if (isImmediateServerShellArea(cubePos, playerCube)) {
@@ -198,7 +199,7 @@ public final class ClientCubeRenderBridge {
             CubePos cubePos = MIRROR_QUEUE.removeFirst();
             VisualMirrorTask task = TASKS.get(cubePos);
             ClientCubeSectionSnapshot snapshot = sections.get(cubePos);
-            if (task == null || snapshot == null || task.hash != snapshot.hash() || !isWithinRenderRadius(cubePos, playerCube)) {
+            if (task == null || snapshot == null || task.hash != snapshot.hash() || !isWithinRenderRadius(cubePos, playerCube, snapshot)) {
                 TASKS.remove(cubePos);
                 visualMirrorSkippedMissing++;
                 RuntimeProfiler.addCount("client.render_bridge_missing_or_stale", 1);
@@ -268,9 +269,19 @@ public final class ClientCubeRenderBridge {
         return localX | (localZ << CubePos.SIZE_BITS) | (localY << (CubePos.SIZE_BITS * 2));
     }
 
-    private static boolean isWithinRenderRadius(CubePos cubePos, CubePos playerCube) {
-        return Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z())) <= HORIZONTAL_RENDER_SCAN_RADIUS
-                && Math.abs(cubePos.y() - playerCube.y()) <= VERTICAL_RENDER_SCAN_RADIUS;
+    private static boolean isWithinRenderRadius(CubePos cubePos, CubePos playerCube, ClientCubeSectionSnapshot snapshot) {
+        int horizontal = Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z()));
+        if (horizontal > HORIZONTAL_RENDER_SCAN_RADIUS) {
+            return false;
+        }
+        if (Math.abs(cubePos.y() - playerCube.y()) <= VERTICAL_RENDER_SCAN_RADIUS) {
+            return true;
+        }
+        if (SURFACE_PROJECTION_RENDER_ENABLED && snapshot.hasVisibleBlocks()) {
+            RuntimeProfiler.addCount("client.surface_projection_render_bridge_accept", 1);
+            return true;
+        }
+        return false;
     }
 
     private static boolean isImmediateServerShellArea(CubePos cubePos, CubePos playerCube) {

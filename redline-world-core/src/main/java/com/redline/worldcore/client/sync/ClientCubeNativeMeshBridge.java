@@ -21,6 +21,7 @@ import java.util.Map;
 public final class ClientCubeNativeMeshBridge {
     private static final int HORIZONTAL_SCAN_RADIUS = 8;
     private static final int VERTICAL_SCAN_RADIUS = 2;
+    private static final boolean SURFACE_PROJECTION_MESH_ENABLED = true;
     private static final int MAX_DISCOVERY_SCAN_PER_TICK = 384;
     private static final int MAX_MESH_SECTIONS_PER_TICK = 4;
     private static final int MAX_MESH_BLOCKS_PER_TICK = 12_288;
@@ -100,7 +101,7 @@ public final class ClientCubeNativeMeshBridge {
             }
             CubePos cubePos = entry.getKey();
             ClientCubeSectionSnapshot snapshot = entry.getValue();
-            if (!isWithinScanRadius(cubePos, playerCube)) {
+            if (!isWithinScanRadius(cubePos, playerCube, snapshot)) {
                 continue;
             }
             NativeSectionMesh mesh = MESHES.get(cubePos);
@@ -138,7 +139,7 @@ public final class ClientCubeNativeMeshBridge {
             CubePos cubePos = MESH_QUEUE.removeFirst();
             MeshBuildTask task = TASKS.get(cubePos);
             ClientCubeSectionSnapshot snapshot = sections.get(cubePos);
-            if (task == null || snapshot == null || task.hash != snapshot.hash() || !isWithinScanRadius(cubePos, playerCube)) {
+            if (task == null || snapshot == null || task.hash != snapshot.hash() || !isWithinScanRadius(cubePos, playerCube, snapshot)) {
                 TASKS.remove(cubePos);
                 RuntimeProfiler.addCount("client.native_mesh_missing_or_stale", 1);
                 continue;
@@ -209,6 +210,21 @@ public final class ClientCubeNativeMeshBridge {
             faces++;
         }
         return faces;
+    }
+
+    private static boolean isWithinScanRadius(CubePos cubePos, CubePos playerCube, ClientCubeSectionSnapshot snapshot) {
+        int horizontal = Math.max(Math.abs(cubePos.x() - playerCube.x()), Math.abs(cubePos.z() - playerCube.z()));
+        if (horizontal > HORIZONTAL_SCAN_RADIUS) {
+            return false;
+        }
+        if (Math.abs(cubePos.y() - playerCube.y()) <= VERTICAL_SCAN_RADIUS) {
+            return true;
+        }
+        if (SURFACE_PROJECTION_MESH_ENABLED && snapshot != null && snapshot.hasVisibleBlocks()) {
+            RuntimeProfiler.addCount("client.surface_projection_native_mesh_accept", 1);
+            return true;
+        }
+        return false;
     }
 
     private static boolean isWithinScanRadius(CubePos cubePos, CubePos playerCube) {
