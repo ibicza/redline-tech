@@ -5,6 +5,7 @@ import com.redline.worldcore.api.cube.CubeScheduledTickKind;
 import com.redline.worldcore.api.cube.LevelCube;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.api.ticket.CubeTicketLevel;
+import com.redline.worldcore.server.profiler.RuntimeProfiler;
 
 import java.util.Map;
 
@@ -61,6 +62,8 @@ public final class CubeScheduledTickTracker {
         dueAllowed = 0;
         dueBlocked = 0;
 
+        int blockTickingSections = 0;
+        int blockedSections = 0;
         for (Map.Entry<CubePos, LevelCube> entry : cubes.entrySet()) {
             CubePos cubePos = entry.getKey();
             LevelCube cube = entry.getValue();
@@ -73,6 +76,11 @@ public final class CubeScheduledTickTracker {
             blockTicks += cubeBlockTicks;
             fluidTicks += cubeFluidTicks;
             boolean allowed = levels.getOrDefault(cubePos, CubeTicketLevel.UNLOADED).isAtLeast(CubeTicketLevel.BLOCK_TICKING);
+            if (allowed) {
+                blockTickingSections++;
+            } else {
+                blockedSections++;
+            }
             for (CubeScheduledTickData tick : cube.copyScheduledBlockTicks()) {
                 countDue(tick, allowed, gameTime);
             }
@@ -80,6 +88,14 @@ public final class CubeScheduledTickTracker {
                 countDue(tick, allowed, gameTime);
             }
         }
+        RuntimeProfiler.addCount("gameplay.scheduled_tick_cubes", loadedCubesWithTicks);
+        RuntimeProfiler.addCount("gameplay.scheduled_tick_block_ticks", blockTicks);
+        RuntimeProfiler.addCount("gameplay.scheduled_tick_fluid_ticks", fluidTicks);
+        RuntimeProfiler.addCount("gameplay.scheduled_tick_due", dueTicks);
+        RuntimeProfiler.addCount("gameplay.scheduled_tick_due_allowed", dueAllowed);
+        RuntimeProfiler.addCount("gameplay.scheduled_tick_due_blocked", dueBlocked);
+        RuntimeProfiler.addCount("gameplay.scheduled_tick_sections_full", blockTickingSections);
+        RuntimeProfiler.addCount("gameplay.scheduled_tick_sections_blocked", blockedSections);
         totalEvaluated++;
         evaluatedLastTick++;
     }

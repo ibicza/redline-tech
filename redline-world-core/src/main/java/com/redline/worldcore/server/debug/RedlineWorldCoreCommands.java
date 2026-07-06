@@ -130,6 +130,9 @@ public final class RedlineWorldCoreCommands {
                                         .executes(context -> entityDumpBusiest(context.getSource()))))
                         .then(Commands.literal("reset")
                                 .executes(context -> entityReset(context.getSource()))))
+                .then(Commands.literal("gameplay")
+                        .then(Commands.literal("status")
+                                .executes(context -> gameplayStatus(context.getSource()))))
                 .then(Commands.literal("selftest")
                         .executes(context -> selfTest(context.getSource())))
                 .then(Commands.literal("storage")
@@ -1277,6 +1280,19 @@ public final class RedlineWorldCoreCommands {
         }
     }
 
+    private static int gameplayStatus(CommandSourceStack source) {
+        CubePos playerCube = source.getEntity() == null ? null : CubePos.fromBlock(source.getEntity().blockPosition());
+        EntityTrackingSnapshot entitySnapshot = EntityCubeTracker.snapshot(playerCube);
+        ServerCubeCache cache = cubeCache(source);
+        CubeBlockEntitySnapshot blockEntitySnapshot = cache.blockEntitySnapshot();
+        CubeScheduledTickSnapshot scheduledTickSnapshot = cache.scheduledTickSnapshot();
+        source.sendSuccess(() -> Component.literal("RWC gameplay cube-first: entities " + entitySnapshot.tickingLine()), false);
+        source.sendSuccess(() -> Component.literal(formatBlockEntitySnapshot("RWC gameplay block entities", blockEntitySnapshot)), false);
+        source.sendSuccess(() -> Component.literal(formatScheduledTickSnapshot("RWC gameplay scheduled ticks", scheduledTickSnapshot)), false);
+        source.sendSuccess(() -> Component.literal("RWC gameplay mode: cube ticket gates are authoritative for diagnostics; vanilla tick cancellation mixins are still staged behind this gate."), false);
+        return entitySnapshot.trackedEntities() + blockEntitySnapshot.trackedBlockEntities() + scheduledTickSnapshot.dueTicks();
+    }
+
     private static int entityStatus(CommandSourceStack source) {
         CubePos playerCube = null;
         if (source.getEntity() != null) {
@@ -1291,6 +1307,7 @@ public final class RedlineWorldCoreCommands {
                 + ", entitiesInPlayerCube=" + snapshot.entitiesInPlayerCube()), false);
         source.sendSuccess(() -> Component.literal("RWC entity kinds: " + snapshot.kindBreakdown()), false);
         source.sendSuccess(() -> Component.literal("RWC entity perf: " + snapshot.perfLine()), false);
+        source.sendSuccess(() -> Component.literal("RWC entity ticking gate: " + snapshot.tickingLine()), false);
         source.sendSuccess(() -> Component.literal("RWC entity movement: addedLastTick="
                 + snapshot.addedLastTick()
                 + ", movedLastTick=" + snapshot.movedLastTick()

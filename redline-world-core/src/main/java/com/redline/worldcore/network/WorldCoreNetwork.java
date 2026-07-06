@@ -23,5 +23,10 @@ public final class WorldCoreNetwork {
                 CubicClientSyncBridge.handleNativeSectionAck(serverPlayer, payload);
             }
         });
+        registrar.playToServer(ClientCubeSectionRequestPayload.TYPE, ClientCubeSectionRequestPayload.CODEC, (payload, context) -> {
+            if (context.player() instanceof ServerPlayer serverPlayer) {
+                CubicClientSyncBridge.handleNativeSectionRequest(serverPlayer, payload);
+            }
+        });
     }
 }

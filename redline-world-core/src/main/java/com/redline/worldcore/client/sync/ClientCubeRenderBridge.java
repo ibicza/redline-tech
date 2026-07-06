@@ -1,6 +1,7 @@
 package com.redline.worldcore.client.sync;
 
 import com.redline.worldcore.api.pos.CubePos;
+import com.redline.worldcore.client.query.ClientCubeWorldQuery;
 import com.redline.worldcore.server.profiler.RuntimeProfiler;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -9,6 +10,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,13 +29,18 @@ public final class ClientCubeRenderBridge {
     private static final int VERTICAL_RENDER_SCAN_RADIUS = 2;
     private static final boolean SURFACE_PROJECTION_RENDER_ENABLED = true;
     private static final int IMMEDIATE_RADIUS = 2;
-    private static final int CLIENT_SHELL_SKIP_HORIZONTAL_RADIUS = 0;
-    private static final int CLIENT_SHELL_SKIP_VERTICAL_RADIUS = 0;
+    // M19.2.3: the current player cube must no longer be skipped from the client mirror.
+    // The server-side vanilla shell is only a temporary compatibility layer; if the active cube is excluded here,
+    // block-break deltas can update the cube store while the already-built render mesh stays stale until the player
+    // crosses a CubePos border. A disabled radius keeps every dirty/changed cube eligible for native-store mirroring.
+    private static final int CLIENT_SHELL_SKIP_HORIZONTAL_RADIUS = -1;
+    private static final int CLIENT_SHELL_SKIP_VERTICAL_RADIUS = -1;
     private static final int MAX_TASKS_TO_DISCOVER_PER_TICK = 384;
     private static final int MAX_VISUAL_MIRROR_SECTIONS_PER_TICK = 6;
     private static final int MAX_VISUAL_MIRROR_BLOCKS_PER_TICK = 16_384;
     private static final int MAX_VISUAL_MIRROR_MICROS_PER_TICK = 5_000;
     private static final int MAX_TRACKED_MIRRORED_SECTIONS = 8192;
+    private static final int MAX_VISUAL_SHELL_PROBE_BLOCKS = 96;
     private static final int SET_BLOCK_FLAGS = 2 | 16 | 32;
 
     private static final int TILE_SIZE = 4;
@@ -43,6 +50,8 @@ public final class ClientCubeRenderBridge {
     private static final ArrayDeque<CubePos> MIRROR_QUEUE = new ArrayDeque<>();
     private static final Map<CubePos, VisualMirrorTask> TASKS = new HashMap<>();
     private static final Map<CubePos, Long> MIRRORED_HASHES = new HashMap<>();
+    private static final ArrayDeque<ImmediateDeltaTask> IMMEDIATE_DELTA_QUEUE = new ArrayDeque<>();
+    private static final ArrayDeque<CubePos> FORCED_DIRTY_QUEUE = new ArrayDeque<>();
 
     private static long scans;
     private static long visualMirrorTasksQueued;
@@ -72,14 +81,17 @@ public final class ClientCubeRenderBridge {
             return;
         }
 
+        blocksMirroredLastTick = 0;
         CubePos playerCube = CubePos.fromBlock(
                 minecraft.player.blockPosition().getX(),
                 minecraft.player.blockPosition().getY(),
                 minecraft.player.blockPosition().getZ()
         );
         Map<CubePos, ClientCubeSectionSnapshot> sections = ClientCubeSectionStore.copySections();
+        processImmediateDeltaQueue(minecraft.level);
+        processForcedDirtyQueue(minecraft.level);
         updateAvailabilityStats(playerCube, sections);
-        discoverVisualMirrorTasks(playerCube, sections);
+        discoverVisualMirrorTasks(minecraft.level, playerCube, sections);
         processVisualMirrorQueue(minecraft.level, sections, playerCube);
         trimMirroredHashes();
         lastPlayerCube = playerCube;
@@ -101,6 +113,108 @@ public final class ClientCubeRenderBridge {
         MIRROR_QUEUE.remove(cubePos);
     }
 
+    /**
+     * M19.2.1: immediately pushes small server deltas into the temporary client visual shell.
+     *
+     * <p>The client cube query layer is already updated when this method runs. If we only invalidate the whole cube and wait
+     * for the normal mirror queue, the player cube can be skipped as an "immediate server shell" area and the old render
+     * section mesh keeps drawing a removed generated block. Writing the changed positions into the client chunk storage and
+     * explicitly dirtying the render section makes block breaking disappear on the same client tick while the cube store stays
+     * authoritative.</p>
+     */
+    public static synchronized void applyImmediateDelta(ClientCubeSectionSnapshot previous, ClientCubeSectionSnapshot updated, int[] localIndices) {
+        if (previous == null || updated == null || localIndices.length == 0) {
+            return;
+        }
+
+        // Client payload handlers are not the right place to touch ClientLevel/renderer state.  In the broken current-cube
+        // case the only attempted visual update happened from the payload path, while the normal mirror path skipped the
+        // player's own cube as an immediate server-shell area.  Queue exact block deltas and apply them from ClientTick.Post,
+        // then the render extractor sees a normal main-thread section dirty mark.
+        ArrayList<ImmediateBlockDelta> blocks = new ArrayList<>(localIndices.length);
+        CubePos cubePos = updated.cubePos();
+        for (int localIndex : localIndices) {
+            if (localIndex < 0 || localIndex >= CubePos.BLOCK_COUNT) {
+                continue;
+            }
+            blocks.add(new ImmediateBlockDelta(
+                    localIndex,
+                    previous.blockStateAtLocalIndex(localIndex),
+                    updated.blockStateAtLocalIndex(localIndex)
+            ));
+        }
+        if (blocks.isEmpty()) {
+            return;
+        }
+        IMMEDIATE_DELTA_QUEUE.addLast(new ImmediateDeltaTask(cubePos, updated.hash(), blocks));
+        RuntimeProfiler.addCount("client.render_bridge_immediate_delta_queued", 1);
+        RuntimeProfiler.addCount("client.render_bridge_immediate_delta_blocks_queued", blocks.size());
+    }
+
+    private static synchronized int processImmediateDeltaQueue(ClientLevel level) {
+        int appliedBlocks = 0;
+        int appliedSections = 0;
+        while (!IMMEDIATE_DELTA_QUEUE.isEmpty()) {
+            ImmediateDeltaTask task = IMMEDIATE_DELTA_QUEUE.removeFirst();
+            int sectionBlocks = 0;
+            for (ImmediateBlockDelta delta : task.blocks) {
+                int localIndex = delta.localIndex;
+                int localX = localIndex & CubePos.MASK;
+                int localZ = (localIndex >> CubePos.SIZE_BITS) & CubePos.MASK;
+                int localY = localIndex >> (CubePos.SIZE_BITS * 2);
+                int worldY = task.cubePos.minBlockY() + localY;
+                if (level.isOutsideBuildHeight(worldY)) {
+                    continue;
+                }
+
+                BlockPos blockPos = new BlockPos(task.cubePos.minBlockX() + localX, worldY, task.cubePos.minBlockZ() + localZ);
+
+                // The cube store has already accepted the server state. Suppress cube-backed reads while mutating the
+                // temporary vanilla client shell, otherwise Level#setBlock can compare against the already-new cube state
+                // and leave the current render section with its old mesh.
+                ClientCubeWorldQuery.runWithoutCubeQueryForVisualShellWrite(() -> level.setBlock(blockPos, delta.newState, SET_BLOCK_FLAGS));
+                level.setBlocksDirty(blockPos, delta.oldState, delta.newState);
+                level.sendBlockUpdated(blockPos, delta.oldState, delta.newState, SET_BLOCK_FLAGS);
+                sectionBlocks++;
+            }
+            if (sectionBlocks > 0) {
+                level.setSectionDirtyWithNeighbors(task.cubePos.x(), task.cubePos.y(), task.cubePos.z());
+                appliedBlocks += sectionBlocks;
+                appliedSections++;
+
+                // Keep the normal mirror bookkeeping coherent.  The current player cube is now also eligible for a full
+                // mirror pass, so any missed client-prediction edge case is repaired by the next high-priority mirror slice.
+                if (MIRRORED_HASHES.containsKey(task.cubePos)) {
+                    MIRRORED_HASHES.put(task.cubePos, task.hash);
+                }
+            }
+        }
+        if (appliedBlocks > 0) {
+            visualMirrorBlocksWritten += appliedBlocks;
+            blocksMirroredLastTick += appliedBlocks;
+            RuntimeProfiler.addCount("client.render_bridge_immediate_delta_blocks", appliedBlocks);
+            RuntimeProfiler.addCount("client.render_bridge_immediate_delta_sections", appliedSections);
+        }
+        return appliedBlocks;
+    }
+
+    public static synchronized void forceDirtySection(CubePos cubePos) {
+        // Payload handlers can run outside the normal client tick/render extraction path.  Queue the dirty mark and touch
+        // ClientLevel only from ClientTick.Post, same as immediate block deltas.
+        FORCED_DIRTY_QUEUE.addLast(cubePos);
+    }
+
+    private static synchronized void processForcedDirtyQueue(ClientLevel level) {
+        int dirty = 0;
+        while (!FORCED_DIRTY_QUEUE.isEmpty() && dirty < MAX_VISUAL_MIRROR_SECTIONS_PER_TICK * 4) {
+            CubePos cubePos = FORCED_DIRTY_QUEUE.removeFirst();
+            dirtyVisualSection(level, cubePos);
+            dirty++;
+        }
+        if (dirty > 0) {
+            RuntimeProfiler.addCount("client.render_bridge_forced_dirty_sections", dirty);
+        }
+    }
 
     private static void clearTransientStats() {
         bridgeReadySections = 0;
@@ -112,6 +226,8 @@ public final class ClientCubeRenderBridge {
         lastPlayerCube = null;
         MIRROR_QUEUE.clear();
         TASKS.clear();
+        IMMEDIATE_DELTA_QUEUE.clear();
+        FORCED_DIRTY_QUEUE.clear();
     }
 
     private static void updateAvailabilityStats(CubePos playerCube, Map<CubePos, ClientCubeSectionSnapshot> sections) {
@@ -145,7 +261,7 @@ public final class ClientCubeRenderBridge {
         missingImmediateSections = immediateMissing;
     }
 
-    private static void discoverVisualMirrorTasks(CubePos playerCube, Map<CubePos, ClientCubeSectionSnapshot> sections) {
+    private static void discoverVisualMirrorTasks(ClientLevel level, CubePos playerCube, Map<CubePos, ClientCubeSectionSnapshot> sections) {
         int scanned = 0;
         List<Map.Entry<CubePos, ClientCubeSectionSnapshot>> sorted = sections.entrySet().stream()
                 .sorted((first, second) -> Integer.compare(renderPriority(first.getKey(), playerCube), renderPriority(second.getKey(), playerCube)))
@@ -166,9 +282,14 @@ public final class ClientCubeRenderBridge {
                 continue;
             }
             if (MIRRORED_HASHES.getOrDefault(cubePos, Long.MIN_VALUE) == snapshot.hash()) {
-                visualMirrorHashHits++;
-                RuntimeProfiler.addCount("client.render_bridge_hash_hits", 1);
-                continue;
+                if (!visualShellNeedsRepair(level, snapshot, playerCube)) {
+                    visualMirrorHashHits++;
+                    RuntimeProfiler.addCount("client.render_bridge_hash_hits", 1);
+                    continue;
+                }
+                MIRRORED_HASHES.remove(cubePos);
+                TASKS.remove(cubePos);
+                RuntimeProfiler.addCount("client.render_bridge_hash_hit_shell_repairs", 1);
             }
             VisualMirrorTask existing = TASKS.get(cubePos);
             if (existing != null && existing.hash == snapshot.hash()) {
@@ -190,12 +311,18 @@ public final class ClientCubeRenderBridge {
         int blocks = 0;
         int completed = 0;
         long start = System.nanoTime();
-        while (!MIRROR_QUEUE.isEmpty() && completed < MAX_VISUAL_MIRROR_SECTIONS_PER_TICK && blocks < MAX_VISUAL_MIRROR_BLOCKS_PER_TICK) {
+        int queueAtStart = MIRROR_QUEUE.size();
+        int attempted = 0;
+        while (!MIRROR_QUEUE.isEmpty()
+                && attempted < queueAtStart
+                && completed < MAX_VISUAL_MIRROR_SECTIONS_PER_TICK
+                && blocks < MAX_VISUAL_MIRROR_BLOCKS_PER_TICK) {
             if (blocks > 0 && elapsedMicrosSince(start) >= MAX_VISUAL_MIRROR_MICROS_PER_TICK) {
                 visualMirrorTimeBudgetHits++;
                 RuntimeProfiler.addCount("client.render_bridge_time_budget_hits", 1);
                 break;
             }
+            attempted++;
             CubePos cubePos = MIRROR_QUEUE.removeFirst();
             VisualMirrorTask task = TASKS.get(cubePos);
             ClientCubeSectionSnapshot snapshot = sections.get(cubePos);
@@ -205,22 +332,36 @@ public final class ClientCubeRenderBridge {
                 RuntimeProfiler.addCount("client.render_bridge_missing_or_stale", 1);
                 continue;
             }
-            int written = mirrorSlice(level, snapshot, task, MAX_VISUAL_MIRROR_BLOCKS_PER_TICK - blocks, start);
-            blocks += written;
+            MirrorSliceResult result = mirrorSlice(level, snapshot, task, MAX_VISUAL_MIRROR_BLOCKS_PER_TICK - blocks, start);
+            blocks += result.written();
+            if (result.dirty()) {
+                dirtyVisualSection(level, cubePos);
+            }
             if (task.cursor >= CubePos.BLOCK_COUNT) {
                 TASKS.remove(cubePos);
                 MIRRORED_HASHES.put(cubePos, snapshot.hash());
                 completed++;
                 visualMirrorSectionsCompleted++;
                 RuntimeProfiler.addCount("client.render_bridge_sections_completed", 1);
+                if (result.written() == 0) {
+                    // Even an already-equal shell can have an old compiled render mesh (the classic black-hole case).
+                    // Mark the section dirty once when a cube becomes mirror-complete so vanilla rebuilds from the shell.
+                    dirtyVisualSection(level, cubePos);
+                }
             } else {
                 MIRROR_QUEUE.addLast(cubePos);
                 visualMirrorBudgetHits++;
+                if (result.waitingForShell()) {
+                    RuntimeProfiler.addCount("client.render_bridge_waiting_for_shell", 1);
+                    // Do not break the whole queue on one column whose vanilla client shell is not ready yet.
+                    // It can be retried on the next tick while other visible cube sections continue mirroring.
+                    continue;
+                }
                 RuntimeProfiler.addCount("client.render_bridge_budget_hits", 1);
                 break;
             }
         }
-        blocksMirroredLastTick = blocks;
+        blocksMirroredLastTick += blocks;
         visualMirrorBlocksWritten += blocks;
         queuedMirrorSections = MIRROR_QUEUE.size();
         mirroredSections = MIRRORED_HASHES.size();
@@ -228,11 +369,13 @@ public final class ClientCubeRenderBridge {
         RuntimeProfiler.addCount("client.render_bridge_queue", queuedMirrorSections);
     }
 
-    private static int mirrorSlice(ClientLevel level, ClientCubeSectionSnapshot snapshot, VisualMirrorTask task, int maxBlocks, long tickStartNanos) {
-        int written = 0;
+    private static MirrorSliceResult mirrorSlice(ClientLevel level, ClientCubeSectionSnapshot snapshot, VisualMirrorTask task, int maxBlocks, long tickStartNanos) {
+        int processed = 0;
+        boolean dirty = false;
+        boolean waitingForShell = false;
         CubePos cubePos = snapshot.cubePos();
-        while (task.cursor < CubePos.BLOCK_COUNT && written < maxBlocks) {
-            if (written > 0 && (written & 63) == 0 && elapsedMicrosSince(tickStartNanos) >= MAX_VISUAL_MIRROR_MICROS_PER_TICK) {
+        while (task.cursor < CubePos.BLOCK_COUNT && processed < maxBlocks) {
+            if (processed > 0 && (processed & 63) == 0 && elapsedMicrosSince(tickStartNanos) >= MAX_VISUAL_MIRROR_MICROS_PER_TICK) {
                 break;
             }
             int localIndex = tileOrderedLocalIndex(task.cursor);
@@ -243,12 +386,86 @@ public final class ClientCubeRenderBridge {
             if (!level.isOutsideBuildHeight(worldY)) {
                 BlockState state = snapshot.blockStateAtLocalIndex(localIndex);
                 BlockPos blockPos = new BlockPos(cubePos.minBlockX() + localX, worldY, cubePos.minBlockZ() + localZ);
-                level.setBlock(blockPos, state, SET_BLOCK_FLAGS);
-                written++;
+
+                // The render bridge is still backed by vanilla RenderSection storage. A chunk-column can exist while the
+                // concrete client section is not writable yet. Level#setBlock then returns false, but the old M19.2.4 code
+                // still advanced the cursor and recorded this cube hash as mirrored. The result was exactly the new symptom:
+                // cube-native reads/collision were solid, while the vanilla render section stayed empty until any manual
+                // block edit dirtied and populated it. From now on a cursor advances only after the vanilla shell is already
+                // equal to the snapshot or after a write is verified by reading the shell back with cube-query suppressed.
+                BlockState shellState = vanillaShellState(level, blockPos);
+                if (!shellState.equals(state)) {
+                    if (!level.hasChunkAt(blockPos)) {
+                        waitingForShell = true;
+                        break;
+                    }
+                    boolean wrote = ClientCubeWorldQuery.callWithoutCubeQueryForVisualShellWrite(() -> level.setBlock(blockPos, state, SET_BLOCK_FLAGS));
+                    BlockState afterWrite = vanillaShellState(level, blockPos);
+                    if (!afterWrite.equals(state)) {
+                        waitingForShell = true;
+                        RuntimeProfiler.addCount(wrote ? "client.render_bridge_write_unverified" : "client.render_bridge_write_failed", 1);
+                        break;
+                    }
+                    level.setBlocksDirty(blockPos, shellState, state);
+                    level.sendBlockUpdated(blockPos, shellState, state, SET_BLOCK_FLAGS);
+                    dirty = true;
+                }
+                processed++;
             }
             task.cursor++;
         }
-        return written;
+        return new MirrorSliceResult(processed, dirty, waitingForShell);
+    }
+
+    private static void dirtyVisualSection(ClientLevel level, CubePos cubePos) {
+        level.setSectionDirtyWithNeighbors(cubePos.x(), cubePos.y(), cubePos.z());
+        RuntimeProfiler.addCount("client.render_bridge_dirty_visual_sections", 1);
+    }
+
+    /**
+     * M19.2.6: lightweight guard against stale MIRRORED_HASHES.
+     *
+     * <p>Manual block edits repair invisible-but-solid cubes because they force vanilla shell writes. If a previous mirror
+     * attempt marked the hash as done before the shell really contained the non-air blocks, normal discovery would skip the
+     * section forever. Probe a few non-air sample positions before trusting a hash hit and requeue the cube if the temporary
+     * vanilla shell is still air/stale.</p>
+     */
+    private static boolean visualShellNeedsRepair(ClientLevel level, ClientCubeSectionSnapshot snapshot, CubePos playerCube) {
+        if (!snapshot.hasVisibleBlocks()) {
+            return false;
+        }
+        CubePos cubePos = snapshot.cubePos();
+        int checked = 0;
+        int start = (int) ((scans * 97L) & (CubePos.BLOCK_COUNT - 1));
+        for (int step = 0; step < CubePos.BLOCK_COUNT && checked < MAX_VISUAL_SHELL_PROBE_BLOCKS; step++) {
+            int localIndex = tileOrderedLocalIndex((start + step) & (CubePos.BLOCK_COUNT - 1));
+            BlockState expected = snapshot.blockStateAtLocalIndex(localIndex);
+            if (expected.isAir()) {
+                continue;
+            }
+            int localX = localIndex & CubePos.MASK;
+            int localZ = (localIndex >> CubePos.SIZE_BITS) & CubePos.MASK;
+            int localY = localIndex >> (CubePos.SIZE_BITS * 2);
+            int worldY = cubePos.minBlockY() + localY;
+            if (level.isOutsideBuildHeight(worldY)) {
+                continue;
+            }
+            BlockPos blockPos = new BlockPos(cubePos.minBlockX() + localX, worldY, cubePos.minBlockZ() + localZ);
+            if (!level.hasChunkAt(blockPos)) {
+                return true;
+            }
+            BlockState shellState = vanillaShellState(level, blockPos);
+            if (!shellState.equals(expected)) {
+                RuntimeProfiler.addCount("client.render_bridge_visual_shell_probe_misses", 1);
+                return true;
+            }
+            checked++;
+        }
+        return false;
+    }
+
+    private static BlockState vanillaShellState(ClientLevel level, BlockPos blockPos) {
+        return ClientCubeWorldQuery.callWithoutCubeQueryForVisualShellWrite(() -> level.getBlockState(blockPos));
     }
 
     private static int tileOrderedLocalIndex(int ordinal) {
@@ -355,6 +572,15 @@ public final class ClientCubeRenderBridge {
 
     public static String lastPlayerCubeString() {
         return lastPlayerCube == null ? "-" : lastPlayerCube.x() + " " + lastPlayerCube.y() + " " + lastPlayerCube.z();
+    }
+
+    private record MirrorSliceResult(int written, boolean dirty, boolean waitingForShell) {
+    }
+
+    private record ImmediateDeltaTask(CubePos cubePos, long hash, List<ImmediateBlockDelta> blocks) {
+    }
+
+    private record ImmediateBlockDelta(int localIndex, BlockState oldState, BlockState newState) {
     }
 
     private static final class VisualMirrorTask {

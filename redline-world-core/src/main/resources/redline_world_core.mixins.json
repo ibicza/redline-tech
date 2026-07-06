@@ -4,9 +4,13 @@
   "package": "com.redline.worldcore.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
-    "FlowingFluidWaterSurfaceSupportMixin"
+    "FlowingFluidWaterSurfaceSupportMixin",
+    "LevelLiveBlockChangeCaptureMixin",
+    "LevelCubeWorldQueryMixin"
   ],
-  "client": [],
+  "client": [
+    "client.ClientLevelCubeWorldQueryMixin"
+  ],
   "server": [],
   "injectors": {
     "defaultRequire": 1

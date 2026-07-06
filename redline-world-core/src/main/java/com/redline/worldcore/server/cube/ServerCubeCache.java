@@ -560,6 +560,25 @@ public final class ServerCubeCache {
         return Optional.ofNullable(holders.get(cubePos));
     }
 
+
+    /** M19.0: read-only ticket-level snapshot used by cube-first gameplay gates (entities/BE/ticks). */
+    public synchronized Map<CubePos, CubeTicketLevel> loadedTicketLevels() {
+        Map<CubePos, CubeTicketLevel> result = new LinkedHashMap<>();
+        for (CubeHolder holder : holders.values()) {
+            result.put(holder.cubePos(), holder.ticketLevel());
+        }
+        return Map.copyOf(result);
+    }
+
+    /** M19.0: detached loaded cube view for gameplay diagnostics and future cube-owned tick dispatchers. */
+    public synchronized Map<CubePos, LevelCube> loadedCubeView() {
+        Map<CubePos, LevelCube> result = new LinkedHashMap<>();
+        for (CubeHolder holder : holders.values()) {
+            result.put(holder.cubePos(), holder.cube());
+        }
+        return Map.copyOf(result);
+    }
+
     public synchronized List<CubeHolder> sortedHolders() {
         List<CubeHolder> result = new ArrayList<>(holders.values());
         result.sort(Comparator
@@ -582,6 +601,45 @@ public final class ServerCubeCache {
             return Optional.empty();
         }
         return Optional.ofNullable(holders.get(result.cubePos()));
+    }
+
+    /**
+     * M19.1 live vanilla-physics bridge.
+     *
+     * <p>Player place/break events only cover direct edits. Falling blocks, redstone state changes, fluid spread, lever
+     * toggles and block-tick physics all mutate the temporary vanilla shell through Level#setBlock without passing
+     * through those events. If the cube backend does not observe that write, the next native snapshot/mirror restores the
+     * old cube state, which looks like sand/redstone/fluids resetting whenever any block in the cube changes.</p>
+     */
+    public synchronized CubeMutationResult observeVanillaBlockChange(BlockPos worldPos, BlockState state, String reason) {
+        return mutateBlock(worldPos, state, new CubeMutationContext(
+                com.redline.worldcore.server.cube.access.CubeMutationOrigin.WORLD_CORE_INTERNAL,
+                false,
+                true,
+                false,
+                true,
+                true,
+                reason
+        ));
+    }
+
+    /**
+     * M19.2 world-query hot path: read only currently loaded cube holders.
+     *
+     * <p>Vanilla gameplay asks block/collision/fluid state very often. Those reads must see generated cube terrain, but
+     * they must not synchronously load Region3D or generate new cubes from arbitrary pathfinding/collision probes. Missing
+     * holders intentionally fall back to the vanilla result/air until normal cube tickets load them.</p>
+     */
+    public synchronized Optional<BlockState> readLoadedBlock(BlockPos worldPos) {
+        CubePos cubePos = CubePos.fromBlock(worldPos.getX(), worldPos.getY(), worldPos.getZ());
+        if (!settings.containsCubeY(cubePos.y())) {
+            return Optional.empty();
+        }
+        CubeHolder holder = holders.get(cubePos);
+        if (holder == null) {
+            return Optional.empty();
+        }
+        return Optional.of(holder.cube().getBlockState(worldPos));
     }
 
     /** Reads a block from loaded or persisted cube storage without generating missing terrain. */

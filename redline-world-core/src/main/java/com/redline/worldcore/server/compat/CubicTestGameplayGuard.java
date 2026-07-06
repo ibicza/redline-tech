@@ -23,6 +23,7 @@ import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
  */
 public final class CubicTestGameplayGuard {
     private static long canceledMobs;
+    private static long allowedMobs;
     private static long canceledFallingBlocks;
     private static long allowedFallingBlocks;
 
@@ -38,22 +39,26 @@ public final class CubicTestGameplayGuard {
             return;
         }
         if (entity instanceof FallingBlockEntity) {
-            if (shouldCancelFallingBlock(entity)) {
-                canceledFallingBlocks++;
-                event.setCanceled(true);
-            } else {
-                allowedFallingBlocks++;
-            }
+            // M19.2: falling blocks must be allowed now that collision/block queries are cube-backed.
+            // Canceling them was the direct cause of sand/gravel disappearing instead of landing on generated terrain.
+            allowedFallingBlocks++;
             return;
         }
         if (entity instanceof Mob) {
-            canceledMobs++;
-            event.setCanceled(true);
+            // M19.1: M19.0 proved the cube-ticket entity gates are diagnostic only, but the older M15 safety guard
+            // still canceled every mob before the player could see it. Items, boats and armor stands were fine because
+            // they do not extend Mob.  Keep tracking via EntityCubeTracker, but no longer despawn player-summoned or
+            // naturally spawned mobs at join time. Real tick cancellation will be introduced later behind those gates.
+            allowedMobs++;
         }
     }
 
     public static long canceledMobs() {
         return canceledMobs;
+    }
+
+    public static long allowedMobs() {
+        return allowedMobs;
     }
 
     public static long canceledFallingBlocks() {
@@ -77,6 +82,7 @@ public final class CubicTestGameplayGuard {
 
     public static void resetCounters() {
         canceledMobs = 0L;
+        allowedMobs = 0L;
         canceledFallingBlocks = 0L;
         allowedFallingBlocks = 0L;
     }

@@ -7,6 +7,7 @@ import com.redline.worldcore.network.CubeClientSyncPayload;
 import com.redline.worldcore.network.CubeSectionDeltaPayload;
 import com.redline.worldcore.network.CubeSectionSnapshotBatchPayload;
 import com.redline.worldcore.network.ClientCubeSectionAckPayload;
+import com.redline.worldcore.network.ClientCubeSectionRequestPayload;
 import com.redline.worldcore.network.CubeSectionSnapshotPayload;
 import com.redline.worldcore.network.CubeSectionUnloadPayload;
 import com.redline.worldcore.server.cube.CubeHolder;
@@ -14,6 +15,7 @@ import com.redline.worldcore.server.cube.CubeClientStage;
 import com.redline.worldcore.server.cube.CubeLoadingSnapshot;
 import com.redline.worldcore.server.cube.ServerCubeCache;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
+import com.redline.worldcore.server.cube.access.CubeMutationResult;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
 import com.redline.worldcore.server.entity.EntityCubeTracker;
 import com.redline.worldcore.server.entity.EntityTrackingSnapshot;
@@ -75,6 +77,7 @@ public final class CubicClientSyncBridge {
      */
     public static final int DEFAULT_EAGER_LOAD_HORIZONTAL_RADIUS = 3;
     public static final int DEFAULT_EAGER_LOAD_VERTICAL_RADIUS = 1;
+    private static final int COLLISION_SAFETY_NATIVE_RADIUS = 2;
     public static final int DEFAULT_MAX_EAGER_CLIENT_LOADS_PER_TICK = 4;
     public static final int DEFAULT_MAX_EAGER_CLIENT_GENERATED_LOADS_PER_TICK = 1;
     public static final int DEFAULT_MAX_EAGER_CLIENT_LOAD_MICROS_PER_TICK = 2_500;
@@ -181,9 +184,15 @@ public final class CubicClientSyncBridge {
     private static long nativeSectionDeltaPacketsSent;
     private static long nativeSectionDeltaEntriesSent;
     private static long nativeSectionDeltaBytesSent;
+    private static long observedVanillaBlockChanges;
+    private static long observedVanillaBlockUnchanged;
+    private static long observedVanillaBlockRejected;
+    private static long observedVanillaBlockDeltasSent;
     private static long nativeSectionAcksReceived;
     private static long nativeSectionAckEntriesReceived;
     private static long nativeSectionAckHashSkips;
+    private static long nativeSectionRepairRequests;
+    private static long nativeSectionRepairRequestEntries;
     private static long nativeSectionPacketsSent;
     private static long nativeSectionUnloadPacketsSent;
     private static long nativeSectionBytesSent;
@@ -240,6 +249,8 @@ public final class CubicClientSyncBridge {
         nativeSectionSnapshotsPrepared = 0L;
         nativeSectionSnapshotBuildRequests = 0L;
         nativeSectionPacketsSent = 0L;
+        nativeSectionRepairRequests = 0L;
+        nativeSectionRepairRequestEntries = 0L;
         nativeSectionUnloadPacketsSent = 0L;
         nativeSectionBytesSent = 0L;
         eagerClientLoadsLastTick = 0;
@@ -452,6 +463,7 @@ public final class CubicClientSyncBridge {
             state.pendingNativeSectionPayloadBytes = 0L;
             state.materializeBackoffTicks = 0;
             state.sentNativeSectionHashes.clear();
+            state.sentNativeSectionTicks.clear();
             state.ackedNativeSectionHashes.clear();
             state.unackedNativeSectionHashes.clear();
             state.dirtyInvalidationsAccounted.clear();
@@ -486,6 +498,7 @@ public final class CubicClientSyncBridge {
         RuntimeProfiler.recordSince("client.ensure_player_cube_visible", phaseStart);
         phaseStart = RuntimeProfiler.markStart();
         ensureEagerNeighborhoodLoaded(level, player, cache, playerCube, state);
+        queueCollisionSafetyNativeSections(cache, playerCube, state);
         RuntimeProfiler.recordSince("client.eager_neighborhood", phaseStart);
         phaseStart = RuntimeProfiler.markStart();
         queueVisibleLoadedCubes(cache, player, playerCube, state);
@@ -596,6 +609,28 @@ public final class CubicClientSyncBridge {
                 eagerClientGeneratedLastTick++;
                 RuntimeProfiler.addCount("client.eager_generated", 1);
             }
+        }
+    }
+
+    private static void queueCollisionSafetyNativeSections(ServerCubeCache cache, CubePos playerCube, PlayerBridgeState state) {
+        int queued = 0;
+        for (int y = playerCube.y() - 1; y <= playerCube.y() + 1; y++) {
+            for (int z = playerCube.z() - COLLISION_SAFETY_NATIVE_RADIUS; z <= playerCube.z() + COLLISION_SAFETY_NATIVE_RADIUS; z++) {
+                for (int x = playerCube.x() - COLLISION_SAFETY_NATIVE_RADIUS; x <= playerCube.x() + COLLISION_SAFETY_NATIVE_RADIUS; x++) {
+                    CubePos cubePos = new CubePos(x, y, z);
+                    Optional<CubeHolder> holder = cache.holder(cubePos);
+                    if (holder.isEmpty()) {
+                        continue;
+                    }
+                    long hash = holder.get().generationHash();
+                    recordNativeReady(state, holder.get(), hash);
+                    enqueueNativeSectionSnapshot(state, cubePos, hash, true, false);
+                    queued++;
+                }
+            }
+        }
+        if (queued > 0) {
+            RuntimeProfiler.addCount("client.native_section_collision_safety_queued", queued);
         }
     }
 
@@ -1036,13 +1071,34 @@ public final class CubicClientSyncBridge {
     }
 
     private static void enqueueNativeSectionSnapshot(PlayerBridgeState state, CubePos cubePos, long hash) {
-        if (state.nativeSectionHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash
-                && state.sentNativeSectionHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash) {
+        enqueueNativeSectionSnapshot(state, cubePos, hash, false, false);
+    }
+
+    private static void enqueueNativeSectionSnapshot(PlayerBridgeState state, CubePos cubePos, long hash, boolean priority, boolean forceRepair) {
+        if (!forceRepair && state.ackedNativeSectionHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash) {
+            state.nativeSectionHashes.put(cubePos, hash);
+            nativeSectionAckHashSkips++;
+            RuntimeProfiler.addCount("client.native_section_ack_hash_skips", 1);
             RuntimeProfiler.addCount("client.native_section_snapshot_ready_hits", 1);
             return;
         }
+
+        boolean sentSameHash = state.sentNativeSectionHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash;
+        boolean unackedSameHash = state.unackedNativeSectionHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash;
+        int lastSentTick = state.sentNativeSectionTicks.getOrDefault(cubePos, Integer.MIN_VALUE);
+        if (!forceRepair && sentSameHash && unackedSameHash && state.tickCounter - lastSentTick < 10) {
+            RuntimeProfiler.addCount("client.native_section_unacked_recent_skips", 1);
+            return;
+        }
+
         if (!state.nativeSectionQueued.add(cubePos)) {
-            RuntimeProfiler.addCount("client.native_section_snapshot_queue_hits", 1);
+            if (priority) {
+                state.nativeSectionQueue.remove(cubePos);
+                state.nativeSectionQueue.addFirst(cubePos);
+                RuntimeProfiler.addCount("client.native_section_snapshot_queue_promoted", 1);
+            } else {
+                RuntimeProfiler.addCount("client.native_section_snapshot_queue_hits", 1);
+            }
             return;
         }
         if (state.nativeSectionQueue.size() >= MAX_NATIVE_SECTION_QUEUE) {
@@ -1052,8 +1108,12 @@ public final class CubicClientSyncBridge {
                 RuntimeProfiler.addCount("client.native_section_snapshot_queue_dropped", 1);
             }
         }
-        state.nativeSectionQueue.addLast(cubePos);
-        RuntimeProfiler.addCount("client.native_section_snapshot_enqueued", 1);
+        if (priority) {
+            state.nativeSectionQueue.addFirst(cubePos);
+        } else {
+            state.nativeSectionQueue.addLast(cubePos);
+        }
+        RuntimeProfiler.addCount(forceRepair ? "client.native_section_snapshot_repair_enqueued" : "client.native_section_snapshot_enqueued", 1);
     }
 
     private static void prepareNativeSectionSnapshots(ServerPlayer player, ServerCubeCache cache, PlayerBridgeState state) {
@@ -1073,25 +1133,19 @@ public final class CubicClientSyncBridge {
             if (holder.isEmpty()) {
                 state.nativeSectionHashes.remove(cubePos);
                 state.sentNativeSectionHashes.remove(cubePos);
+                state.sentNativeSectionTicks.remove(cubePos);
                 RuntimeProfiler.addCount("client.native_section_snapshot_missing_holder", 1);
                 continue;
             }
             long hash = holder.get().generationHash();
-            if (state.sentNativeSectionHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash
-                    || state.ackedNativeSectionHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash) {
-                state.nativeSectionHashes.put(cubePos, hash);
-                if (state.ackedNativeSectionHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash) {
-                    nativeSectionAckHashSkips++;
-                    RuntimeProfiler.addCount("client.native_section_ack_hash_skips", 1);
-                } else {
-                    RuntimeProfiler.addCount("client.native_section_packet_skipped_cache_hit", 1);
-                }
-                RuntimeProfiler.addCount("client.native_section_snapshot_ready_hits", 1);
-                continue;
-            }
+            // If a cube reached this queue, send it.  Normal enqueue already filters acked/up-to-date sections, while
+            // repair requests intentionally requeue sections the server may have considered sent/acked but the client is
+            // missing locally.
             if (cache.clientSyncDirty(cubePos)) {
-                RuntimeProfiler.addCount("client.native_section_snapshot_dirty_skips", 1);
-                continue;
+                // Dirty means the client needs a fresh native section, not that the section should be hidden from the
+                // native path.  Skipping here could leave a cube physically solid on the server while the client still had
+                // an empty local section until a block edit happened to repair it.
+                RuntimeProfiler.addCount("client.native_section_snapshot_dirty_forced", 1);
             }
             nativeSectionSnapshotBuildRequests++;
             RuntimeProfiler.addCount("client.native_section_snapshot_requests", 1);
@@ -1133,6 +1187,7 @@ public final class CubicClientSyncBridge {
         PacketDistributor.sendToPlayer(player, batchPayload);
         for (CubeSectionSnapshotPayload snapshot : state.pendingNativeSectionPayloads) {
             state.sentNativeSectionHashes.put(snapshot.cubePos(), snapshot.hash());
+            state.sentNativeSectionTicks.put(snapshot.cubePos(), state.tickCounter);
             state.unackedNativeSectionHashes.put(snapshot.cubePos(), snapshot.hash());
         }
         trimNativeSectionSentHashes(state);
@@ -1166,6 +1221,7 @@ public final class CubicClientSyncBridge {
         }
         for (CubePos cubePos : toUnload) {
             state.sentNativeSectionHashes.remove(cubePos);
+            state.sentNativeSectionTicks.remove(cubePos);
             state.ackedNativeSectionHashes.remove(cubePos);
             state.unackedNativeSectionHashes.remove(cubePos);
             state.nativeSectionHashes.remove(cubePos);
@@ -1210,6 +1266,7 @@ public final class CubicClientSyncBridge {
         while (state.sentNativeSectionHashes.size() > MAX_TRACKED_MATERIALIZED * 2) {
             CubePos first = state.sentNativeSectionHashes.keySet().iterator().next();
             state.sentNativeSectionHashes.remove(first);
+            state.sentNativeSectionTicks.remove(first);
             state.ackedNativeSectionHashes.remove(first);
             state.unackedNativeSectionHashes.remove(first);
             state.nativeSectionHashes.remove(first);
@@ -1914,6 +1971,39 @@ public final class CubicClientSyncBridge {
         return true;
     }
 
+    public static void onVanillaBlockStateChanged(ServerLevel level, BlockPos pos, BlockState state) {
+        if (!isCubicTest(level) || level.isOutsideBuildHeight(pos)) {
+            return;
+        }
+        if (materializationInProgress) {
+            materializerWritesIgnored++;
+            RuntimeProfiler.addCount("gameplay.live_block_observer_materializer_ignored", 1);
+            return;
+        }
+
+        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
+        CubePos cubePos = CubePos.fromBlock(pos);
+        long baseHash = cache.holder(cubePos).map(CubeHolder::generationHash).orElse(Long.MIN_VALUE);
+        CubeMutationResult result = cache.observeVanillaBlockChange(pos, state, "vanilla_set_block");
+        if (!result.applied()) {
+            observedVanillaBlockRejected++;
+            RuntimeProfiler.addCount("gameplay.live_block_observer_rejected", 1);
+            return;
+        }
+        observedVanillaBlockChanges++;
+        RuntimeProfiler.addCount("gameplay.live_block_observer_seen", 1);
+        if (!result.changed()) {
+            observedVanillaBlockUnchanged++;
+            RuntimeProfiler.addCount("gameplay.live_block_observer_unchanged", 1);
+            return;
+        }
+
+        long newHash = cache.holder(cubePos).map(CubeHolder::generationHash).orElse(baseHash);
+        sendNativeSectionDelta(level, cubePos, baseHash, newHash, CubePos.localIndexFromBlock(pos.getX(), pos.getY(), pos.getZ()), state);
+        observedVanillaBlockDeltasSent++;
+        RuntimeProfiler.addCount("gameplay.live_block_observer_delta", 1);
+    }
+
     private static void sendNativeSectionDelta(ServerLevel level, CubePos cubePos, long baseHash, long newHash, int localIndex, BlockState state) {
         CubeSectionDeltaPayload payload = CubeSectionDeltaPayload.single(cubePos, baseHash, newHash, localIndex, state);
         int sent = 0;
@@ -1940,6 +2030,10 @@ public final class CubicClientSyncBridge {
         if (state == null) {
             return;
         }
+        if (!(player.level() instanceof ServerLevel level) || !isCubicTest(level)) {
+            return;
+        }
+        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
         nativeSectionAcksReceived++;
         nativeSectionAckEntriesReceived += payload.entries().size();
         RuntimeProfiler.addCount("client.native_section_ack_packets_received", 1);
@@ -1948,8 +2042,48 @@ public final class CubicClientSyncBridge {
             CubePos cubePos = entry.cubePos();
             state.ackedNativeSectionHashes.put(cubePos, entry.hash());
             state.unackedNativeSectionHashes.remove(cubePos);
+            state.sentNativeSectionTicks.remove(cubePos);
+            Optional<CubeHolder> holder = cache.holder(cubePos);
+            if (holder.isPresent() && holder.get().generationHash() == entry.hash()) {
+                cache.recordClientMirrorSynced(cubePos);
+                state.dirtyInvalidationsAccounted.remove(cubePos);
+            }
         }
         trimNativeSectionAckHashes(state);
+    }
+
+    public static void handleNativeSectionRequest(ServerPlayer player, ClientCubeSectionRequestPayload payload) {
+        PlayerBridgeState state = PLAYER_STATES.get(player.getUUID());
+        if (state == null) {
+            return;
+        }
+        if (!(player.level() instanceof ServerLevel level) || !isCubicTest(level)) {
+            return;
+        }
+        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
+        CubePos playerCube = CubePos.fromBlock(player.blockPosition());
+        nativeSectionRepairRequests++;
+        nativeSectionRepairRequestEntries += payload.entries().size();
+        RuntimeProfiler.addCount("client.native_section_repair_request_packets", 1);
+        RuntimeProfiler.addCount("client.native_section_repair_request_entries", payload.entries().size());
+        for (ClientCubeSectionRequestPayload.Entry entry : payload.entries()) {
+            CubePos cubePos = entry.cubePos();
+            if (!isWithinNativeSectionRetainRadius(cubePos, playerCube)) {
+                RuntimeProfiler.addCount("client.native_section_repair_request_out_of_range", 1);
+                continue;
+            }
+            Optional<CubeHolder> holder = cache.holder(cubePos);
+            if (holder.isEmpty()) {
+                RuntimeProfiler.addCount("client.native_section_repair_request_missing_holder", 1);
+                continue;
+            }
+            long hash = holder.get().generationHash();
+            state.nativeSectionHashes.remove(cubePos);
+            state.sentNativeSectionHashes.remove(cubePos);
+            state.sentNativeSectionTicks.remove(cubePos);
+            state.unackedNativeSectionHashes.remove(cubePos);
+            enqueueNativeSectionSnapshot(state, cubePos, hash, true, true);
+        }
     }
 
     private static void trimNativeSectionAckHashes(PlayerBridgeState state) {
@@ -1985,6 +2119,7 @@ public final class CubicClientSyncBridge {
         private final Set<CubePos> nativeSectionQueued = new HashSet<>();
         private final Map<CubePos, Long> nativeSectionHashes = new HashMap<>();
         private final Map<CubePos, Long> sentNativeSectionHashes = new HashMap<>();
+        private final Map<CubePos, Integer> sentNativeSectionTicks = new HashMap<>();
         private final Map<CubePos, Long> ackedNativeSectionHashes = new HashMap<>();
         private final Map<CubePos, Long> unackedNativeSectionHashes = new HashMap<>();
         private final ArrayList<CubeSectionSnapshotPayload> pendingNativeSectionPayloads = new ArrayList<>();

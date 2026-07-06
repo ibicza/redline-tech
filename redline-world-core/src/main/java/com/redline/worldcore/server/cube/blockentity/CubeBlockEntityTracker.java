@@ -11,6 +11,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import com.redline.worldcore.server.profiler.RuntimeProfiler;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -128,19 +129,44 @@ public final class CubeBlockEntityTracker {
     }
 
     public void evaluateTicking(Map<CubePos, CubeTicketLevel> loadedLevels) {
+        int allowedRefs = 0;
+        int blockedRefs = 0;
+        int fullSections = 0;
+        int borderSections = 0;
+        int blockedSections = 0;
+        int changedRefs = 0;
         for (CubeBlockEntitySection section : sections.values()) {
             CubeTicketLevel level = loadedLevels.getOrDefault(section.cubePos(), CubeTicketLevel.UNLOADED);
             boolean allowed = level.isAtLeast(CubeTicketLevel.BLOCK_TICKING);
+            if (allowed) {
+                fullSections++;
+            } else if (level.isAtLeast(CubeTicketLevel.BORDER)) {
+                borderSections++;
+            } else {
+                blockedSections++;
+            }
             List<CubeBlockEntityRef> updated = new ArrayList<>();
             for (CubeBlockEntityRef ref : section.refs()) {
+                if (allowed) {
+                    allowedRefs++;
+                } else {
+                    blockedRefs++;
+                }
                 if (ref.tickingAllowed() != allowed) {
                     updated.add(ref.withTickingAllowed(allowed));
                 }
             }
             for (CubeBlockEntityRef ref : updated) {
                 section.put(ref);
+                changedRefs++;
             }
         }
+        RuntimeProfiler.addCount("gameplay.block_entity_ticking_allowed", allowedRefs);
+        RuntimeProfiler.addCount("gameplay.block_entity_ticking_blocked", blockedRefs);
+        RuntimeProfiler.addCount("gameplay.block_entity_sections_full", fullSections);
+        RuntimeProfiler.addCount("gameplay.block_entity_sections_border", borderSections);
+        RuntimeProfiler.addCount("gameplay.block_entity_sections_blocked", blockedSections);
+        RuntimeProfiler.addCount("gameplay.block_entity_gate_changes", changedRefs);
     }
 
     public void rebuildCube(LevelCube cube, String reason) {

@@ -2,6 +2,8 @@ package com.redline.worldcore.client.sync;
 
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.network.ClientCubeSectionAckPayload;
+import com.redline.worldcore.network.ClientCubeSectionRequestPayload;
+import com.redline.worldcore.network.CubeClientSyncPayload;
 import com.redline.worldcore.network.CubeSectionDeltaPayload;
 import com.redline.worldcore.network.CubeSectionSnapshotBatchPayload;
 import com.redline.worldcore.network.CubeSectionSnapshotPayload;
@@ -24,6 +26,7 @@ public final class ClientCubeSectionStore {
     private static final int MAX_SECTIONS = 8192;
     private static final LinkedHashMap<CubePos, ClientCubeSectionSnapshot> SECTIONS = new LinkedHashMap<>(256, 0.75F, true);
     private static final LinkedHashMap<CubePos, Long> PENDING_ACKS = new LinkedHashMap<>(128, 0.75F, true);
+    private static final LinkedHashMap<CubePos, Long> PENDING_REQUESTS = new LinkedHashMap<>(128, 0.75F, true);
     private static long receivedSnapshots;
     private static long replacedSnapshots;
     private static long unloads;
@@ -38,6 +41,10 @@ public final class ClientCubeSectionStore {
     private static long ackEntriesQueued;
     private static long ackPacketsSent;
     private static long ackEntriesSent;
+    private static long requestPacketsQueued;
+    private static long requestEntriesQueued;
+    private static long requestPacketsSent;
+    private static long requestEntriesSent;
 
     private ClientCubeSectionStore() {
     }
@@ -56,13 +63,21 @@ public final class ClientCubeSectionStore {
         receivedSnapshots++;
         receivedBytesEstimate += payload.estimatedBytes();
         enqueueAck(cubePos, payload.hash());
+        // Full snapshots are authoritative repair points.  Even when the hash is the same, the previous visual mirror may
+        // have completed while the temporary vanilla client shell was not writable yet.  Always drop the visual/native
+        // mirror bookkeeping so the render bridge verifies and rewrites the shell from this snapshot instead of trusting a
+        // stale MIRRORED_HASHES entry.
         if (previous != null && previous.hash() != payload.hash()) {
             replacedSnapshots++;
         }
+        ClientCubeRenderBridge.invalidate(cubePos);
+        ClientCubeRenderBridge.forceDirtySection(cubePos);
+        ClientCubeNativeMeshBridge.invalidate(cubePos);
         while (SECTIONS.size() > MAX_SECTIONS) {
             CubePos eldest = SECTIONS.keySet().iterator().next();
             SECTIONS.remove(eldest);
             PENDING_ACKS.remove(eldest);
+            PENDING_REQUESTS.remove(eldest);
             ClientCubeRenderBridge.forget(eldest);
             ClientCubeNativeMeshBridge.forget(eldest);
             droppedEldest++;
@@ -95,10 +110,12 @@ public final class ClientCubeSectionStore {
         for (int index = 0; index < payload.stateIds().length; index++) {
             states.add(payload.stateAt(index));
         }
-        SECTIONS.put(cubePos, previous.withBlockChanges(payload.newHash(), payload.localIndices(), states));
+        ClientCubeSectionSnapshot updated = previous.withBlockChanges(payload.newHash(), payload.localIndices(), states);
+        SECTIONS.put(cubePos, updated);
         enqueueAck(cubePos, payload.newHash());
         appliedDeltas++;
         ClientCubeRenderBridge.invalidate(cubePos);
+        ClientCubeRenderBridge.applyImmediateDelta(previous, updated, payload.localIndices());
         ClientCubeNativeMeshBridge.invalidate(cubePos);
     }
 
@@ -108,6 +125,7 @@ public final class ClientCubeSectionStore {
             unloads++;
         }
         PENDING_ACKS.remove(cubePos);
+        PENDING_REQUESTS.remove(cubePos);
         ClientCubeRenderBridge.forget(cubePos);
         ClientCubeNativeMeshBridge.forget(cubePos);
     }
@@ -137,6 +155,63 @@ public final class ClientCubeSectionStore {
     public static synchronized void recordAckSent(ClientCubeSectionAckPayload payload) {
         ackPacketsSent++;
         ackEntriesSent += payload.entries().size();
+    }
+
+    /**
+     * M19.2.5: repair native-section holes detected from the metadata sync packet.
+     *
+     * <p>If the server says a nearby cube exists/native-ready but this client has no matching snapshot, local collision and
+     * render can both fall back to the empty vanilla shell.  Queue a compact resend request instead of waiting until a
+     * player block update accidentally causes a full refresh.</p>
+     */
+    public static synchronized void enqueueMissingRequestsFromSync(CubeClientSyncPayload payload) {
+        int queued = 0;
+        for (CubeClientSyncPayload.Entry entry : payload.entries()) {
+            if (!entry.nativeReady()) {
+                continue;
+            }
+            CubePos cubePos = new CubePos(entry.cubeX(), entry.cubeY(), entry.cubeZ());
+            ClientCubeSectionSnapshot snapshot = SECTIONS.get(cubePos);
+            if (snapshot != null && snapshot.hash() == entry.hash()) {
+                PENDING_REQUESTS.remove(cubePos);
+                continue;
+            }
+            PENDING_REQUESTS.put(cubePos, entry.hash());
+            requestEntriesQueued++;
+            queued++;
+            if (queued >= 16) {
+                break;
+            }
+        }
+        if (queued > 0) {
+            requestPacketsQueued++;
+        }
+    }
+
+    public static synchronized Optional<ClientCubeSectionRequestPayload> pollRequestPayload(int maxEntries) {
+        if (PENDING_REQUESTS.isEmpty()) {
+            return Optional.empty();
+        }
+        int count = Math.min(Math.max(1, maxEntries), Math.min(ClientCubeSectionRequestPayload.MAX_ENTRIES, PENDING_REQUESTS.size()));
+        ArrayList<ClientCubeSectionRequestPayload.Entry> entries = new ArrayList<>(count);
+        var iterator = PENDING_REQUESTS.entrySet().iterator();
+        while (iterator.hasNext() && entries.size() < count) {
+            Map.Entry<CubePos, Long> entry = iterator.next();
+            CubePos cubePos = entry.getKey();
+            entries.add(new ClientCubeSectionRequestPayload.Entry(cubePos.x(), cubePos.y(), cubePos.z(), entry.getValue()));
+            iterator.remove();
+        }
+        return Optional.of(new ClientCubeSectionRequestPayload(entries));
+    }
+
+    public static synchronized void recordRequestSent(ClientCubeSectionRequestPayload payload) {
+        requestPacketsSent++;
+        requestEntriesSent += payload.entries().size();
+    }
+
+    public static synchronized boolean hasHash(CubePos cubePos, long hash) {
+        ClientCubeSectionSnapshot snapshot = SECTIONS.get(cubePos);
+        return snapshot != null && snapshot.hash() == hash;
     }
 
     public static synchronized Optional<ClientCubeSectionSnapshot> get(CubePos cubePos) {

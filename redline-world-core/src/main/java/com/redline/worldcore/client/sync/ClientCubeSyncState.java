@@ -15,6 +15,7 @@ public final class ClientCubeSyncState {
 
     public static void accept(CubeClientSyncPayload payload) {
         latest = payload;
+        ClientCubeSectionStore.enqueueMissingRequestsFromSync(payload);
         Minecraft minecraft = Minecraft.getInstance();
         receivedAtGameTime = minecraft.level == null ? 0L : minecraft.level.getGameTime();
     }

@@ -2,7 +2,7 @@ package com.redline.worldcore.server.entity;
 
 import com.redline.worldcore.api.pos.CubePos;
 
-/** Immutable M12.1 debug snapshot of the runtime cube/entity index. */
+/** Immutable debug snapshot of the runtime cube/entity index and M19 cube-first ticking gate. */
 public record EntityTrackingSnapshot(
         int trackedEntities,
         int entitySections,
@@ -25,7 +25,15 @@ public record EntityTrackingSnapshot(
         int otherEntities,
         long scanMicrosLastTick,
         long scanMicrosAverage,
-        long scanMicrosMax
+        long scanMicrosMax,
+        int tickingAllowedEntities,
+        int tickingBlockedEntities,
+        int alwaysTickingEntities,
+        int borderEntities,
+        int unloadedEntities,
+        int fullTickingSections,
+        int borderSections,
+        int blockedSections
 ) {
     public static EntityTrackingSnapshot empty(CubePos playerCube) {
         return new EntityTrackingSnapshot(
@@ -50,7 +58,15 @@ public record EntityTrackingSnapshot(
                 0,
                 0L,
                 0L,
-                0L
+                0L,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
         );
     }
 
@@ -74,6 +90,15 @@ public record EntityTrackingSnapshot(
         return "scanUs=" + scanMicrosLastTick
                 + ", avgUs=" + scanMicrosAverage
                 + ", maxUs=" + scanMicrosMax;
+    }
+
+    public String tickingLine() {
+        return "allowed=" + tickingAllowedEntities
+                + ", blocked=" + tickingBlockedEntities
+                + ", always=" + alwaysTickingEntities
+                + ", border=" + borderEntities
+                + ", unloaded=" + unloadedEntities
+                + ", sections(full/border/blocked)=" + fullTickingSections + "/" + borderSections + "/" + blockedSections;
     }
 
     private static String format(CubePos cubePos) {
