@@ -1,5 +1,6 @@
 package com.redline.worldcore.client.query;
 
+import com.redline.worldcore.api.generation.CubicDimensionSettings;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
@@ -33,11 +34,11 @@ public final class ClientCubeBlockGetter implements BlockGetter {
 
     @Override
     public int getHeight() {
-        return level.getHeight();
+        return CubicDimensionSettings.defaults().blockHeight();
     }
 
     @Override
     public int getMinY() {
-        return level.getMinY();
+        return CubicDimensionSettings.defaults().minBlockY();
     }
 }

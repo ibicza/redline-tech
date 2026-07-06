@@ -501,7 +501,7 @@ public final class CubicClientSyncBridge {
         queueCollisionSafetyNativeSections(cache, playerCube, state);
         RuntimeProfiler.recordSince("client.eager_neighborhood", phaseStart);
         phaseStart = RuntimeProfiler.markStart();
-        queueVisibleLoadedCubes(cache, player, playerCube, state);
+        queueVisibleLoadedCubes(level, cache, player, playerCube, state);
         RuntimeProfiler.recordSince("client.queue_visible_loaded", phaseStart);
         phaseStart = RuntimeProfiler.markStart();
         prepareNativeSectionSnapshots(player, cache, state);
@@ -521,12 +521,17 @@ public final class CubicClientSyncBridge {
 
     private static void ensurePlayerCubeVisible(ServerLevel level, ServerCubeCache cache, CubePos playerCube, PlayerBridgeState state) {
         Optional<CubeHolder> holder = cache.ensureLoadedForClient(playerCube, com.redline.worldcore.api.ticket.CubeTicketLevel.FULL);
-        if (holder.isEmpty() || !isInsidePhysicalShell(level, playerCube)) {
+        if (holder.isEmpty()) {
             return;
         }
         forcedClientLoads++;
         long hash = holder.get().generationHash();
         recordNativeReady(state, holder.get(), hash);
+        enqueueNativeSectionSnapshot(state, playerCube, hash, true, false);
+        if (!isInsidePhysicalShell(level, playerCube)) {
+            RuntimeProfiler.addCount("client.player_cube_outside_vanilla_shell_native_only", 1);
+            return;
+        }
         boolean clientDirty = cache.clientSyncDirty(playerCube);
         if (!clientDirty && holder.get().vanillaShellReady(hash)) {
             rememberMaterialized(state, playerCube, hash);
@@ -555,7 +560,7 @@ public final class CubicClientSyncBridge {
             for (int z = playerCube.z() - eagerLoadHorizontalRadius; z <= playerCube.z() + eagerLoadHorizontalRadius; z++) {
                 for (int x = playerCube.x() - eagerLoadHorizontalRadius; x <= playerCube.x() + eagerLoadHorizontalRadius; x++) {
                     CubePos cubePos = new CubePos(x, y, z);
-                    if (!isInsidePhysicalShell(level, cubePos)) {
+                    if (!cache.settings().containsCubeY(cubePos.y())) {
                         continue;
                     }
                     if (cache.holder(cubePos).isPresent()) {
@@ -634,7 +639,7 @@ public final class CubicClientSyncBridge {
         }
     }
 
-    private static void queueVisibleLoadedCubes(ServerCubeCache cache, ServerPlayer player, CubePos playerCube, PlayerBridgeState state) {
+    private static void queueVisibleLoadedCubes(ServerLevel level, ServerCubeCache cache, ServerPlayer player, CubePos playerCube, PlayerBridgeState state) {
         PlayerViewFocus viewFocus = playerViewFocus(cache, player, playerCube);
         List<CubePos> visible = visibleOrder(cache, playerCube, viewFocus, state);
         if (visible.isEmpty()) {
@@ -657,7 +662,8 @@ public final class CubicClientSyncBridge {
             long hash = holder.get().generationHash();
             recordNativeReady(state, holder.get(), hash);
             boolean clientDirty = cache.clientSyncDirty(cubePos);
-            boolean vanillaShellRequired = shouldMaterializeVanillaShell(cubePos, playerCube, false);
+            boolean insidePhysicalShell = isInsidePhysicalShell(level, cubePos);
+            boolean vanillaShellRequired = insidePhysicalShell && shouldMaterializeVanillaShell(cubePos, playerCube, false);
             if (shouldSendNativeSectionSnapshot(cache, cubePos, playerCube, vanillaShellRequired)) {
                 enqueueNativeSectionSnapshot(state, cubePos, hash);
             }
@@ -763,7 +769,8 @@ public final class CubicClientSyncBridge {
             long hash = holder.get().generationHash();
             recordNativeReady(state, holder.get(), hash);
             boolean clientDirty = cache.clientSyncDirty(cubePos);
-            boolean vanillaShellRequired = shouldMaterializeVanillaShell(cubePos, playerCube, false);
+            boolean insidePhysicalShell = isInsidePhysicalShell(level, cubePos);
+            boolean vanillaShellRequired = insidePhysicalShell && shouldMaterializeVanillaShell(cubePos, playerCube, false);
             if (shouldSendNativeSectionSnapshot(cache, cubePos, playerCube, vanillaShellRequired)) {
                 enqueueNativeSectionSnapshot(state, cubePos, hash);
             }
@@ -1912,7 +1919,7 @@ public final class CubicClientSyncBridge {
     }
 
     private static boolean isInsidePhysicalShell(ServerLevel level, CubePos cubePos) {
-        return !level.isOutsideBuildHeight(cubePos.minBlockY()) && !level.isOutsideBuildHeight(cubePos.maxBlockY());
+        return CubicTestDimensionService.isInsideVanillaShell(level, cubePos);
     }
 
     public static void onBlockBreak(BreakBlockEvent event) {
@@ -1957,10 +1964,10 @@ public final class CubicClientSyncBridge {
     }
 
     private static boolean writeBlockEdit(ServerLevel level, BlockPos pos, BlockState state) {
-        if (level.isOutsideBuildHeight(pos)) {
+        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
+        if (!cache.settings().containsBlockY(pos.getY())) {
             return false;
         }
-        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
         CubePos cubePos = CubePos.fromBlock(pos);
         long baseHash = cache.holder(cubePos).map(CubeHolder::generationHash).orElse(Long.MIN_VALUE);
         Optional<CubeHolder> holder = cache.writeBlock(pos, state, true);
@@ -1972,7 +1979,11 @@ public final class CubicClientSyncBridge {
     }
 
     public static void onVanillaBlockStateChanged(ServerLevel level, BlockPos pos, BlockState state) {
-        if (!isCubicTest(level) || level.isOutsideBuildHeight(pos)) {
+        if (!isCubicTest(level)) {
+            return;
+        }
+        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
+        if (!cache.settings().containsBlockY(pos.getY())) {
             return;
         }
         if (materializationInProgress) {
@@ -1981,7 +1992,6 @@ public final class CubicClientSyncBridge {
             return;
         }
 
-        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
         CubePos cubePos = CubePos.fromBlock(pos);
         long baseHash = cache.holder(cubePos).map(CubeHolder::generationHash).orElse(Long.MIN_VALUE);
         CubeMutationResult result = cache.observeVanillaBlockChange(pos, state, "vanilla_set_block");

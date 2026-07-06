@@ -1,6 +1,7 @@
 package com.redline.worldcore.client.query;
 
 import com.redline.worldcore.api.dimension.CubicDimensionKeys;
+import com.redline.worldcore.api.generation.CubicDimensionSettings;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.client.sync.ClientCubeSectionSnapshot;
 import com.redline.worldcore.client.sync.ClientCubeSectionStore;
@@ -53,6 +54,9 @@ public final class ClientCubeWorldQuery {
 
     public static Optional<BlockState> blockState(Level level, BlockPos pos) {
         if (isVisualShellWriteSuppressed() || !isCubicClientLevel(level)) {
+            return Optional.empty();
+        }
+        if (!CubicDimensionSettings.defaults().containsBlockY(pos.getY())) {
             return Optional.empty();
         }
         CubePos cubePos = CubePos.fromBlock(pos);

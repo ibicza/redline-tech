@@ -8,6 +8,8 @@ import com.redline.worldcore.api.generation.CubicDimensionSettings;
 import com.redline.worldcore.api.pos.CubePos;
 import com.redline.worldcore.server.storage.CubeRegionStorage;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
+import com.redline.worldcore.server.cube.ServerCubeCache;
+import com.redline.worldcore.server.cube.access.CubeMutationResult;
 import com.redline.worldcore.server.cube.access.CubeMutationContext;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -133,10 +135,11 @@ public final class CubicTestDimensionService {
         Objects.requireNonNull(level, "level");
         Objects.requireNonNull(cubePos, "cubePos");
 
-        if (cubePos.minBlockY() < level.getMinY() || cubePos.maxBlockY() >= level.getMaxY()) {
-            throw new IllegalArgumentException("Cube " + cubePos + " is outside vanilla build height for "
-                    + level.dimension().identifier() + ": " + level.getMinY() + ".." + (level.getMaxY() - 1)
-                    + ". It still exists in cubic storage, but cannot be materialized into vanilla blocks yet.");
+        if (!isInsideVanillaShell(level, cubePos)) {
+            throw new IllegalArgumentException("Cube " + cubePos + " is outside the temporary vanilla shell for "
+                    + level.dimension().identifier() + ": level=" + level.getMinY() + ".." + (level.getMaxY() - 1)
+                    + ", configured shell=" + SETTINGS.vanillaShellMinY() + ".." + SETTINGS.vanillaShellMaxY()
+                    + ". It still exists in cube-only storage; use native cube sync/render instead of vanilla materialization.");
         }
 
         LevelCube cube = storage(server).get(cubePos)
@@ -159,6 +162,65 @@ public final class CubicTestDimensionService {
             }
         }
         return new MaterializeResult(cubePos, changed);
+    }
+
+    public HeightReport heightReport(ServerLevel level) {
+        Objects.requireNonNull(level, "level");
+        return new HeightReport(
+                SETTINGS.minCubeY(),
+                SETTINGS.maxCubeY(),
+                SETTINGS.minBlockY(),
+                SETTINGS.maxBlockY(),
+                SETTINGS.blockHeight(),
+                SETTINGS.vanillaShellMinY(),
+                SETTINGS.vanillaShellMaxY(),
+                SETTINGS.vanillaShellMaxY() - SETTINGS.vanillaShellMinY() + 1,
+                level.getMinY(),
+                level.getMaxY() - 1,
+                level.getHeight(),
+                SETTINGS.containsBlockY(CubicDimensionSettings.EXTREME_HIGH_TEST_Y),
+                SETTINGS.containsBlockY(CubicDimensionSettings.EXTREME_LOW_TEST_Y),
+                SETTINGS.isBlockInsideVanillaShell(CubicDimensionSettings.EXTREME_HIGH_TEST_Y),
+                SETTINGS.isBlockInsideVanillaShell(CubicDimensionSettings.EXTREME_LOW_TEST_Y)
+        );
+    }
+
+    public ExtremeHeightProbeResult runExtremeHeightProbe(MinecraftServer server) {
+        Objects.requireNonNull(server, "server");
+        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(server);
+        BlockPos highPos = new BlockPos(0, CubicDimensionSettings.EXTREME_HIGH_TEST_Y, 0);
+        BlockPos lowPos = new BlockPos(0, CubicDimensionSettings.EXTREME_LOW_TEST_Y, 0);
+        BlockState highState = Blocks.GOLD_BLOCK.defaultBlockState();
+        BlockState lowState = Blocks.DIAMOND_BLOCK.defaultBlockState();
+
+        ExtremeHeightProbeEntry high = writeSaveUnloadVerify(cache, highPos, highState, "m19_4_extreme_high_probe");
+        ExtremeHeightProbeEntry low = writeSaveUnloadVerify(cache, lowPos, lowState, "m19_4_extreme_low_probe");
+        return new ExtremeHeightProbeResult(high, low);
+    }
+
+    private static ExtremeHeightProbeEntry writeSaveUnloadVerify(ServerCubeCache cache, BlockPos pos, BlockState state, String reason) {
+        CubePos cubePos = CubePos.fromBlock(pos);
+        CubeMutationResult mutation = cache.access().setBlockState(pos, state, CubeMutationContext.command(true).withReason(reason));
+        if (!mutation.applied()) {
+            throw new IllegalStateException("Mutation rejected at " + pos + ": " + mutation.reason());
+        }
+        boolean saved = cache.forceSaveCube(cubePos);
+        boolean unloaded = cache.debugUnloadCube(cubePos, true);
+        BlockState reloaded = cache.readBlock(pos)
+                .orElseThrow(() -> new IllegalStateException("Reloaded block is missing at " + pos + ", cube=" + cubePos));
+        if (!reloaded.equals(state)) {
+            throw new IllegalStateException("Reload mismatch at " + pos + ": expected=" + blockStateName(state)
+                    + ", actual=" + blockStateName(reloaded));
+        }
+        return new ExtremeHeightProbeEntry(pos, cubePos, state, saved, unloaded, mutation.changed() || mutation.statusPromoted());
+    }
+
+    public static boolean isInsideVanillaShell(ServerLevel level, CubePos cubePos) {
+        Objects.requireNonNull(level, "level");
+        Objects.requireNonNull(cubePos, "cubePos");
+        return SETTINGS.isCubeInsideVanillaShell(cubePos)
+                && !level.isOutsideBuildHeight(cubePos.minBlockY())
+                && !level.isOutsideBuildHeight(cubePos.maxBlockY());
     }
 
     public static BlockState parseMarkerBlock(String marker) {
@@ -218,4 +280,30 @@ public final class CubicTestDimensionService {
 
     public record MaterializeResult(CubePos cubePos, int changedBlocks) {
     }
+
+    public record HeightReport(
+            int internalMinCubeY,
+            int internalMaxCubeY,
+            int internalMinBlockY,
+            int internalMaxBlockY,
+            int internalBlockHeight,
+            int vanillaShellMinY,
+            int vanillaShellMaxY,
+            int vanillaShellHeight,
+            int dimensionTypeMinY,
+            int dimensionTypeMaxY,
+            int dimensionTypeHeight,
+            boolean highProbeInsideInternal,
+            boolean lowProbeInsideInternal,
+            boolean highProbeInsideVanillaShell,
+            boolean lowProbeInsideVanillaShell
+    ) {
+    }
+
+    public record ExtremeHeightProbeResult(ExtremeHeightProbeEntry high, ExtremeHeightProbeEntry low) {
+    }
+
+    public record ExtremeHeightProbeEntry(BlockPos blockPos, CubePos cubePos, BlockState state, boolean saved, boolean unloaded, boolean changed) {
+    }
 }
+

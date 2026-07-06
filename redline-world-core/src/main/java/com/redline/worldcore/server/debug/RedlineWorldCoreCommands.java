@@ -838,6 +838,10 @@ public final class RedlineWorldCoreCommands {
                                 .executes(context -> cubicTestLeave(context.getSource())))
                         .then(Commands.literal("check_height")
                                 .executes(context -> cubicTestCheckHeight(context.getSource())))
+                        .then(Commands.literal("height")
+                                .executes(context -> cubicTestHeight(context.getSource())))
+                        .then(Commands.literal("extreme_height_probe")
+                                .executes(context -> cubicTestExtremeHeightProbe(context.getSource())))
                         .then(Commands.literal("virtual")
                                 .then(Commands.literal("set")
                                         .then(Commands.argument("x", IntegerArgumentType.integer())
@@ -1813,6 +1817,56 @@ public final class RedlineWorldCoreCommands {
                 + DimensionType.MIN_Y + ".." + DimensionType.MAX_Y
                 + " maxHeight=" + DimensionType.Y_SIZE), false);
         return 1;
+    }
+
+    private static int cubicTestHeight(CommandSourceStack source) {
+        ServerLevel cubic = CUBIC_TEST.level(source.getServer()).orElse(null);
+        if (cubic == null) {
+            source.sendFailure(Component.literal("Cubic test dimension is not registered in this world."));
+            return 0;
+        }
+        CubicTestDimensionService.HeightReport report = CUBIC_TEST.heightReport(cubic);
+        source.sendSuccess(() -> Component.literal("RWC true cubic internal height: cubes "
+                + report.internalMinCubeY() + ".." + report.internalMaxCubeY()
+                + ", blocks " + report.internalMinBlockY() + ".." + report.internalMaxBlockY()
+                + ", height=" + report.internalBlockHeight()), false);
+        source.sendSuccess(() -> Component.literal("RWC temporary vanilla shell: blocks "
+                + report.vanillaShellMinY() + ".." + report.vanillaShellMaxY()
+                + ", height=" + report.vanillaShellHeight()), false);
+        source.sendSuccess(() -> Component.literal("Minecraft DimensionType shell currently loaded: blocks "
+                + report.dimensionTypeMinY() + ".." + report.dimensionTypeMaxY()
+                + ", height=" + report.dimensionTypeHeight()), false);
+        source.sendSuccess(() -> Component.literal("Probe Y +" + CubicDimensionSettings.EXTREME_HIGH_TEST_Y
+                + ": internal=" + report.highProbeInsideInternal()
+                + ", vanillaShell=" + report.highProbeInsideVanillaShell()), false);
+        source.sendSuccess(() -> Component.literal("Probe Y " + CubicDimensionSettings.EXTREME_LOW_TEST_Y
+                + ": internal=" + report.lowProbeInsideInternal()
+                + ", vanillaShell=" + report.lowProbeInsideVanillaShell()), false);
+        return 1;
+    }
+
+    private static int cubicTestExtremeHeightProbe(CommandSourceStack source) {
+        try {
+            CubicTestDimensionService.ExtremeHeightProbeResult result = CUBIC_TEST.runExtremeHeightProbe(source.getServer());
+            source.sendSuccess(() -> Component.literal("M19.4 extreme height probe OK."), false);
+            sendExtremeHeightProbeEntry(source, "high", result.high());
+            sendExtremeHeightProbeEntry(source, "low", result.low());
+            source.sendSuccess(() -> Component.literal("These probes are outside the temporary vanilla shell but inside real cube storage."), false);
+            return 1;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("M19.4 extreme height probe failed: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static void sendExtremeHeightProbeEntry(CommandSourceStack source, String label, CubicTestDimensionService.ExtremeHeightProbeEntry entry) {
+        source.sendSuccess(() -> Component.literal("  " + label
+                + ": pos=" + formatBlock(entry.blockPos())
+                + ", cube=" + formatCube(entry.cubePos())
+                + ", state=" + CubicTestDimensionService.blockStateName(entry.state())
+                + ", changed=" + entry.changed()
+                + ", saved=" + entry.saved()
+                + ", unloaded=" + entry.unloaded()), false);
     }
 
     private static int cubicVirtualSet(CommandSourceStack source, int x, int y, int z, String blockName) {

@@ -35,11 +35,11 @@ public final class ServerCubeBlockGetter implements BlockGetter {
 
     @Override
     public int getHeight() {
-        return level.getHeight();
+        return cache.settings().blockHeight();
     }
 
     @Override
     public int getMinY() {
-        return level.getMinY();
+        return cache.settings().minBlockY();
     }
 }
