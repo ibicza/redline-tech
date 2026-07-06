@@ -3,55 +3,70 @@ package com.redline.worldcore.server.compat;
 import com.redline.worldcore.RedlineWorldCore;
 import com.redline.worldcore.api.dimension.CubicDimensionKeys;
 import com.redline.worldcore.api.pos.CubePos;
+import com.redline.worldcore.network.CubicExtremeInteractionPayload;
 import com.redline.worldcore.server.cube.ServerCubeCache;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.network.protocol.game.ServerboundUseItemOnPacket;
-import com.redline.worldcore.network.CubicExtremeInteractionPayload;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.ButtonBlock;
+import net.minecraft.world.level.block.ComparatorBlock;
+import net.minecraft.world.level.block.DoorBlock;
+import net.minecraft.world.level.block.FenceGateBlock;
+import net.minecraft.world.level.block.LeverBlock;
+import net.minecraft.world.level.block.RepeaterBlock;
+import net.minecraft.world.level.block.TrapDoorBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.level.material.FluidState;
-import net.minecraft.sounds.SoundEvents;
-import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 
+import java.util.LinkedHashSet;
 import java.util.Optional;
+import java.util.Set;
 
 /**
- * M19.6 temporary gameplay bridge for real cube height outside the vanilla DimensionType shell.
+ * Outside-vanilla-shell gameplay bridge for the true cube range.
  *
- * <p>The cube backend can already store/collide at Y=9000 and Y=-12000. Vanilla's normal packet handlers still reject
- * right-click placement before block/item code sees it, and the standard destroy path keeps leaning on the temporary
- * vanilla build height/section shell. This bridge handles only cubic_test positions that are inside the true internal
- * cube range but outside the temporary vanilla shell. Inside the shell vanilla remains in charge.</p>
- *
- * <p>Break hardness, block-specific placement properties and a real model renderer are intentionally still future work.
- * The goal here is to make ordinary hand packets mutate the cube backend instead of forcing the user to run debug
- * commands.</p>
+ * <p>M19.8.3 moves the bridge from "default block state" writes to vanilla-like state computation: BlockPlaceContext is
+ * built with the real hit vector, blocks use their own getStateForPlacement, and neighbor-dependent states are refreshed
+ * with Block.updateFromNeighbourShapes against the cube-backed Level reads.  This keeps fences, panes, stairs, doors and
+ * similar blocks much closer to vanilla without reintroducing LevelChunkSection ownership.</p>
  */
 public final class CubicExtremeGameplayBridge {
     private CubicExtremeGameplayBridge() {
     }
 
     public static void handleClientExtremeInteraction(ServerPlayer player, CubicExtremeInteractionPayload payload) {
+        NativePacketActionResult result;
         if (payload.action() == CubicExtremeInteractionPayload.Action.BREAK) {
-            NativePacketActionResult result = breakOutsideShell(player, payload.blockPos(), payload.direction(), "native_client_payload_break");
+            result = breakOutsideShell(player, payload.blockPos(), payload.direction(), "native_client_payload_break");
             logPayloadResult(player, "break", result);
             return;
         }
         if (payload.action() == CubicExtremeInteractionPayload.Action.PLACE) {
-            NativePacketActionResult result = placeOutsideShell(player, payload.hand(), payload.blockPos(), payload.direction(), "native_client_payload_place");
+            result = placeOutsideShell(player, payload.hand(), payload.blockPos(), payload.direction(), payload.hitLocation(), "native_client_payload_place");
             logPayloadResult(player, "place", result);
+            return;
+        }
+        if (payload.action() == CubicExtremeInteractionPayload.Action.USE) {
+            result = useOutsideShell(player, payload.hand(), payload.blockPos(), payload.direction(), payload.hitLocation(), "native_client_payload_use");
+            logPayloadResult(player, "use", result);
         }
     }
 
@@ -82,15 +97,12 @@ public final class CubicExtremeGameplayBridge {
         }
         InteractionHand hand = packet.getHand();
         ItemStack stack = player.getItemInHand(hand);
-        if (!isNativePlaceItem(stack)) {
-            return false;
-        }
-        if (!stack.isItemEnabled(level.enabledFeatures())) {
-            return false;
-        }
-
         BlockHitResult hit = packet.getHitResult();
-        NativePacketActionResult result = placeOutsideShell(player, hand, hit.getBlockPos(), hit.getDirection(), "native_packet_place");
+        if (isNativePlaceItem(stack)) {
+            NativePacketActionResult result = placeOutsideShell(player, hand, hit.getBlockPos(), hit.getDirection(), hit.getLocation(), "native_packet_place");
+            return result.consumed();
+        }
+        NativePacketActionResult result = useOutsideShell(player, hand, hit.getBlockPos(), hit.getDirection(), hit.getLocation(), "native_packet_use");
         return result.consumed();
     }
 
@@ -108,20 +120,37 @@ public final class CubicExtremeGameplayBridge {
             return NativePacketActionResult.consumed(false, "target_air_snapshot_forced");
         }
 
-        CubicClientSyncBridge.NativeBlockEditResult result = CubicClientSyncBridge.writeNativePlayerBlockEdit(
-                player,
-                pos,
-                Blocks.AIR.defaultBlockState(),
-                reason
-        );
-        if (result.applied() && result.changed()) {
-            playBreakSound(level, pos, previous);
-            CubicNativeFluidTicker.scheduleAround(level, pos);
+        Set<BlockPos> toRemove = linkedPositions(pos);
+        addDoubleBlockCounterpart(cache, previous, pos, toRemove);
+
+        boolean applied = false;
+        for (BlockPos removePos : toRemove) {
+            if (!shouldHandleOutsideShell(level, removePos)) {
+                continue;
+            }
+            Optional<BlockState> maybeState = cache.readOrGenerateBlock(removePos);
+            if (maybeState.isEmpty() || maybeState.get().isAir()) {
+                continue;
+            }
+            CubicClientSyncBridge.NativeBlockEditResult result = CubicClientSyncBridge.writeNativePlayerBlockEdit(
+                    player,
+                    removePos,
+                    Blocks.AIR.defaultBlockState(),
+                    reason
+            );
+            applied |= result.applied() && result.changed();
         }
-        return NativePacketActionResult.consumed(result.applied(), result.message());
+        if (applied) {
+            playBreakSound(level, pos, previous);
+            for (BlockPos removePos : toRemove) {
+                CubicNativeFluidTicker.scheduleAround(level, removePos);
+                refreshNativeShapesAround(level, player, removePos, reason + "_neighbor_refresh");
+            }
+        }
+        return NativePacketActionResult.consumed(applied, applied ? "removed=" + toRemove.size() : "remove_rejected");
     }
 
-    private static NativePacketActionResult placeOutsideShell(ServerPlayer player, InteractionHand hand, BlockPos clickedPos, Direction face, String reason) {
+    private static NativePacketActionResult placeOutsideShell(ServerPlayer player, InteractionHand hand, BlockPos clickedPos, Direction face, Vec3 hitLocation, String reason) {
         if (!(player.level() instanceof ServerLevel level) || !CubicDimensionKeys.isCubicTest(level)) {
             return NativePacketActionResult.pass("not_cubic_test");
         }
@@ -133,36 +162,259 @@ public final class CubicExtremeGameplayBridge {
             return NativePacketActionResult.consumed(false, "item_not_enabled");
         }
 
-        BlockPos placePos = clickedPos.relative(face);
-        if (!shouldHandleOutsideShell(level, clickedPos) && !shouldHandleOutsideShell(level, placePos)) {
+        BlockPos vanillaFallbackPlacePos = clickedPos.relative(face);
+        if (!shouldHandleOutsideShell(level, clickedPos) && !shouldHandleOutsideShell(level, vanillaFallbackPlacePos)) {
             return NativePacketActionResult.pass("inside_shell_or_outside_internal");
         }
 
-        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
-        if (!cache.settings().containsBlockY(placePos.getY())) {
-            return NativePacketActionResult.consumed(false, "place_outside_internal_range");
+        NativePlacement placement = nativePlacementState(player, hand, stack, clickedPos, face, hitLocation);
+        if (placement == null || placement.state().isAir()) {
+            return NativePacketActionResult.consumed(false, "placement_state_null_or_air");
         }
-        Optional<BlockState> existing = cache.readOrGenerateBlock(placePos);
-        if (existing.isPresent() && !existing.get().isAir()) {
-            CubicClientSyncBridge.forceNativeSectionSnapshot(player, CubePos.fromBlock(placePos), true);
-            return NativePacketActionResult.consumed(false, "place_target_not_air_snapshot_forced");
+        BlockPos placePos = placement.pos();
+        if (!shouldHandleOutsideShell(level, placePos)) {
+            return NativePacketActionResult.consumed(false, "place_pos_not_outside_shell");
         }
 
-        BlockState state = stateForNativePlace(stack);
-        CubicClientSyncBridge.NativeBlockEditResult result = CubicClientSyncBridge.writeNativePlayerBlockEdit(
-                player,
-                placePos,
-                state,
-                reason
-        );
-        if (result.applied() && result.changed()) {
-            consumeNativePlaceItem(player, hand, stack);
-            playPlaceSound(level, placePos, state);
-            if (!state.getFluidState().isEmpty()) {
-                CubicNativeFluidTicker.scheduleAround(level, placePos);
+        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
+        Optional<BlockState> existing = cache.readOrGenerateBlock(placePos);
+        if (existing.isPresent() && !existing.get().isAir() && (placement.context() == null || !existing.get().canBeReplaced(placement.context()))) {
+            CubicClientSyncBridge.forceNativeSectionSnapshot(player, CubePos.fromBlock(placePos), true);
+            return NativePacketActionResult.consumed(false, "place_target_not_replaceable_snapshot_forced");
+        }
+        if (requiresUpperHalf(placement.state())) {
+            BlockPos upperPos = placePos.above();
+            if (!shouldHandleOutsideShell(level, upperPos)) {
+                return NativePacketActionResult.consumed(false, "upper_half_outside_internal_or_inside_shell");
+            }
+            Optional<BlockState> upperExisting = cache.readOrGenerateBlock(upperPos);
+            if (upperExisting.isPresent() && !upperExisting.get().isAir()) {
+                return NativePacketActionResult.consumed(false, "upper_half_not_air");
             }
         }
-        return NativePacketActionResult.consumed(result.applied(), result.message());
+        if (placement.context() != null && !placement.state().canSurvive(level, placePos)) {
+            return NativePacketActionResult.consumed(false, "placement_cannot_survive");
+        }
+
+        boolean applied = writePlayerBlock(player, placePos, placement.state(), reason);
+        if (applied && requiresUpperHalf(placement.state())) {
+            BlockState upper = placement.state().setValue(BlockStateProperties.DOUBLE_BLOCK_HALF, DoubleBlockHalf.UPPER);
+            applied |= writePlayerBlock(player, placePos.above(), upper, reason + "_upper_half");
+        }
+        if (applied) {
+            consumeNativePlaceItem(player, hand, stack);
+            playPlaceSound(level, placePos, placement.state());
+            CubicNativeFluidTicker.scheduleAround(level, placePos);
+            refreshNativeShapesAround(level, player, placePos, reason + "_neighbor_refresh");
+            if (requiresUpperHalf(placement.state())) {
+                refreshNativeShapesAround(level, player, placePos.above(), reason + "_upper_neighbor_refresh");
+            }
+        }
+        return NativePacketActionResult.consumed(applied, applied ? "placed=" + placement.state() : "place_rejected");
+    }
+
+    private static NativePacketActionResult useOutsideShell(ServerPlayer player, InteractionHand hand, BlockPos clickedPos, Direction face, Vec3 hitLocation, String reason) {
+        if (!(player.level() instanceof ServerLevel level) || !CubicDimensionKeys.isCubicTest(level)) {
+            return NativePacketActionResult.pass("not_cubic_test");
+        }
+        if (!shouldHandleOutsideShell(level, clickedPos)) {
+            return NativePacketActionResult.pass("inside_shell_or_outside_internal");
+        }
+        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
+        BlockState state = cache.readOrGenerateBlock(clickedPos).orElseGet(() -> Blocks.AIR.defaultBlockState());
+        if (state.isAir()) {
+            return NativePacketActionResult.consumed(false, "use_target_air");
+        }
+
+        NativePacketActionResult useResult = applyNativeUse(player, level, cache, clickedPos, state, reason);
+        if (useResult.consumed()) {
+            return useResult;
+        }
+
+        return NativePacketActionResult.consumed(false, "no_native_use_handler");
+    }
+
+    private static NativePacketActionResult applyNativeUse(ServerPlayer player, ServerLevel level, ServerCubeCache cache, BlockPos clickedPos, BlockState state, String reason) {
+        Block block = state.getBlock();
+
+        if (block instanceof RepeaterBlock && state.hasProperty(RepeaterBlock.DELAY)) {
+            BlockState toggled = state.cycle(RepeaterBlock.DELAY);
+            boolean applied = writePlayerBlock(player, clickedPos, toggled, reason + "_repeater_delay");
+            if (applied) {
+                playComparatorClick(level, clickedPos);
+                refreshNativeShapesAround(level, player, clickedPos, reason + "_repeater_refresh");
+            }
+            return NativePacketActionResult.consumed(applied, applied ? "repeater_delay=" + toggled.getValue(RepeaterBlock.DELAY) : "repeater_delay_rejected");
+        }
+
+        if (block instanceof ComparatorBlock && state.hasProperty(ComparatorBlock.MODE)) {
+            BlockState toggled = state.cycle(ComparatorBlock.MODE);
+            boolean applied = writePlayerBlock(player, clickedPos, toggled, reason + "_comparator_mode");
+            if (applied) {
+                playComparatorClick(level, clickedPos);
+                refreshNativeShapesAround(level, player, clickedPos, reason + "_comparator_refresh");
+            }
+            return NativePacketActionResult.consumed(applied, applied ? "comparator_mode=" + toggled.getValue(ComparatorBlock.MODE) : "comparator_mode_rejected");
+        }
+
+        if (block instanceof LeverBlock && state.hasProperty(LeverBlock.POWERED)) {
+            boolean powered = state.getValue(LeverBlock.POWERED);
+            BlockState toggled = state.setValue(LeverBlock.POWERED, !powered);
+            boolean applied = writePlayerBlock(player, clickedPos, toggled, reason + "_lever_powered");
+            if (applied) {
+                playLeverSound(level, clickedPos, !powered);
+                refreshNativeShapesAround(level, player, clickedPos, reason + "_lever_refresh");
+            }
+            return NativePacketActionResult.consumed(applied, applied ? "lever_powered=" + !powered : "lever_toggle_rejected");
+        }
+
+        if (block instanceof ButtonBlock && state.hasProperty(ButtonBlock.POWERED)) {
+            if (state.getValue(ButtonBlock.POWERED)) {
+                return NativePacketActionResult.consumed(true, "button_already_powered");
+            }
+            BlockState toggled = state.setValue(ButtonBlock.POWERED, true);
+            boolean applied = writePlayerBlock(player, clickedPos, toggled, reason + "_button_press");
+            if (applied) {
+                playButtonSound(level, clickedPos, true);
+                refreshNativeShapesAround(level, player, clickedPos, reason + "_button_refresh");
+            }
+            return NativePacketActionResult.consumed(applied, applied ? "button_powered=true" : "button_press_rejected");
+        }
+
+        if (block instanceof DoorBlock && state.hasProperty(DoorBlock.OPEN)) {
+            if (state.is(Blocks.IRON_DOOR)) {
+                return NativePacketActionResult.consumed(false, "iron_door_requires_redstone");
+            }
+            boolean open = state.getValue(DoorBlock.OPEN);
+            boolean applied = toggleOpenPair(player, level, cache, clickedPos, state, !open, reason + "_door_toggle");
+            if (applied) {
+                playDoorSound(level, clickedPos, !open);
+                refreshNativeShapesAround(level, player, clickedPos, reason + "_door_refresh");
+            }
+            return NativePacketActionResult.consumed(applied, applied ? "door_open=" + !open : "door_toggle_rejected");
+        }
+
+        if (block instanceof TrapDoorBlock && state.hasProperty(TrapDoorBlock.OPEN)) {
+            if (state.is(Blocks.IRON_TRAPDOOR)) {
+                return NativePacketActionResult.consumed(false, "iron_trapdoor_requires_redstone");
+            }
+            boolean open = state.getValue(TrapDoorBlock.OPEN);
+            BlockState toggled = state.setValue(TrapDoorBlock.OPEN, !open);
+            boolean applied = writePlayerBlock(player, clickedPos, toggled, reason + "_trapdoor_toggle");
+            if (applied) {
+                playTrapdoorSound(level, clickedPos, !open);
+                refreshNativeShapesAround(level, player, clickedPos, reason + "_trapdoor_refresh");
+            }
+            return NativePacketActionResult.consumed(applied, applied ? "trapdoor_open=" + !open : "trapdoor_toggle_rejected");
+        }
+
+        if (block instanceof FenceGateBlock && state.hasProperty(FenceGateBlock.OPEN)) {
+            boolean open = state.getValue(FenceGateBlock.OPEN);
+            BlockState toggled = state.setValue(FenceGateBlock.OPEN, !open);
+            boolean applied = writePlayerBlock(player, clickedPos, toggled, reason + "_fence_gate_toggle");
+            if (applied) {
+                playFenceGateSound(level, clickedPos, !open);
+                refreshNativeShapesAround(level, player, clickedPos, reason + "_fence_gate_refresh");
+            }
+            return NativePacketActionResult.consumed(applied, applied ? "fence_gate_open=" + !open : "fence_gate_toggle_rejected");
+        }
+
+        return NativePacketActionResult.pass("no_specific_native_use_handler");
+    }
+
+    private static NativePlacement nativePlacementState(ServerPlayer player, InteractionHand hand, ItemStack stack, BlockPos clickedPos, Direction face, Vec3 hitLocation) {
+        if (!(player.level() instanceof ServerLevel level)) {
+            return null;
+        }
+        if (stack.is(Items.WATER_BUCKET)) {
+            return new NativePlacement(clickedPos.relative(face), Blocks.WATER.defaultBlockState(), null);
+        }
+        if (stack.is(Items.LAVA_BUCKET)) {
+            return new NativePlacement(clickedPos.relative(face), Blocks.LAVA.defaultBlockState(), null);
+        }
+        if (!(stack.getItem() instanceof BlockItem blockItem)) {
+            return null;
+        }
+        BlockHitResult hit = new BlockHitResult(hitLocation, face, clickedPos, false);
+        BlockPlaceContext context = new BlockPlaceContext(player, hand, stack, hit);
+        context = blockItem.updatePlacementContext(context);
+        if (context == null || !context.canPlace()) {
+            return null;
+        }
+        BlockState state = blockItem.getBlock().getStateForPlacement(context);
+        if (state == null) {
+            return null;
+        }
+        if (!state.hasProperty(BlockStateProperties.DOUBLE_BLOCK_HALF)) {
+            state = Block.updateFromNeighbourShapes(state, level, context.getClickedPos());
+        }
+        return new NativePlacement(context.getClickedPos(), state, context);
+    }
+
+    private static boolean writePlayerBlock(ServerPlayer player, BlockPos pos, BlockState state, String reason) {
+        CubicClientSyncBridge.NativeBlockEditResult result = CubicClientSyncBridge.writeNativePlayerBlockEdit(player, pos, state, reason);
+        return result.applied() && result.changed();
+    }
+
+    private static void refreshNativeShapesAround(ServerLevel level, ServerPlayer player, BlockPos origin, String reason) {
+        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
+        Set<BlockPos> toRefresh = linkedPositions(origin);
+        for (Direction direction : Direction.values()) {
+            BlockPos neighbor = origin.relative(direction);
+            toRefresh.add(neighbor);
+            for (Direction second : Direction.Plane.HORIZONTAL) {
+                toRefresh.add(neighbor.relative(second));
+            }
+        }
+        for (BlockPos pos : toRefresh) {
+            if (!shouldHandleOutsideShell(level, pos)) {
+                continue;
+            }
+            Optional<BlockState> maybeState = cache.readOrGenerateBlock(pos);
+            if (maybeState.isEmpty() || maybeState.get().isAir()) {
+                continue;
+            }
+            BlockState state = maybeState.get();
+            if (state.hasProperty(BlockStateProperties.DOUBLE_BLOCK_HALF)) {
+                CubicClientSyncBridge.forceNativeSectionSnapshot(player, CubePos.fromBlock(pos), false);
+                continue;
+            }
+            BlockState refreshed;
+            try {
+                refreshed = Block.updateFromNeighbourShapes(state, level, pos);
+            } catch (RuntimeException exception) {
+                RedlineWorldCore.LOGGER.debug("RWC native shape refresh skipped at {}: {}", pos, exception.toString());
+                continue;
+            }
+            if (!refreshed.equals(state)) {
+                CubicClientSyncBridge.writeNativeSystemBlockEdit(level, pos, refreshed, reason);
+                CubicNativeFluidTicker.scheduleAround(level, pos);
+            } else {
+                CubicClientSyncBridge.forceNativeSectionSnapshot(player, CubePos.fromBlock(pos), false);
+            }
+        }
+    }
+
+    private static boolean requiresUpperHalf(BlockState state) {
+        return state.hasProperty(BlockStateProperties.DOUBLE_BLOCK_HALF)
+                && state.getValue(BlockStateProperties.DOUBLE_BLOCK_HALF) == DoubleBlockHalf.LOWER;
+    }
+
+    private static void addDoubleBlockCounterpart(ServerCubeCache cache, BlockState state, BlockPos pos, Set<BlockPos> result) {
+        if (!state.hasProperty(BlockStateProperties.DOUBLE_BLOCK_HALF)) {
+            return;
+        }
+        BlockPos other = state.getValue(BlockStateProperties.DOUBLE_BLOCK_HALF) == DoubleBlockHalf.LOWER ? pos.above() : pos.below();
+        Optional<BlockState> maybeOther = cache.readOrGenerateBlock(other);
+        if (maybeOther.isPresent() && maybeOther.get().getBlock() == state.getBlock()) {
+            result.add(other);
+        }
+    }
+
+    private static Set<BlockPos> linkedPositions(BlockPos origin) {
+        LinkedHashSet<BlockPos> result = new LinkedHashSet<>();
+        result.add(origin.immutable());
+        return result;
     }
 
     private static boolean isNativePlaceItem(ItemStack stack) {
@@ -171,20 +423,6 @@ public final class CubicExtremeGameplayBridge {
         }
         Item item = stack.getItem();
         return item instanceof BlockItem || stack.is(Items.WATER_BUCKET) || stack.is(Items.LAVA_BUCKET);
-    }
-
-    private static BlockState stateForNativePlace(ItemStack stack) {
-        if (stack.is(Items.WATER_BUCKET)) {
-            return Blocks.WATER.defaultBlockState();
-        }
-        if (stack.is(Items.LAVA_BUCKET)) {
-            return Blocks.LAVA.defaultBlockState();
-        }
-        if (stack.getItem() instanceof BlockItem blockItem) {
-            Block block = blockItem.getBlock();
-            return block.defaultBlockState();
-        }
-        return Blocks.AIR.defaultBlockState();
     }
 
     private static void consumeNativePlaceItem(ServerPlayer player, InteractionHand hand, ItemStack stack) {
@@ -217,6 +455,42 @@ public final class CubicExtremeGameplayBridge {
                 (state.getSoundType().getVolume() + 1.0F) / 2.0F, state.getSoundType().getPitch() * 0.8F);
     }
 
+    private static boolean toggleOpenPair(ServerPlayer player, ServerLevel level, ServerCubeCache cache, BlockPos clickedPos, BlockState state, boolean open, String reason) {
+        boolean applied = writePlayerBlock(player, clickedPos, state.setValue(BlockStateProperties.OPEN, open), reason);
+        if (state.hasProperty(BlockStateProperties.DOUBLE_BLOCK_HALF)) {
+            BlockPos other = state.getValue(BlockStateProperties.DOUBLE_BLOCK_HALF) == DoubleBlockHalf.LOWER ? clickedPos.above() : clickedPos.below();
+            Optional<BlockState> otherState = cache.readOrGenerateBlock(other);
+            if (otherState.isPresent() && otherState.get().getBlock() == state.getBlock() && otherState.get().hasProperty(BlockStateProperties.OPEN)) {
+                applied |= writePlayerBlock(player, other, otherState.get().setValue(BlockStateProperties.OPEN, open), reason + "_pair");
+            }
+        }
+        return applied;
+    }
+
+    private static void playDoorSound(ServerLevel level, BlockPos pos, boolean open) {
+        level.playSound(null, pos, open ? SoundEvents.WOODEN_DOOR_OPEN : SoundEvents.WOODEN_DOOR_CLOSE, SoundSource.BLOCKS, 1.0F, 1.0F);
+    }
+
+    private static void playTrapdoorSound(ServerLevel level, BlockPos pos, boolean open) {
+        level.playSound(null, pos, open ? SoundEvents.WOODEN_TRAPDOOR_OPEN : SoundEvents.WOODEN_TRAPDOOR_CLOSE, SoundSource.BLOCKS, 1.0F, 1.0F);
+    }
+
+    private static void playFenceGateSound(ServerLevel level, BlockPos pos, boolean open) {
+        level.playSound(null, pos, open ? SoundEvents.FENCE_GATE_OPEN : SoundEvents.FENCE_GATE_CLOSE, SoundSource.BLOCKS, 1.0F, 1.0F);
+    }
+
+    private static void playLeverSound(ServerLevel level, BlockPos pos, boolean powered) {
+        level.playSound(null, pos, SoundEvents.LEVER_CLICK, SoundSource.BLOCKS, 0.3F, powered ? 0.6F : 0.5F);
+    }
+
+    private static void playButtonSound(ServerLevel level, BlockPos pos, boolean powered) {
+        level.playSound(null, pos, powered ? SoundEvents.WOODEN_BUTTON_CLICK_ON : SoundEvents.WOODEN_BUTTON_CLICK_OFF, SoundSource.BLOCKS, 0.3F, powered ? 0.6F : 0.5F);
+    }
+
+    private static void playComparatorClick(ServerLevel level, BlockPos pos) {
+        level.playSound(null, pos, SoundEvents.COMPARATOR_CLICK, SoundSource.BLOCKS, 0.3F, 0.55F);
+    }
+
     private static void logPayloadResult(ServerPlayer player, String action, NativePacketActionResult result) {
         if (!result.consumed()) {
             RedlineWorldCore.LOGGER.debug("RWC extreme {} payload passed for {}: {}", action, player.getScoreboardName(), result.message());
@@ -241,6 +515,9 @@ public final class CubicExtremeGameplayBridge {
     private static boolean shouldHandleOutsideShell(ServerLevel level, BlockPos pos) {
         ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
         return cache.settings().containsBlockY(pos.getY()) && !cache.settings().isBlockInsideVanillaShell(pos.getY());
+    }
+
+    private record NativePlacement(BlockPos pos, BlockState state, BlockPlaceContext context) {
     }
 
     private record NativePacketActionResult(boolean consumed, boolean applied, String message) {

@@ -12,7 +12,8 @@
   ],
   "client": [
     "client.ClientLevelCubeWorldQueryMixin",
-    "client.MultiPlayerGameModeCubicExtremeInteractionMixin"
+    "client.MultiPlayerGameModeCubicExtremeInteractionMixin",
+    "client.MinecraftCubicPickBlockMixin"
   ],
   "server": [],
   "injectors": {

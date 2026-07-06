@@ -91,6 +91,7 @@ public final class CubeDebugOverlay {
                 + " ack=" + sectionStats.ackEntriesSent() + " q=" + sectionStats.pendingAcks()
                 + " bridge=" + ClientCubeRenderBridge.bridgeReadySections()
                 + " mesh=" + ClientCubeNativeMeshBridge.meshCount()
+                + " render=" + ClientCubeNativeMeshBridge.renderedMeshesLastFrame()
                 + " bytes~=" + sectionStats.receivedBytesEstimate(), MUTED);
         y += 10;
         draw(graphics, minecraft, x, y, "entities tracked=" + payload.trackedEntities()
@@ -270,18 +271,19 @@ public final class CubeDebugOverlay {
                 + " scans=" + ClientCubeRenderBridge.scans()
                 + " cube=" + ClientCubeRenderBridge.lastPlayerCubeString(), MUTED);
         y += 10;
-        draw(graphics, minecraft, x, y, "nativeMesh ready=" + ClientCubeNativeMeshBridge.readyAroundPlayer()
+        draw(graphics, minecraft, x, y, "nativeRenderer ready=" + ClientCubeNativeMeshBridge.readyAroundPlayer()
                 + " meshes=" + ClientCubeNativeMeshBridge.meshCount()
                 + " queue=" + ClientCubeNativeMeshBridge.queueSize()
-                + " lastBlocks=" + ClientCubeNativeMeshBridge.blocksLastTick()
-                + " built=" + ClientCubeNativeMeshBridge.sectionsBuilt()
-                + " faces~=" + ClientCubeNativeMeshBridge.facesEstimated(), MUTED);
+                + " rendered=" + ClientCubeNativeMeshBridge.renderedMeshesLastFrame()
+                + " faces=" + ClientCubeNativeMeshBridge.solidFacesLastFrame() + "/" + ClientCubeNativeMeshBridge.translucentFacesLastFrame()
+                + " built=" + ClientCubeNativeMeshBridge.sectionsBuilt(), MUTED);
         y += 10;
-        draw(graphics, minecraft, x, y, "nativeMesh budget=" + ClientCubeNativeMeshBridge.budgetHits()
+        draw(graphics, minecraft, x, y, "nativeRenderer budget=" + ClientCubeNativeMeshBridge.budgetHits()
                 + " time=" + ClientCubeNativeMeshBridge.timeBudgetHits()
                 + " invalid=" + ClientCubeNativeMeshBridge.invalidations()
                 + " hashHits=" + ClientCubeNativeMeshBridge.hashHits()
-                + " scans=" + ClientCubeNativeMeshBridge.scans(), MUTED);
+                + " submits=" + ClientCubeNativeMeshBridge.renderSubmits()
+                + " enabled=" + ClientCubeNativeMeshBridge.enabled(), MUTED);
         y += 10;
         draw(graphics, minecraft, x, y, "writes player=" + payload.playerWritesSaved()
                 + " ignoredMat=" + payload.materializerWritesIgnored()

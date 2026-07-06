@@ -15,20 +15,21 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.neoforged.neoforge.client.network.ClientPacketDistributor;
 
 import java.util.Optional;
 
 /**
- * Client-side half of the M19.6.1 outside-shell interaction bridge.
+ * Client-side half of the outside-shell interaction bridge.
  *
- * <p>At extreme Y, vanilla client prediction can still produce particles/outline from the cube-backed read layer, while
- * its normal packet/placement path is not reliable because the hit is outside DimensionType height.  This bridge sends a
- * tiny RWC payload before vanilla rejects or no-ops the action.</p>
+ * <p>M19.8.3 extends the payload with an exact hit vector and a USE action.  The exact hit vector is required for
+ * vanilla placement math (stairs top/bottom, slabs, doors, panes, wall/fence shapes), and USE is needed because blocks
+ * like doors/trapdoors normally mutate themselves through vanilla Level#setBlock, which cannot write outside the temporary
+ * vanilla shell.</p>
  */
 public final class ClientCubicExtremeInteractionBridge {
     private ClientCubicExtremeInteractionBridge() {
@@ -43,22 +44,40 @@ public final class ClientCubicExtremeInteractionBridge {
         return true;
     }
 
+
+    public static boolean pickBlock(Minecraft minecraft) {
+        if (minecraft.gameMode == null || !(minecraft.hitResult instanceof BlockHitResult hit)) {
+            return false;
+        }
+        if (hit.getType() != HitResult.Type.BLOCK || !isOutsideShellCubeBlock(minecraft, hit.getBlockPos())) {
+            return false;
+        }
+        minecraft.gameMode.handlePickItemFromBlock(hit.getBlockPos(), false);
+        return true;
+    }
+
     public static InteractionResult useItemOn(Minecraft minecraft, InteractionHand hand, BlockHitResult hit) {
         if (minecraft.player == null) {
             return null;
         }
-        ItemStack stack = minecraft.player.getItemInHand(hand);
-        if (!isNativePlaceItem(stack)) {
-            return null;
-        }
         BlockPos clickedPos = hit.getBlockPos();
         BlockPos placePos = clickedPos.relative(hit.getDirection());
-        if (!isOutsideShellCubeBlock(minecraft, clickedPos) && !isOutsideShellAir(minecraft, placePos)) {
-            return null;
+        ItemStack stack = minecraft.player.getItemInHand(hand);
+
+        if (isNativePlaceItem(stack)) {
+            if (!isOutsideShellCubeBlock(minecraft, clickedPos) && !isOutsideShellAir(minecraft, placePos)) {
+                return null;
+            }
+            playLocalPlaceSound(minecraft, placePos, stack);
+            ClientPacketDistributor.sendToServer(CubicExtremeInteractionPayload.placeBlock(clickedPos, hit.getDirection(), hand, hit.getLocation()));
+            return InteractionResult.SUCCESS;
         }
-        playLocalPlaceSound(minecraft, placePos, stack);
-        ClientPacketDistributor.sendToServer(CubicExtremeInteractionPayload.placeBlock(clickedPos, hit.getDirection(), hand));
-        return InteractionResult.SUCCESS;
+
+        if (isOutsideShellCubeBlock(minecraft, clickedPos)) {
+            ClientPacketDistributor.sendToServer(CubicExtremeInteractionPayload.useBlock(clickedPos, hit.getDirection(), hand, hit.getLocation()));
+            return InteractionResult.SUCCESS;
+        }
+        return null;
     }
 
     private static boolean isNativePlaceItem(ItemStack stack) {

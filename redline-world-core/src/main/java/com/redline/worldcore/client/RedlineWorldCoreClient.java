@@ -13,10 +13,16 @@ import com.redline.worldcore.network.CubeSectionDeltaPayload;
 import com.redline.worldcore.network.CubeSectionSnapshotBatchPayload;
 import com.redline.worldcore.network.CubeSectionSnapshotPayload;
 import com.redline.worldcore.network.CubeSectionUnloadPayload;
+import com.mojang.brigadier.CommandDispatcher;
 import net.minecraft.client.Minecraft;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
+import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.common.ServerboundCustomPayloadPacket;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
+import net.neoforged.neoforge.client.event.SubmitCustomGeometryEvent;
 import net.neoforged.neoforge.client.event.RenderGuiEvent;
 import net.neoforged.neoforge.client.network.event.RegisterClientPayloadHandlersEvent;
 import net.neoforged.neoforge.common.NeoForge;
@@ -31,8 +37,39 @@ public final class RedlineWorldCoreClient {
         NeoForge.EVENT_BUS.addListener((ClientTickEvent.Post event) -> ClientDynamicLightLayer.onClientTick(event));
         NeoForge.EVENT_BUS.addListener((ClientTickEvent.Post event) -> ClientCubeRenderBridge.onClientTick(event));
         NeoForge.EVENT_BUS.addListener((ClientTickEvent.Post event) -> ClientCubeNativeMeshBridge.onClientTick(event));
+        NeoForge.EVENT_BUS.addListener((SubmitCustomGeometryEvent event) -> ClientCubeNativeMeshBridge.submitCustomGeometry(event));
+        NeoForge.EVENT_BUS.addListener((RegisterClientCommandsEvent event) -> registerClientCommands(event));
         NeoForge.EVENT_BUS.addListener((ClientTickEvent.Post event) -> flushSectionClientMessages());
         NeoForge.EVENT_BUS.addListener((RenderGuiEvent.Post event) -> CubeDebugOverlay.render(event));
+    }
+
+    private static void registerClientCommands(RegisterClientCommandsEvent event) {
+        CommandDispatcher<CommandSourceStack> dispatcher = event.getDispatcher();
+        dispatcher.register(Commands.literal("rwc_client")
+                .then(Commands.literal("native_renderer")
+                        .then(Commands.literal("status")
+                                .executes(context -> {
+                                    context.getSource().sendSuccess(() -> Component.literal("RWC native renderer: " + ClientCubeNativeMeshBridge.statusLine()), false);
+                                    return 1;
+                                }))
+                        .then(Commands.literal("reset")
+                                .executes(context -> {
+                                    ClientCubeNativeMeshBridge.resetAll("client_command");
+                                    context.getSource().sendSuccess(() -> Component.literal("RWC native renderer reset."), false);
+                                    return 1;
+                                }))
+                        .then(Commands.literal("enable")
+                                .executes(context -> {
+                                    ClientCubeNativeMeshBridge.setEnabled(true);
+                                    context.getSource().sendSuccess(() -> Component.literal("RWC native renderer enabled."), false);
+                                    return 1;
+                                }))
+                        .then(Commands.literal("disable")
+                                .executes(context -> {
+                                    ClientCubeNativeMeshBridge.setEnabled(false);
+                                    context.getSource().sendSuccess(() -> Component.literal("RWC native renderer disabled."), false);
+                                    return 1;
+                                }))));
     }
 
     private static void flushSectionClientMessages() {

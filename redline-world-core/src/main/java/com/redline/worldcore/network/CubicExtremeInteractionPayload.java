@@ -8,6 +8,7 @@ import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * Client -> server native interaction packet for cube-only blocks outside the temporary vanilla height shell.
@@ -24,14 +25,16 @@ public record CubicExtremeInteractionPayload(
         Action action,
         BlockPos blockPos,
         Direction direction,
-        InteractionHand hand
+        InteractionHand hand,
+        Vec3 hitLocation
 ) implements CustomPacketPayload {
     public static final Type<CubicExtremeInteractionPayload> TYPE = new Type<>(Identifier.fromNamespaceAndPath(RedlineWorldCore.MOD_ID, "cubic_extreme_interaction"));
     public static final StreamCodec<RegistryFriendlyByteBuf, CubicExtremeInteractionPayload> CODEC = StreamCodec.ofMember(CubicExtremeInteractionPayload::write, CubicExtremeInteractionPayload::read);
 
     public enum Action {
         BREAK,
-        PLACE
+        PLACE,
+        USE
     }
 
     public CubicExtremeInteractionPayload {
@@ -47,14 +50,21 @@ public record CubicExtremeInteractionPayload(
         if (hand == null) {
             throw new IllegalArgumentException("hand cannot be null");
         }
+        if (hitLocation == null) {
+            throw new IllegalArgumentException("hitLocation cannot be null");
+        }
     }
 
     public static CubicExtremeInteractionPayload breakBlock(BlockPos pos, Direction direction) {
-        return new CubicExtremeInteractionPayload(Action.BREAK, pos, direction, InteractionHand.MAIN_HAND);
+        return new CubicExtremeInteractionPayload(Action.BREAK, pos, direction, InteractionHand.MAIN_HAND, Vec3.atCenterOf(pos));
     }
 
-    public static CubicExtremeInteractionPayload placeBlock(BlockPos clickedPos, Direction direction, InteractionHand hand) {
-        return new CubicExtremeInteractionPayload(Action.PLACE, clickedPos, direction, hand);
+    public static CubicExtremeInteractionPayload placeBlock(BlockPos clickedPos, Direction direction, InteractionHand hand, Vec3 hitLocation) {
+        return new CubicExtremeInteractionPayload(Action.PLACE, clickedPos, direction, hand, hitLocation);
+    }
+
+    public static CubicExtremeInteractionPayload useBlock(BlockPos clickedPos, Direction direction, InteractionHand hand, Vec3 hitLocation) {
+        return new CubicExtremeInteractionPayload(Action.USE, clickedPos, direction, hand, hitLocation);
     }
 
     /**
@@ -81,6 +91,9 @@ public record CubicExtremeInteractionPayload(
         writeBlockPos32(buffer, blockPos);
         buffer.writeEnum(direction);
         buffer.writeEnum(hand);
+        buffer.writeDouble(hitLocation.x);
+        buffer.writeDouble(hitLocation.y);
+        buffer.writeDouble(hitLocation.z);
     }
 
     private static CubicExtremeInteractionPayload read(RegistryFriendlyByteBuf buffer) {
@@ -88,7 +101,8 @@ public record CubicExtremeInteractionPayload(
                 buffer.readEnum(Action.class),
                 readBlockPos32(buffer),
                 buffer.readEnum(Direction.class),
-                buffer.readEnum(InteractionHand.class)
+                buffer.readEnum(InteractionHand.class),
+                new Vec3(buffer.readDouble(), buffer.readDouble(), buffer.readDouble())
         );
     }
 }
