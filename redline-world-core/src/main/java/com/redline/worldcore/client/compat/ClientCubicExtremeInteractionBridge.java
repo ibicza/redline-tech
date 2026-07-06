@@ -1,0 +1,128 @@
+package com.redline.worldcore.client.compat;
+
+import com.redline.worldcore.api.dimension.CubicDimensionKeys;
+import com.redline.worldcore.api.generation.CubicDimensionSettings;
+import com.redline.worldcore.client.query.ClientCubeWorldQuery;
+import com.redline.worldcore.network.CubicExtremeInteractionPayload;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.phys.BlockHitResult;
+import net.neoforged.neoforge.client.network.ClientPacketDistributor;
+
+import java.util.Optional;
+
+/**
+ * Client-side half of the M19.6.1 outside-shell interaction bridge.
+ *
+ * <p>At extreme Y, vanilla client prediction can still produce particles/outline from the cube-backed read layer, while
+ * its normal packet/placement path is not reliable because the hit is outside DimensionType height.  This bridge sends a
+ * tiny RWC payload before vanilla rejects or no-ops the action.</p>
+ */
+public final class ClientCubicExtremeInteractionBridge {
+    private ClientCubicExtremeInteractionBridge() {
+    }
+
+    public static boolean startDestroyBlock(Minecraft minecraft, BlockPos pos, Direction direction) {
+        if (!isOutsideShellCubeBlock(minecraft, pos)) {
+            return false;
+        }
+        playLocalBreakSound(minecraft, pos);
+        ClientPacketDistributor.sendToServer(CubicExtremeInteractionPayload.breakBlock(pos, direction));
+        return true;
+    }
+
+    public static InteractionResult useItemOn(Minecraft minecraft, InteractionHand hand, BlockHitResult hit) {
+        if (minecraft.player == null) {
+            return null;
+        }
+        ItemStack stack = minecraft.player.getItemInHand(hand);
+        if (!isNativePlaceItem(stack)) {
+            return null;
+        }
+        BlockPos clickedPos = hit.getBlockPos();
+        BlockPos placePos = clickedPos.relative(hit.getDirection());
+        if (!isOutsideShellCubeBlock(minecraft, clickedPos) && !isOutsideShellAir(minecraft, placePos)) {
+            return null;
+        }
+        playLocalPlaceSound(minecraft, placePos, stack);
+        ClientPacketDistributor.sendToServer(CubicExtremeInteractionPayload.placeBlock(clickedPos, hit.getDirection(), hand));
+        return InteractionResult.SUCCESS;
+    }
+
+    private static boolean isNativePlaceItem(ItemStack stack) {
+        if (stack.isEmpty()) {
+            return false;
+        }
+        Item item = stack.getItem();
+        return item instanceof BlockItem || stack.is(Items.WATER_BUCKET) || stack.is(Items.LAVA_BUCKET);
+    }
+
+    private static void playLocalBreakSound(Minecraft minecraft, BlockPos pos) {
+        if (minecraft.level == null) {
+            return;
+        }
+        Optional<BlockState> state = ClientCubeWorldQuery.blockState(minecraft.level, pos);
+        if (state.isEmpty() || state.get().isAir()) {
+            return;
+        }
+        minecraft.level.playLocalSound(pos, state.get().getSoundType().getBreakSound(), SoundSource.BLOCKS,
+                (state.get().getSoundType().getVolume() + 1.0F) / 2.0F, state.get().getSoundType().getPitch() * 0.8F, false);
+    }
+
+    private static void playLocalPlaceSound(Minecraft minecraft, BlockPos pos, ItemStack stack) {
+        if (minecraft.level == null) {
+            return;
+        }
+        if (stack.is(Items.WATER_BUCKET)) {
+            minecraft.level.playLocalSound(pos, SoundEvents.BUCKET_EMPTY, SoundSource.BLOCKS, 1.0F, 1.0F, false);
+            return;
+        }
+        if (stack.is(Items.LAVA_BUCKET)) {
+            minecraft.level.playLocalSound(pos, SoundEvents.BUCKET_EMPTY_LAVA, SoundSource.BLOCKS, 1.0F, 1.0F, false);
+            return;
+        }
+        if (stack.getItem() instanceof BlockItem blockItem) {
+            BlockState state = blockItem.getBlock().defaultBlockState();
+            minecraft.level.playLocalSound(pos, state.getSoundType().getPlaceSound(), SoundSource.BLOCKS,
+                    (state.getSoundType().getVolume() + 1.0F) / 2.0F, state.getSoundType().getPitch() * 0.8F, false);
+        }
+    }
+
+    private static boolean isOutsideShellCubeBlock(Minecraft minecraft, BlockPos pos) {
+        ClientLevel level = minecraft.level;
+        if (level == null || !level.dimension().equals(CubicDimensionKeys.CUBIC_TEST_LEVEL)) {
+            return false;
+        }
+        CubicDimensionSettings settings = CubicDimensionSettings.defaults();
+        if (!settings.containsBlockY(pos.getY()) || settings.isBlockInsideVanillaShell(pos.getY())) {
+            return false;
+        }
+        Optional<BlockState> state = ClientCubeWorldQuery.blockState(level, pos);
+        return state.isPresent() && !state.get().isAir();
+    }
+
+    private static boolean isOutsideShellAir(Minecraft minecraft, BlockPos pos) {
+        ClientLevel level = minecraft.level;
+        if (level == null || !level.dimension().equals(CubicDimensionKeys.CUBIC_TEST_LEVEL)) {
+            return false;
+        }
+        CubicDimensionSettings settings = CubicDimensionSettings.defaults();
+        if (!settings.containsBlockY(pos.getY()) || settings.isBlockInsideVanillaShell(pos.getY())) {
+            return false;
+        }
+        Optional<BlockState> state = ClientCubeWorldQuery.blockState(level, pos);
+        return state.isEmpty() || state.get().isAir();
+    }
+}

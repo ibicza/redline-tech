@@ -34,6 +34,8 @@ import com.redline.worldcore.server.cube.CubeLoadingSnapshot;
 import com.redline.worldcore.server.cube.ServerCubeCache;
 import com.redline.worldcore.server.compat.CubicClientSyncBridge;
 import com.redline.worldcore.server.compat.CubicTestGameplayGuard;
+import com.redline.worldcore.server.compat.CubicNativeFluidTicker;
+import com.redline.worldcore.server.compat.CubicNativePassiveSpawner;
 import com.redline.worldcore.server.compat.WaterSurfaceSupportDebug;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.cube.access.CubeMutationContext;
@@ -83,6 +85,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.permissions.Permissions;
 import net.minecraft.util.Mth;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.phys.Vec3;
@@ -842,6 +845,59 @@ public final class RedlineWorldCoreCommands {
                                 .executes(context -> cubicTestHeight(context.getSource())))
                         .then(Commands.literal("extreme_height_probe")
                                 .executes(context -> cubicTestExtremeHeightProbe(context.getSource())))
+                        .then(Commands.literal("teleport_extreme")
+                                .then(Commands.literal("high")
+                                        .executes(context -> cubicTestTeleportExtreme(
+                                                context.getSource(),
+                                                "high",
+                                                CubicDimensionSettings.EXTREME_HIGH_TEST_Y
+                                        )))
+                                .then(Commands.literal("low")
+                                        .executes(context -> cubicTestTeleportExtreme(
+                                                context.getSource(),
+                                                "low",
+                                                CubicDimensionSettings.EXTREME_LOW_TEST_Y
+                                        )))
+                                .then(Commands.argument("y", IntegerArgumentType.integer())
+                                        .executes(context -> cubicTestTeleportExtreme(
+                                                context.getSource(),
+                                                "custom",
+                                                IntegerArgumentType.getInteger(context, "y")
+                                        ))))
+                        .then(Commands.literal("native_raycast")
+                                .executes(context -> cubicTestNativeRaycast(context.getSource())))
+                        .then(Commands.literal("collision_probe")
+                                .executes(context -> cubicTestCollisionProbe(context.getSource())))
+                        .then(Commands.literal("native_spawn")
+                                .then(Commands.literal("cow")
+                                        .executes(context -> cubicTestNativeSpawnCow(context.getSource()))))
+                        .then(Commands.literal("native_snapshot")
+                                .then(Commands.literal("current")
+                                        .executes(context -> cubicTestNativeSnapshotCurrent(context.getSource())))
+                                .then(Commands.literal("look")
+                                        .executes(context -> cubicTestNativeSnapshotLook(context.getSource()))))
+                        .then(Commands.literal("native_interact")
+                                .then(Commands.literal("break")
+                                        .executes(context -> cubicTestNativeBreak(context.getSource())))
+                                .then(Commands.literal("place")
+                                        .then(Commands.argument("block", StringArgumentType.word())
+                                                .executes(context -> cubicTestNativePlace(
+                                                        context.getSource(),
+                                                        StringArgumentType.getString(context, "block")
+                                                )))))
+                        .then(Commands.literal("materialize_extreme")
+                                .then(Commands.literal("high")
+                                        .executes(context -> cubicTestMaterializeExtreme(
+                                                context.getSource(),
+                                                "high",
+                                                CubicDimensionSettings.EXTREME_HIGH_TEST_Y
+                                        )))
+                                .then(Commands.literal("low")
+                                        .executes(context -> cubicTestMaterializeExtreme(
+                                                context.getSource(),
+                                                "low",
+                                                CubicDimensionSettings.EXTREME_LOW_TEST_Y
+                                        ))))
                         .then(Commands.literal("virtual")
                                 .then(Commands.literal("set")
                                         .then(Commands.argument("x", IntegerArgumentType.integer())
@@ -1293,6 +1349,14 @@ public final class RedlineWorldCoreCommands {
         source.sendSuccess(() -> Component.literal("RWC gameplay cube-first: entities " + entitySnapshot.tickingLine()), false);
         source.sendSuccess(() -> Component.literal(formatBlockEntitySnapshot("RWC gameplay block entities", blockEntitySnapshot)), false);
         source.sendSuccess(() -> Component.literal(formatScheduledTickSnapshot("RWC gameplay scheduled ticks", scheduledTickSnapshot)), false);
+        CubicNativeFluidTicker.Snapshot fluidSnapshot = CubicNativeFluidTicker.snapshot();
+        CubicNativePassiveSpawner.Snapshot spawnSnapshot = CubicNativePassiveSpawner.snapshot();
+        source.sendSuccess(() -> Component.literal("RWC native fluids: queue=" + fluidSnapshot.queue()
+                + ", spreadLastTick=" + fluidSnapshot.spreadLastTick()
+                + ", totalSpread=" + fluidSnapshot.totalSpread()), false);
+        source.sendSuccess(() -> Component.literal("RWC native passive spawner: attemptsLastTick=" + spawnSnapshot.attemptsLastTick()
+                + ", spawnedLastTick=" + spawnSnapshot.spawnedLastTick()
+                + ", totalSpawned=" + spawnSnapshot.totalSpawned()), false);
         source.sendSuccess(() -> Component.literal("RWC gameplay mode: cube ticket gates are authoritative for diagnostics; vanilla tick cancellation mixins are still staged behind this gate."), false);
         return entitySnapshot.trackedEntities() + blockEntitySnapshot.trackedBlockEntities() + scheduledTickSnapshot.dueTicks();
     }
@@ -1795,7 +1859,7 @@ public final class RedlineWorldCoreCommands {
 
         source.sendSuccess(() -> Component.literal("Current dimension: " + current.dimension().identifier()), false);
         source.sendSuccess(() -> Component.literal("Current vanilla build Y: "
-                + current.getMinY() + ".." + (current.getMaxY() - 1)
+                + current.getMinY() + ".." + current.getMaxY()
                 + " height=" + current.getHeight()), false);
 
         if (cubic == null) {
@@ -1805,7 +1869,7 @@ public final class RedlineWorldCoreCommands {
 
         source.sendSuccess(() -> Component.literal("Cubic test dimension: " + cubic.dimension().identifier()), false);
         source.sendSuccess(() -> Component.literal("Cubic test vanilla shell Y: "
-                + cubic.getMinY() + ".." + (cubic.getMaxY() - 1)
+                + cubic.getMinY() + ".." + cubic.getMaxY()
                 + " height=" + cubic.getHeight()), false);
         source.sendSuccess(() -> Component.literal("Cubic test generator: "
                 + cubic.getChunkSource().getGenerator().getClass().getName()), false);
@@ -1867,6 +1931,358 @@ public final class RedlineWorldCoreCommands {
                 + ", changed=" + entry.changed()
                 + ", saved=" + entry.saved()
                 + ", unloaded=" + entry.unloaded()), false);
+    }
+
+
+    private static int cubicTestTeleportExtreme(CommandSourceStack source, String label, int platformY) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            ServerLevel target = CUBIC_TEST.level(source.getServer()).orElse(null);
+            if (target == null) {
+                source.sendFailure(Component.literal("Cubic test dimension is not registered in this world."));
+                return 0;
+            }
+            if (!CubicTestDimensionService.SETTINGS.containsBlockY(platformY)) {
+                source.sendFailure(Component.literal("Y " + platformY + " is outside internal cubic height "
+                        + CubicTestDimensionService.SETTINGS.minBlockY() + ".." + CubicTestDimensionService.SETTINGS.maxBlockY()));
+                return 0;
+            }
+
+            ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(source.getServer());
+            ExtremePlatformResult platform = prepareExtremePlatform(cache, platformY, 0, 0, label);
+            player.teleportTo(target, 0.5D, platformY + 1.01D, 0.5D, Set.of(), player.getYRot(), player.getXRot(), true);
+            player.setDeltaMovement(Vec3.ZERO);
+            player.fallDistance = 0.0F;
+
+            int forced = 0;
+            for (CubePos cubePos : platform.touchedCubes()) {
+                CubicClientSyncBridge.ForcedNativeSectionResult forcedResult = CubicClientSyncBridge.forceNativeSectionSnapshot(player, cubePos, true);
+                if (forcedResult.queuedOrSent()) {
+                    forced++;
+                }
+            }
+            final int forcedSnapshots = forced;
+
+            CubePos playerCube = CubePos.fromBlock(player.blockPosition());
+            boolean outsideShell = !CubicTestDimensionService.SETTINGS.isBlockInsideVanillaShell(platformY);
+            source.sendSuccess(() -> Component.literal("M19.5 teleport_extreme " + label + " OK: player="
+                    + formatBlock(player.blockPosition()) + ", playerCube=" + formatCube(playerCube)
+                    + ", platformY=" + platformY
+                    + ", outsideVanillaShell=" + outsideShell), false);
+            source.sendSuccess(() -> Component.literal("  platform: written=" + platform.changedBlocks()
+                    + ", savedCubes=" + platform.savedCubes()
+                    + ", touchedCubes=" + platform.touchedCubes().size()
+                    + ", forcedNativeSnapshots=" + forcedSnapshots), false);
+            source.sendSuccess(() -> Component.literal("  next: run /rwc cubic_test collision_probe and /rwc cubic_test native_raycast"), false);
+            return 1;
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal("M19.5 teleport_extreme failed: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static ExtremePlatformResult prepareExtremePlatform(ServerCubeCache cache, int platformY, int centerX, int centerZ, String label) {
+        Set<CubePos> touched = new java.util.LinkedHashSet<>();
+        int changed = 0;
+        CubeMutationContext context = CubeMutationContext.command(true).withReason("m19_5_extreme_platform_" + label);
+        for (int z = centerZ - 3; z <= centerZ + 3; z++) {
+            for (int x = centerX - 3; x <= centerX + 3; x++) {
+                BlockPos pos = new BlockPos(x, platformY, z);
+                CubeMutationResult result = cache.access().setBlockState(pos, Blocks.STONE.defaultBlockState(), context);
+                if (!result.applied()) {
+                    throw new IllegalStateException("platform block rejected at " + formatBlock(pos) + ": " + result.reason());
+                }
+                touched.add(result.cubePos());
+                if (result.changed() || result.statusPromoted()) {
+                    changed++;
+                }
+            }
+        }
+        CubeMutationContext clearContext = CubeMutationContext.command(true).withReason("m19_5_extreme_platform_air_" + label);
+        for (int y = platformY + 1; y <= platformY + 4; y++) {
+            for (int z = centerZ - 2; z <= centerZ + 2; z++) {
+                for (int x = centerX - 2; x <= centerX + 2; x++) {
+                    BlockPos pos = new BlockPos(x, y, z);
+                    CubeMutationResult result = cache.access().setBlockState(pos, Blocks.AIR.defaultBlockState(), clearContext);
+                    if (!result.applied()) {
+                        throw new IllegalStateException("platform air clear rejected at " + formatBlock(pos) + ": " + result.reason());
+                    }
+                    touched.add(result.cubePos());
+                    if (result.changed() || result.statusPromoted()) {
+                        changed++;
+                    }
+                }
+            }
+        }
+        int saved = 0;
+        for (CubePos cubePos : touched) {
+            if (cache.forceSaveCube(cubePos)) {
+                saved++;
+            }
+        }
+        return new ExtremePlatformResult(Set.copyOf(touched), changed, saved);
+    }
+
+    private static int cubicTestNativeRaycast(CommandSourceStack source) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            if (!CubicDimensionKeys.isCubicTest(player.level())) {
+                source.sendFailure(Component.literal("Player must be in cubic_test."));
+                return 0;
+            }
+            NativeRaycastResult raycast = nativeRaycast(WorldCoreCubeLoading.cubicTestForServer(source.getServer()), player, 80.0D, true);
+            if (raycast.hitPos() == null) {
+                source.sendSuccess(() -> Component.literal("M19.5 native raycast: no cube block hit, lastAir="
+                        + formatNullableBlock(raycast.previousAirPos()) + ", samples=" + raycast.samples()), false);
+                return 0;
+            }
+            sendNativeRaycastResult(source, "M19.5 native raycast hit", raycast);
+            return 1;
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal("M19.5 native raycast failed: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int cubicTestCollisionProbe(CommandSourceStack source) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            if (!CubicDimensionKeys.isCubicTest(player.level())) {
+                source.sendFailure(Component.literal("Player must be in cubic_test."));
+                return 0;
+            }
+            ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(source.getServer());
+            BlockPos feet = BlockPos.containing(player.getX(), player.getY() + 0.05D, player.getZ());
+            BlockPos below = BlockPos.containing(player.getX(), player.getY() - 0.05D, player.getZ()).below();
+            BlockState feetState = cache.readOrGenerateBlock(feet).orElseGet(() -> Blocks.AIR.defaultBlockState());
+            BlockState belowState = cache.readOrGenerateBlock(below).orElseGet(() -> Blocks.AIR.defaultBlockState());
+            CubePos playerCube = CubePos.fromBlock(player.blockPosition());
+            CubePos belowCube = CubePos.fromBlock(below);
+            CubicClientSyncBridge.ForcedNativeSectionResult forcedCurrent = CubicClientSyncBridge.forceNativeSectionSnapshot(player, playerCube, true);
+            CubicClientSyncBridge.ForcedNativeSectionResult forcedBelow = CubicClientSyncBridge.forceNativeSectionSnapshot(player, belowCube, true);
+            source.sendSuccess(() -> Component.literal("M19.5 collision probe: player=" + formatBlock(player.blockPosition())
+                    + ", playerCube=" + formatCube(playerCube)
+                    + ", onGround=" + player.onGround()
+                    + ", delta=" + formatVec(player.getDeltaMovement())), false);
+            source.sendSuccess(() -> Component.literal("  feet=" + formatBlock(feet)
+                    + " state=" + CubicTestDimensionService.blockStateName(feetState)
+                    + ", below=" + formatBlock(below)
+                    + " state=" + CubicTestDimensionService.blockStateName(belowState)
+                    + ", belowCube=" + formatCube(belowCube)), false);
+            source.sendSuccess(() -> Component.literal("  nativeSnapshots: current=" + forcedCurrent.queuedOrSent()
+                    + ", below=" + forcedBelow.queuedOrSent()
+                    + ", outsideVanillaShell=" + !CubicTestDimensionService.SETTINGS.isBlockInsideVanillaShell(player.blockPosition().getY())), false);
+            return belowState.isAir() ? 0 : 1;
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal("M19.5 collision probe failed: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int cubicTestNativeSnapshotCurrent(CommandSourceStack source) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            if (!CubicDimensionKeys.isCubicTest(player.level())) {
+                source.sendFailure(Component.literal("Player must be in cubic_test."));
+                return 0;
+            }
+            CubePos cubePos = CubePos.fromBlock(player.blockPosition());
+            CubicClientSyncBridge.ForcedNativeSectionResult result = CubicClientSyncBridge.forceNativeSectionSnapshot(player, cubePos, true);
+            source.sendSuccess(() -> Component.literal("M19.5 native snapshot current: cube=" + formatCube(result.cubePos())
+                    + ", holderLoaded=" + result.holderLoaded()
+                    + ", queuedOrSent=" + result.queuedOrSent()
+                    + ", reason=" + result.reason()), false);
+            return result.queuedOrSent() ? 1 : 0;
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal("M19.5 native snapshot current failed: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int cubicTestNativeSnapshotLook(CommandSourceStack source) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            if (!CubicDimensionKeys.isCubicTest(player.level())) {
+                source.sendFailure(Component.literal("Player must be in cubic_test."));
+                return 0;
+            }
+            NativeRaycastResult raycast = nativeRaycast(WorldCoreCubeLoading.cubicTestForServer(source.getServer()), player, 80.0D, true);
+            BlockPos target = raycast.hitPos() != null ? raycast.hitPos() : raycast.previousAirPos();
+            if (target == null) {
+                source.sendFailure(Component.literal("No native raycast target found."));
+                return 0;
+            }
+            CubePos cubePos = CubePos.fromBlock(target);
+            CubicClientSyncBridge.ForcedNativeSectionResult result = CubicClientSyncBridge.forceNativeSectionSnapshot(player, cubePos, true);
+            source.sendSuccess(() -> Component.literal("M19.5 native snapshot look: block=" + formatBlock(target)
+                    + ", cube=" + formatCube(result.cubePos())
+                    + ", queuedOrSent=" + result.queuedOrSent()
+                    + ", reason=" + result.reason()), false);
+            return result.queuedOrSent() ? 1 : 0;
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal("M19.5 native snapshot look failed: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int cubicTestNativeBreak(CommandSourceStack source) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            if (!CubicDimensionKeys.isCubicTest(player.level())) {
+                source.sendFailure(Component.literal("Player must be in cubic_test."));
+                return 0;
+            }
+            ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(source.getServer());
+            NativeRaycastResult raycast = nativeRaycast(cache, player, 80.0D, true);
+            if (raycast.hitPos() == null) {
+                source.sendFailure(Component.literal("No native cube block hit to break."));
+                return 0;
+            }
+            CubeMutationResult mutation = cache.access().setBlockState(raycast.hitPos(), Blocks.AIR.defaultBlockState(),
+                    CubeMutationContext.playerEdit(true).withReason("m19_5_native_break_debug"));
+            if (!mutation.applied()) {
+                source.sendFailure(Component.literal("Native break rejected: " + mutation.reason()));
+                return 0;
+            }
+            boolean saved = cache.forceSaveCube(mutation.cubePos());
+            CubicClientSyncBridge.ForcedNativeSectionResult forced = CubicClientSyncBridge.forceNativeSectionSnapshot(player, mutation.cubePos(), true);
+            source.sendSuccess(() -> Component.literal("M19.5 native break: block=" + formatBlock(raycast.hitPos())
+                    + ", cube=" + formatCube(mutation.cubePos())
+                    + ", previous=" + CubicTestDimensionService.blockStateName(mutation.previousState())
+                    + ", changed=" + mutation.changed()
+                    + ", saved=" + saved
+                    + ", nativeSnapshot=" + forced.queuedOrSent()), false);
+            return mutation.changed() ? 1 : 0;
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal("M19.5 native break failed: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int cubicTestNativePlace(CommandSourceStack source, String blockName) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            if (!CubicDimensionKeys.isCubicTest(player.level())) {
+                source.sendFailure(Component.literal("Player must be in cubic_test."));
+                return 0;
+            }
+            BlockState state = CubicTestDimensionService.parseMarkerBlock(blockName);
+            if (state.isAir()) {
+                source.sendFailure(Component.literal("Use native_interact break for air."));
+                return 0;
+            }
+            ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(source.getServer());
+            NativeRaycastResult raycast = nativeRaycast(cache, player, 80.0D, true);
+            BlockPos placePos = raycast.previousAirPos();
+            if (placePos == null) {
+                source.sendFailure(Component.literal("No adjacent air position found for native place."));
+                return 0;
+            }
+            CubeMutationResult mutation = cache.access().setBlockState(placePos, state,
+                    CubeMutationContext.playerEdit(true).withReason("m19_5_native_place_debug"));
+            if (!mutation.applied()) {
+                source.sendFailure(Component.literal("Native place rejected: " + mutation.reason()));
+                return 0;
+            }
+            boolean saved = cache.forceSaveCube(mutation.cubePos());
+            CubicClientSyncBridge.ForcedNativeSectionResult forced = CubicClientSyncBridge.forceNativeSectionSnapshot(player, mutation.cubePos(), true);
+            source.sendSuccess(() -> Component.literal("M19.5 native place: block=" + formatBlock(placePos)
+                    + ", cube=" + formatCube(mutation.cubePos())
+                    + ", state=" + CubicTestDimensionService.blockStateName(state)
+                    + ", changed=" + mutation.changed()
+                    + ", saved=" + saved
+                    + ", nativeSnapshot=" + forced.queuedOrSent()), false);
+            return mutation.changed() ? 1 : 0;
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal("M19.5 native place failed: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int cubicTestNativeSpawnCow(CommandSourceStack source) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            if (!CubicDimensionKeys.isCubicTest(player.level())) {
+                source.sendFailure(Component.literal("Player must be in cubic_test."));
+                return 0;
+            }
+            boolean spawned = CubicNativePassiveSpawner.spawnDebugCow(player);
+            source.sendSuccess(() -> Component.literal("M19.7 native spawn cow: spawned=" + spawned
+                    + ", player=" + formatBlock(player.blockPosition())
+                    + ", outsideVanillaShell=" + !CubicTestDimensionService.SETTINGS.isBlockInsideVanillaShell(player.blockPosition().getY())), false);
+            return spawned ? 1 : 0;
+        } catch (Exception exception) {
+            source.sendFailure(Component.literal("M19.7 native spawn cow failed: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int cubicTestMaterializeExtreme(CommandSourceStack source, String label, int y) {
+        try {
+            ServerLevel target = CUBIC_TEST.level(source.getServer()).orElse(null);
+            if (target == null) {
+                source.sendFailure(Component.literal("Cubic test dimension is not registered in this world."));
+                return 0;
+            }
+            CubePos cubePos = CubePos.fromBlock(0, y, 0);
+            CUBIC_TEST.materializeVirtualCube(source.getServer(), target, cubePos);
+            source.sendFailure(Component.literal("M19.5 materialize_extreme " + label + " unexpectedly succeeded; outside-shell cubes must stay native-only."));
+            return 0;
+        } catch (IllegalArgumentException expected) {
+            source.sendSuccess(() -> Component.literal("M19.5 materialize_extreme " + label + " blocked as expected: " + expected.getMessage()), false);
+            return 1;
+        } catch (RuntimeException exception) {
+            source.sendFailure(Component.literal("M19.5 materialize_extreme failed unexpectedly: " + exception.getMessage()));
+            return 0;
+        }
+    }
+
+    private static NativeRaycastResult nativeRaycast(ServerCubeCache cache, ServerPlayer player, double maxDistance, boolean generateMissing) {
+        Vec3 start = player.getEyePosition();
+        Vec3 look = player.getLookAngle();
+        BlockPos previousAir = null;
+        BlockPos previousPos = null;
+        int samples = 0;
+        for (double distance = 0.0D; distance <= maxDistance; distance += 0.125D) {
+            BlockPos pos = BlockPos.containing(start.x + look.x * distance, start.y + look.y * distance, start.z + look.z * distance);
+            if (pos.equals(previousPos)) {
+                continue;
+            }
+            previousPos = pos;
+            samples++;
+            if (!CubicTestDimensionService.SETTINGS.containsBlockY(pos.getY())) {
+                continue;
+            }
+            Optional<BlockState> state = generateMissing ? cache.readOrGenerateBlock(pos) : cache.readLoadedBlock(pos);
+            if (state.isPresent() && !state.get().isAir()) {
+                return new NativeRaycastResult(pos, previousAir, state.get(), CubePos.fromBlock(pos), distance, samples);
+            }
+            previousAir = pos;
+        }
+        return new NativeRaycastResult(null, previousAir, Blocks.AIR.defaultBlockState(), null, maxDistance, samples);
+    }
+
+    private static void sendNativeRaycastResult(CommandSourceStack source, String prefix, NativeRaycastResult raycast) {
+        source.sendSuccess(() -> Component.literal(prefix + ": block=" + formatNullableBlock(raycast.hitPos())
+                + ", previousAir=" + formatNullableBlock(raycast.previousAirPos())
+                + ", cube=" + (raycast.cubePos() == null ? "none" : formatCube(raycast.cubePos()))
+                + ", state=" + CubicTestDimensionService.blockStateName(raycast.state())
+                + ", distance=" + String.format(Locale.ROOT, "%.2f", raycast.distance())
+                + ", samples=" + raycast.samples()), false);
+    }
+
+    private static String formatNullableBlock(BlockPos pos) {
+        return pos == null ? "none" : formatBlock(pos);
+    }
+
+    private static String formatVec(Vec3 vec) {
+        return String.format(Locale.ROOT, "%.3f %.3f %.3f", vec.x, vec.y, vec.z);
+    }
+
+    private record ExtremePlatformResult(Set<CubePos> touchedCubes, int changedBlocks, int savedCubes) {
+    }
+
+    private record NativeRaycastResult(BlockPos hitPos, BlockPos previousAirPos, BlockState state, CubePos cubePos, double distance, int samples) {
     }
 
     private static int cubicVirtualSet(CommandSourceStack source, int x, int y, int z, String blockName) {

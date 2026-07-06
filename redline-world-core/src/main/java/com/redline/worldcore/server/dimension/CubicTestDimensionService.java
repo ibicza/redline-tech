@@ -137,7 +137,7 @@ public final class CubicTestDimensionService {
 
         if (!isInsideVanillaShell(level, cubePos)) {
             throw new IllegalArgumentException("Cube " + cubePos + " is outside the temporary vanilla shell for "
-                    + level.dimension().identifier() + ": level=" + level.getMinY() + ".." + (level.getMaxY() - 1)
+                    + level.dimension().identifier() + ": level=" + level.getMinY() + ".." + level.getMaxY()
                     + ", configured shell=" + SETTINGS.vanillaShellMinY() + ".." + SETTINGS.vanillaShellMaxY()
                     + ". It still exists in cube-only storage; use native cube sync/render instead of vanilla materialization.");
         }
@@ -176,7 +176,7 @@ public final class CubicTestDimensionService {
                 SETTINGS.vanillaShellMaxY(),
                 SETTINGS.vanillaShellMaxY() - SETTINGS.vanillaShellMinY() + 1,
                 level.getMinY(),
-                level.getMaxY() - 1,
+                level.getMaxY(),
                 level.getHeight(),
                 SETTINGS.containsBlockY(CubicDimensionSettings.EXTREME_HIGH_TEST_Y),
                 SETTINGS.containsBlockY(CubicDimensionSettings.EXTREME_LOW_TEST_Y),

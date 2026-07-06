@@ -1,12 +1,13 @@
 package com.redline.worldcore.network;
 
 import com.redline.worldcore.server.compat.CubicClientSyncBridge;
+import com.redline.worldcore.server.compat.CubicExtremeGameplayBridge;
 import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 
 /** Registers RWC play payloads used by the client sync/debug layer. */
 public final class WorldCoreNetwork {
-    public static final String NETWORK_VERSION = "18.2.0";
+    public static final String NETWORK_VERSION = "19.6.2";
 
     private WorldCoreNetwork() {
     }
@@ -26,6 +27,11 @@ public final class WorldCoreNetwork {
         registrar.playToServer(ClientCubeSectionRequestPayload.TYPE, ClientCubeSectionRequestPayload.CODEC, (payload, context) -> {
             if (context.player() instanceof ServerPlayer serverPlayer) {
                 CubicClientSyncBridge.handleNativeSectionRequest(serverPlayer, payload);
+            }
+        });
+        registrar.playToServer(CubicExtremeInteractionPayload.TYPE, CubicExtremeInteractionPayload.CODEC, (payload, context) -> {
+            if (context.player() instanceof ServerPlayer serverPlayer) {
+                CubicExtremeGameplayBridge.handleClientExtremeInteraction(serverPlayer, payload);
             }
         });
     }

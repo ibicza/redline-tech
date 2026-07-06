@@ -15,6 +15,7 @@ import com.redline.worldcore.server.cube.CubeClientStage;
 import com.redline.worldcore.server.cube.CubeLoadingSnapshot;
 import com.redline.worldcore.server.cube.ServerCubeCache;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
+import com.redline.worldcore.server.cube.access.CubeMutationContext;
 import com.redline.worldcore.server.cube.access.CubeMutationResult;
 import com.redline.worldcore.server.dimension.CubicTestDimensionService;
 import com.redline.worldcore.server.entity.EntityCubeTracker;
@@ -1978,6 +1979,77 @@ public final class CubicClientSyncBridge {
         return true;
     }
 
+    /**
+     * M19.6 gameplay bridge for ordinary player packets outside the temporary vanilla shell.
+     *
+     * <p>Vanilla's use/break packet path rejects positions below/above {@code DimensionType} before normal placement
+     * reaches the block/item logic. For true cube-only height that is just a compatibility shell limit, not a world
+     * limit. This method writes directly into the cube backend, sends a native delta to nearby players and forces a
+     * repair snapshot back to the actor.</p>
+     */
+    public static NativeBlockEditResult writeNativePlayerBlockEdit(ServerPlayer player, BlockPos pos, BlockState state, String reason) {
+        if (!(player.level() instanceof ServerLevel level) || !isCubicTest(level)) {
+            return NativeBlockEditResult.rejected(pos, CubePos.fromBlock(pos), state, "player_not_in_cubic_test");
+        }
+        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
+        if (!cache.settings().containsBlockY(pos.getY())) {
+            return NativeBlockEditResult.rejected(pos, CubePos.fromBlock(pos), state, "outside_internal_range");
+        }
+        CubePos cubePos = CubePos.fromBlock(pos);
+        long baseHash = cache.holder(cubePos).map(CubeHolder::generationHash).orElse(Long.MIN_VALUE);
+        CubeMutationResult mutation = cache.mutateBlock(pos, state, CubeMutationContext.playerEdit(true).withReason(reason));
+        if (!mutation.applied()) {
+            return NativeBlockEditResult.rejected(pos, cubePos, state, mutation.reason());
+        }
+        long newHash = cache.holder(cubePos).map(CubeHolder::generationHash).orElse(baseHash);
+        boolean saved = cache.forceSaveCube(cubePos);
+        sendNativeSectionDelta(level, cubePos, baseHash, newHash, CubePos.localIndexFromBlock(pos.getX(), pos.getY(), pos.getZ()), state);
+        ForcedNativeSectionResult snapshot = forceNativeSectionSnapshot(player, cubePos, true);
+        playerWritesSaved++;
+        RuntimeProfiler.addCount("gameplay.native_player_edits", 1);
+        if (mutation.changed()) {
+            RuntimeProfiler.addCount("gameplay.native_player_edits_changed", 1);
+        }
+        return new NativeBlockEditResult(true, mutation.changed(), saved, snapshot.queuedOrSent(), pos, cubePos,
+                mutation.previousState(), state, reason, snapshot.reason());
+    }
+
+    /**
+     * M19.7 system-side native block edit used by cube-native gameplay bridges such as the temporary fluid ticker.
+     * Unlike player edits this has no single actor, so it sends native deltas to all nearby players and forces a repair
+     * snapshot only for players retaining that cube.
+     */
+    public static NativeBlockEditResult writeNativeSystemBlockEdit(ServerLevel level, BlockPos pos, BlockState state, String reason) {
+        if (!isCubicTest(level)) {
+            return NativeBlockEditResult.rejected(pos, CubePos.fromBlock(pos), state, "level_not_cubic_test");
+        }
+        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
+        if (!cache.settings().containsBlockY(pos.getY())) {
+            return NativeBlockEditResult.rejected(pos, CubePos.fromBlock(pos), state, "outside_internal_range");
+        }
+        CubePos cubePos = CubePos.fromBlock(pos);
+        long baseHash = cache.holder(cubePos).map(CubeHolder::generationHash).orElse(Long.MIN_VALUE);
+        CubeMutationResult mutation = cache.mutateBlock(pos, state, CubeMutationContext.internal(reason));
+        if (!mutation.applied()) {
+            return NativeBlockEditResult.rejected(pos, cubePos, state, mutation.reason());
+        }
+        long newHash = cache.holder(cubePos).map(CubeHolder::generationHash).orElse(baseHash);
+        boolean saved = cache.forceSaveCube(cubePos);
+        sendNativeSectionDelta(level, cubePos, baseHash, newHash, CubePos.localIndexFromBlock(pos.getX(), pos.getY(), pos.getZ()), state);
+        boolean repaired = false;
+        for (ServerPlayer target : level.players()) {
+            CubePos targetCube = CubePos.fromBlock(target.blockPosition());
+            if (isWithinNativeSectionRetainRadius(cubePos, targetCube)) {
+                repaired |= forceNativeSectionSnapshot(target, cubePos, false).queuedOrSent();
+            }
+        }
+        RuntimeProfiler.addCount("gameplay.native_system_edits", 1);
+        if (mutation.changed()) {
+            RuntimeProfiler.addCount("gameplay.native_system_edits_changed", 1);
+        }
+        return new NativeBlockEditResult(true, mutation.changed(), saved, repaired, pos, cubePos, mutation.previousState(), state, reason, "system_edit");
+    }
+
     public static void onVanillaBlockStateChanged(ServerLevel level, BlockPos pos, BlockState state) {
         if (!isCubicTest(level)) {
             return;
@@ -2032,6 +2104,62 @@ public final class CubicClientSyncBridge {
             RuntimeProfiler.addCount("client.native_section_delta_packets_sent", sent);
             RuntimeProfiler.addCount("client.native_section_delta_entries_sent", sent);
             RuntimeProfiler.addCount("client.native_section_delta_bytes_sent", payload.estimatedBytes() * sent);
+        }
+    }
+
+
+
+    /**
+     * M19.5 debug/interaction bridge: force a native cube-section snapshot to one player immediately.
+     *
+     * <p>This is intentionally native-only. It does not try to write the cube into the temporary vanilla shell, so it is
+     * safe for Y ranges outside the vanilla DimensionType height. The next real renderer can reuse this path when player
+     * interaction moves fully outside the shell.</p>
+     */
+    public static ForcedNativeSectionResult forceNativeSectionSnapshot(ServerPlayer player, CubePos cubePos, boolean forceRepair) {
+        if (!(player.level() instanceof ServerLevel level) || !isCubicTest(level)) {
+            return new ForcedNativeSectionResult(cubePos, false, false, false, "player_not_in_cubic_test");
+        }
+        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
+        Optional<CubeHolder> holder = cache.ensureLoadedForClient(cubePos, com.redline.worldcore.api.ticket.CubeTicketLevel.FULL);
+        if (holder.isEmpty()) {
+            return new ForcedNativeSectionResult(cubePos, false, false, false, "outside_internal_range_or_missing");
+        }
+        PlayerBridgeState state = PLAYER_STATES.computeIfAbsent(player.getUUID(), ignored -> new PlayerBridgeState());
+        long hash = holder.get().generationHash();
+        recordNativeReady(state, holder.get(), hash);
+        if (forceRepair) {
+            state.nativeSectionHashes.remove(cubePos);
+            state.sentNativeSectionHashes.remove(cubePos);
+            state.sentNativeSectionTicks.remove(cubePos);
+            state.unackedNativeSectionHashes.remove(cubePos);
+            state.ackedNativeSectionHashes.remove(cubePos);
+        }
+        enqueueNativeSectionSnapshot(state, cubePos, hash, true, forceRepair);
+        int queuedBefore = state.nativeSectionQueue.size();
+        prepareNativeSectionSnapshots(player, cache, state);
+        boolean preparedOrQueued = state.nativeSectionHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash
+                || state.sentNativeSectionHashes.getOrDefault(cubePos, Long.MIN_VALUE) == hash
+                || state.nativeSectionQueued.contains(cubePos);
+        return new ForcedNativeSectionResult(cubePos, true, preparedOrQueued, forceRepair, "ok queueBefore=" + queuedBefore);
+    }
+
+
+    public record NativeBlockEditResult(
+            boolean applied,
+            boolean changed,
+            boolean saved,
+            boolean nativeSnapshot,
+            BlockPos pos,
+            CubePos cubePos,
+            BlockState previous,
+            BlockState state,
+            String reason,
+            String message
+    ) {
+        public static NativeBlockEditResult rejected(BlockPos pos, CubePos cubePos, BlockState state, String message) {
+            return new NativeBlockEditResult(false, false, false, false, pos, cubePos, Blocks.AIR.defaultBlockState(), state,
+                    "rejected", message);
         }
     }
 
@@ -2116,6 +2244,9 @@ public final class CubicClientSyncBridge {
         NATIVE_RENDER,
         CUBE_ONLY,
         NATIVE_ONLY
+    }
+
+    public record ForcedNativeSectionResult(CubePos cubePos, boolean holderLoaded, boolean queuedOrSent, boolean forceRepair, String reason) {
     }
 
     private static final class PlayerBridgeState {

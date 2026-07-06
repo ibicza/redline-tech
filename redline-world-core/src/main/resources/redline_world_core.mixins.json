@@ -6,10 +6,13 @@
   "mixins": [
     "FlowingFluidWaterSurfaceSupportMixin",
     "LevelLiveBlockChangeCaptureMixin",
-    "LevelCubeWorldQueryMixin"
+    "LevelCubeWorldQueryMixin",
+    "EntityCubicBelowWorldGuardMixin",
+    "ServerGamePacketListenerCubicExtremeInteractionMixin"
   ],
   "client": [
-    "client.ClientLevelCubeWorldQueryMixin"
+    "client.ClientLevelCubeWorldQueryMixin",
+    "client.MultiPlayerGameModeCubicExtremeInteractionMixin"
   ],
   "server": [],
   "injectors": {
