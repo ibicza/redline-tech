@@ -32,6 +32,7 @@ public final class CubicNativePassiveSpawner {
     private static final EntityType<? extends Animal> COW = (EntityType<? extends Animal>) BuiltInRegistries.ENTITY_TYPE
             .getOptional(Identifier.fromNamespaceAndPath("minecraft", "cow"))
             .orElseThrow(() -> new IllegalStateException("Missing minecraft:cow entity type"));
+    private static final boolean AUTO_PASSIVE_SPAWNER_ENABLED = false;
     private static final int INTERVAL_TICKS = 200;
     private static final int MAX_ANIMALS_NEAR_PLAYER = 8;
     private static long totalAttempts;
@@ -45,6 +46,9 @@ public final class CubicNativePassiveSpawner {
     public static void onServerTick(ServerTickEvent.Post event) {
         attemptsLastTick = 0;
         spawnedLastTick = 0;
+        if (!AUTO_PASSIVE_SPAWNER_ENABLED) {
+            return;
+        }
         ServerLevel level = event.getServer().getLevel(CubicDimensionKeys.CUBIC_TEST_LEVEL);
         if (level == null || level.getGameTime() % INTERVAL_TICKS != 0L) {
             return;

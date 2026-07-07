@@ -14,6 +14,13 @@ import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.ButtonBlock;
+import net.minecraft.world.level.block.ComparatorBlock;
+import net.minecraft.world.level.block.DoorBlock;
+import net.minecraft.world.level.block.FenceGateBlock;
+import net.minecraft.world.level.block.LeverBlock;
+import net.minecraft.world.level.block.RepeaterBlock;
+import net.minecraft.world.level.block.TrapDoorBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
@@ -52,7 +59,7 @@ public final class ClientCubicExtremeInteractionBridge {
         if (hit.getType() != HitResult.Type.BLOCK || !isOutsideShellCubeBlock(minecraft, hit.getBlockPos())) {
             return false;
         }
-        minecraft.gameMode.handlePickItemFromBlock(hit.getBlockPos(), false);
+        ClientPacketDistributor.sendToServer(CubicExtremeInteractionPayload.pickBlock(hit.getBlockPos(), hit.getDirection()));
         return true;
     }
 
@@ -63,6 +70,16 @@ public final class ClientCubicExtremeInteractionBridge {
         BlockPos clickedPos = hit.getBlockPos();
         BlockPos placePos = clickedPos.relative(hit.getDirection());
         ItemStack stack = minecraft.player.getItemInHand(hand);
+
+        if (isOutsideShellCubeBlock(minecraft, clickedPos)) {
+            Optional<BlockState> clickedState = ClientCubeWorldQuery.blockState(minecraft.level, clickedPos);
+            // Vanilla tries block-use before item placement.  Keep that ordering for outside-shell interactive blocks too,
+            // otherwise levers/trapdoors/repeaters only work with an empty hand because BlockItem placement steals the click.
+            if (clickedState.isPresent() && isNativeUseCandidate(clickedState.get())) {
+                ClientPacketDistributor.sendToServer(CubicExtremeInteractionPayload.useBlock(clickedPos, hit.getDirection(), hand, hit.getLocation()));
+                return InteractionResult.SUCCESS;
+            }
+        }
 
         if (isNativePlaceItem(stack)) {
             if (!isOutsideShellCubeBlock(minecraft, clickedPos) && !isOutsideShellAir(minecraft, placePos)) {
@@ -78,6 +95,16 @@ public final class ClientCubicExtremeInteractionBridge {
             return InteractionResult.SUCCESS;
         }
         return null;
+    }
+
+    private static boolean isNativeUseCandidate(BlockState state) {
+        return state.getBlock() instanceof LeverBlock
+                || state.getBlock() instanceof ButtonBlock
+                || state.getBlock() instanceof RepeaterBlock
+                || state.getBlock() instanceof ComparatorBlock
+                || state.getBlock() instanceof DoorBlock
+                || state.getBlock() instanceof TrapDoorBlock
+                || state.getBlock() instanceof FenceGateBlock;
     }
 
     private static boolean isNativePlaceItem(ItemStack stack) {

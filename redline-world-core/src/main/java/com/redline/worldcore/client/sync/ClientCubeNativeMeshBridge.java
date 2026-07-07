@@ -343,13 +343,15 @@ public final class ClientCubeNativeMeshBridge {
 
             boolean rendered = false;
             boolean fluidPresent = false;
+            boolean fluidRendered = false;
             try {
                 FluidState fluid = state.getFluidState();
                 fluidPresent = !fluid.isEmpty();
                 if (fluidPresent && fluidRenderer != null) {
                     int beforeFluidQuads = task.quadCount();
                     fluidRenderer.tesselate(view, pos, task.fluidOutput, state, fluid);
-                    rendered |= task.quadCount() > beforeFluidQuads;
+                    fluidRendered = task.quadCount() > beforeFluidQuads;
+                    rendered |= fluidRendered;
                 }
                 if (state.getRenderShape() == RenderShape.MODEL) {
                     int beforeModelQuads = task.quadCount();
@@ -368,10 +370,10 @@ public final class ClientCubeNativeMeshBridge {
                 task.currentPos = null;
             }
 
-            // Vanilla FluidRenderer can legitimately decide that no face is visible when its view is missing a neighbor,
-            // and some outside-shell cases still end up with a fully invisible physical water block.  Keep a translucent
-            // cube-native fallback for exposed water/lava faces so fluids are always visible while the renderer matures.
-            if (fluidPresent) {
+            // Only use the crude translucent fallback if vanilla FluidRenderer emitted nothing at all.  Drawing fallback
+            // faces on top of successful fluid quads samples the whole block atlas with 0..1 UVs and creates the cursed
+            // blue texture-atlas mosaic that showed up in M19.8.4.
+            if (fluidPresent && !fluidRendered) {
                 buildFallbackFaces(sections, snapshot, state, localX, localY, localZ, worldX, worldY, worldZ, task);
                 rendered = true;
             }
@@ -701,7 +703,7 @@ public final class ClientCubeNativeMeshBridge {
                                    int light0, int light1, int light2, int light3, int overlay) implements NativeRenderableQuad {
         private static NativeBakedQuad copy(float x, float y, float z, BakedQuad quad, QuadInstance instance) {
             return new NativeBakedQuad(x, y, z, quad,
-                    instance.getColor(0), instance.getColor(1), instance.getColor(2), instance.getColor(3),
+                    forceVisibleAlpha(instance.getColor(0)), forceVisibleAlpha(instance.getColor(1)), forceVisibleAlpha(instance.getColor(2)), forceVisibleAlpha(instance.getColor(3)),
                     instance.getLightCoordsWithEmission(0, quad.materialInfo().lightEmission()),
                     instance.getLightCoordsWithEmission(1, quad.materialInfo().lightEmission()),
                     instance.getLightCoordsWithEmission(2, quad.materialInfo().lightEmission()),
@@ -716,6 +718,10 @@ public final class ClientCubeNativeMeshBridge {
             emitVertex(pose, consumer, 1, color1, light1, normal);
             emitVertex(pose, consumer, 2, color2, light2, normal);
             emitVertex(pose, consumer, 3, color3, light3, normal);
+        }
+
+        private static int forceVisibleAlpha(int color) {
+            return (color & 0xFF000000) == 0 ? (color | 0xFF000000) : color;
         }
 
         private void emitVertex(PoseStack.Pose pose, VertexConsumer consumer, int index, int color, int light, Vector3fc normal) {
@@ -753,9 +759,19 @@ public final class ClientCubeNativeMeshBridge {
 
         @Override
         public VertexConsumer addVertex(float x, float y, float z) {
-            this.x = x;
-            this.y = y;
-            this.z = z;
+            // FluidRenderer emits coordinates local to the 16x16x16 render section (pos & 15), while our native renderer
+            // stores world-space meshes.  Until M19.8.5 these local vertices were kept as-is, so water at Y=9000 was
+            // actually submitted near Y=8/9 and became invisible from the real camera.
+            BlockPos pos = task.currentPos;
+            if (pos != null) {
+                this.x = (pos.getX() & ~CubePos.MASK) + x;
+                this.y = (pos.getY() & ~CubePos.MASK) + y;
+                this.z = (pos.getZ() & ~CubePos.MASK) + z;
+            } else {
+                this.x = x;
+                this.y = y;
+                this.z = z;
+            }
             return this;
         }
 
@@ -866,10 +882,11 @@ public final class ClientCubeNativeMeshBridge {
                           float cx, float cy, float cz,
                           float dx, float dy, float dz,
                           float nx, float ny, float nz) {
+            // Fallback is color/debug geometry, not texture geometry.  Keep UV pinned to avoid sampling the whole block atlas.
             vertex(pose, consumer, ax, ay, az, 0.0F, 0.0F, nx, ny, nz);
-            vertex(pose, consumer, bx, by, bz, 1.0F, 0.0F, nx, ny, nz);
-            vertex(pose, consumer, cx, cy, cz, 1.0F, 1.0F, nx, ny, nz);
-            vertex(pose, consumer, dx, dy, dz, 0.0F, 1.0F, nx, ny, nz);
+            vertex(pose, consumer, bx, by, bz, 0.0F, 0.0F, nx, ny, nz);
+            vertex(pose, consumer, cx, cy, cz, 0.0F, 0.0F, nx, ny, nz);
+            vertex(pose, consumer, dx, dy, dz, 0.0F, 0.0F, nx, ny, nz);
         }
 
         private void vertex(PoseStack.Pose pose, VertexConsumer consumer, float vx, float vy, float vz, float u, float v, float nx, float ny, float nz) {

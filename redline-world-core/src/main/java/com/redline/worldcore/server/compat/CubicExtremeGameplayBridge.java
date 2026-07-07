@@ -32,6 +32,7 @@ import net.minecraft.world.level.block.TrapDoorBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
+import net.minecraft.world.level.block.state.properties.DoorHingeSide;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -67,6 +68,11 @@ public final class CubicExtremeGameplayBridge {
         if (payload.action() == CubicExtremeInteractionPayload.Action.USE) {
             result = useOutsideShell(player, payload.hand(), payload.blockPos(), payload.direction(), payload.hitLocation(), "native_client_payload_use");
             logPayloadResult(player, "use", result);
+            return;
+        }
+        if (payload.action() == CubicExtremeInteractionPayload.Action.PICK_BLOCK) {
+            result = pickBlockOutsideShell(player, payload.blockPos(), "native_client_payload_pick");
+            logPayloadResult(player, "pick", result);
         }
     }
 
@@ -145,6 +151,7 @@ public final class CubicExtremeGameplayBridge {
             for (BlockPos removePos : toRemove) {
                 CubicNativeFluidTicker.scheduleAround(level, removePos);
                 refreshNativeShapesAround(level, player, removePos, reason + "_neighbor_refresh");
+                CubicNativeRedstoneBridge.refreshAround(level, removePos, reason + "_redstone_refresh");
             }
         }
         return NativePacketActionResult.consumed(applied, applied ? "removed=" + toRemove.size() : "remove_rejected");
@@ -206,11 +213,38 @@ public final class CubicExtremeGameplayBridge {
             playPlaceSound(level, placePos, placement.state());
             CubicNativeFluidTicker.scheduleAround(level, placePos);
             refreshNativeShapesAround(level, player, placePos, reason + "_neighbor_refresh");
+            CubicNativeRedstoneBridge.refreshAround(level, placePos, reason + "_redstone_refresh");
             if (requiresUpperHalf(placement.state())) {
                 refreshNativeShapesAround(level, player, placePos.above(), reason + "_upper_neighbor_refresh");
+                CubicNativeRedstoneBridge.refreshAround(level, placePos.above(), reason + "_upper_redstone_refresh");
             }
         }
         return NativePacketActionResult.consumed(applied, applied ? "placed=" + placement.state() : "place_rejected");
+    }
+
+    private static NativePacketActionResult pickBlockOutsideShell(ServerPlayer player, BlockPos pos, String reason) {
+        if (!(player.level() instanceof ServerLevel level) || !CubicDimensionKeys.isCubicTest(level)) {
+            return NativePacketActionResult.pass("not_cubic_test");
+        }
+        if (!shouldHandleOutsideShell(level, pos)) {
+            return NativePacketActionResult.pass("inside_shell_or_outside_internal");
+        }
+        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
+        BlockState state = cache.readOrGenerateBlock(pos).orElseGet(() -> Blocks.AIR.defaultBlockState());
+        if (state.isAir()) {
+            return NativePacketActionResult.consumed(false, "pick_target_air");
+        }
+        ItemStack clone = state.getCloneItemStack(level, pos, player.getAbilities().instabuild);
+        if (clone.isEmpty()) {
+            Item item = state.getBlock().asItem();
+            if (item == Items.AIR) {
+                return NativePacketActionResult.consumed(false, "pick_no_item");
+            }
+            clone = new ItemStack(item);
+        }
+        player.getInventory().addAndPickItem(clone);
+        player.containerMenu.broadcastChanges();
+        return NativePacketActionResult.consumed(true, "picked=" + clone.getHoverName().getString());
     }
 
     private static NativePacketActionResult useOutsideShell(ServerPlayer player, InteractionHand hand, BlockPos clickedPos, Direction face, Vec3 hitLocation, String reason) {
@@ -243,6 +277,7 @@ public final class CubicExtremeGameplayBridge {
             if (applied) {
                 playComparatorClick(level, clickedPos);
                 refreshNativeShapesAround(level, player, clickedPos, reason + "_repeater_refresh");
+                CubicNativeRedstoneBridge.refreshAround(level, clickedPos, reason + "_repeater_redstone");
             }
             return NativePacketActionResult.consumed(applied, applied ? "repeater_delay=" + toggled.getValue(RepeaterBlock.DELAY) : "repeater_delay_rejected");
         }
@@ -253,6 +288,7 @@ public final class CubicExtremeGameplayBridge {
             if (applied) {
                 playComparatorClick(level, clickedPos);
                 refreshNativeShapesAround(level, player, clickedPos, reason + "_comparator_refresh");
+                CubicNativeRedstoneBridge.refreshAround(level, clickedPos, reason + "_comparator_redstone");
             }
             return NativePacketActionResult.consumed(applied, applied ? "comparator_mode=" + toggled.getValue(ComparatorBlock.MODE) : "comparator_mode_rejected");
         }
@@ -264,6 +300,7 @@ public final class CubicExtremeGameplayBridge {
             if (applied) {
                 playLeverSound(level, clickedPos, !powered);
                 refreshNativeShapesAround(level, player, clickedPos, reason + "_lever_refresh");
+                CubicNativeRedstoneBridge.refreshAround(level, clickedPos, reason + "_lever_redstone");
             }
             return NativePacketActionResult.consumed(applied, applied ? "lever_powered=" + !powered : "lever_toggle_rejected");
         }
@@ -277,6 +314,7 @@ public final class CubicExtremeGameplayBridge {
             if (applied) {
                 playButtonSound(level, clickedPos, true);
                 refreshNativeShapesAround(level, player, clickedPos, reason + "_button_refresh");
+                CubicNativeRedstoneBridge.refreshAround(level, clickedPos, reason + "_button_redstone");
             }
             return NativePacketActionResult.consumed(applied, applied ? "button_powered=true" : "button_press_rejected");
         }
@@ -290,6 +328,7 @@ public final class CubicExtremeGameplayBridge {
             if (applied) {
                 playDoorSound(level, clickedPos, !open);
                 refreshNativeShapesAround(level, player, clickedPos, reason + "_door_refresh");
+                CubicNativeRedstoneBridge.refreshAround(level, clickedPos, reason + "_door_redstone");
             }
             return NativePacketActionResult.consumed(applied, applied ? "door_open=" + !open : "door_toggle_rejected");
         }
@@ -304,6 +343,7 @@ public final class CubicExtremeGameplayBridge {
             if (applied) {
                 playTrapdoorSound(level, clickedPos, !open);
                 refreshNativeShapesAround(level, player, clickedPos, reason + "_trapdoor_refresh");
+                CubicNativeRedstoneBridge.refreshAround(level, clickedPos, reason + "_trapdoor_redstone");
             }
             return NativePacketActionResult.consumed(applied, applied ? "trapdoor_open=" + !open : "trapdoor_toggle_rejected");
         }
@@ -315,6 +355,7 @@ public final class CubicExtremeGameplayBridge {
             if (applied) {
                 playFenceGateSound(level, clickedPos, !open);
                 refreshNativeShapesAround(level, player, clickedPos, reason + "_fence_gate_refresh");
+                CubicNativeRedstoneBridge.refreshAround(level, clickedPos, reason + "_fence_gate_redstone");
             }
             return NativePacketActionResult.consumed(applied, applied ? "fence_gate_open=" + !open : "fence_gate_toggle_rejected");
         }
@@ -341,6 +382,14 @@ public final class CubicExtremeGameplayBridge {
         if (context == null || !context.canPlace()) {
             return null;
         }
+
+        // Do not call DoorBlock#getStateForPlacement outside the vanilla shell.  Vanilla checks level.getMaxY(), which is
+        // still the temporary DimensionType shell max and therefore returns null for Y=9000/-12000.  Build the same core
+        // door state manually against the cube backend instead.
+        if (blockItem.getBlock() instanceof DoorBlock doorBlock) {
+            return nativeDoorPlacement(level, player, context, doorBlock);
+        }
+
         BlockState state = blockItem.getBlock().getStateForPlacement(context);
         if (state == null) {
             return null;
@@ -349,6 +398,80 @@ public final class CubicExtremeGameplayBridge {
             state = Block.updateFromNeighbourShapes(state, level, context.getClickedPos());
         }
         return new NativePlacement(context.getClickedPos(), state, context);
+    }
+
+    private static NativePlacement nativeDoorPlacement(ServerLevel level, ServerPlayer player, BlockPlaceContext context, DoorBlock doorBlock) {
+        BlockPos placePos = context.getClickedPos();
+        BlockPos upperPos = placePos.above();
+        ServerCubeCache cache = WorldCoreCubeLoading.cubicTestForServer(level.getServer());
+        if (!cache.settings().containsBlockY(placePos.getY()) || !cache.settings().containsBlockY(upperPos.getY())) {
+            return null;
+        }
+        if (cache.settings().isBlockInsideVanillaShell(placePos.getY()) || cache.settings().isBlockInsideVanillaShell(upperPos.getY())) {
+            return null;
+        }
+        BlockState upperExisting = cache.readOrGenerateBlock(upperPos).orElseGet(() -> Blocks.AIR.defaultBlockState());
+        if (!upperExisting.canBeReplaced(context)) {
+            return null;
+        }
+        Direction facing = player.getDirection();
+        DoorHingeSide hinge = nativeDoorHinge(cache, context, placePos, facing);
+        boolean powered = nativeHasAdjacentPower(cache, placePos) || nativeHasAdjacentPower(cache, upperPos);
+        BlockState state = doorBlock.defaultBlockState()
+                .setValue(DoorBlock.FACING, facing)
+                .setValue(DoorBlock.HINGE, hinge)
+                .setValue(DoorBlock.POWERED, powered)
+                .setValue(DoorBlock.OPEN, powered)
+                .setValue(DoorBlock.HALF, DoubleBlockHalf.LOWER);
+        return new NativePlacement(placePos, state, context);
+    }
+
+    private static DoorHingeSide nativeDoorHinge(ServerCubeCache cache, BlockPlaceContext context, BlockPos pos, Direction facing) {
+        BlockPos above = pos.above();
+        Direction left = facing.getCounterClockWise();
+        Direction right = facing.getClockWise();
+        BlockPos leftPos = pos.relative(left);
+        BlockPos rightPos = pos.relative(right);
+        BlockState leftState = cache.readOrGenerateBlock(leftPos).orElseGet(() -> Blocks.AIR.defaultBlockState());
+        BlockState leftAboveState = cache.readOrGenerateBlock(above.relative(left)).orElseGet(() -> Blocks.AIR.defaultBlockState());
+        BlockState rightState = cache.readOrGenerateBlock(rightPos).orElseGet(() -> Blocks.AIR.defaultBlockState());
+        BlockState rightAboveState = cache.readOrGenerateBlock(above.relative(right)).orElseGet(() -> Blocks.AIR.defaultBlockState());
+
+        int balance = (leftState.isCollisionShapeFullBlock(context.getLevel(), leftPos) ? -1 : 0)
+                + (leftAboveState.isCollisionShapeFullBlock(context.getLevel(), above.relative(left)) ? -1 : 0)
+                + (rightState.isCollisionShapeFullBlock(context.getLevel(), rightPos) ? 1 : 0)
+                + (rightAboveState.isCollisionShapeFullBlock(context.getLevel(), above.relative(right)) ? 1 : 0);
+        boolean doorLeft = leftState.getBlock() instanceof DoorBlock && leftState.hasProperty(DoorBlock.HALF) && leftState.getValue(DoorBlock.HALF) == DoubleBlockHalf.LOWER;
+        boolean doorRight = rightState.getBlock() instanceof DoorBlock && rightState.hasProperty(DoorBlock.HALF) && rightState.getValue(DoorBlock.HALF) == DoubleBlockHalf.LOWER;
+        if ((!doorLeft || doorRight) && balance <= 0) {
+            if ((!doorRight || doorLeft) && balance >= 0) {
+                int stepX = facing.getStepX();
+                int stepZ = facing.getStepZ();
+                Vec3 click = context.getClickLocation();
+                double clickX = click.x - (double) pos.getX();
+                double clickZ = click.z - (double) pos.getZ();
+                boolean rightHinge = stepX < 0 && clickZ < 0.5D
+                        || stepX > 0 && clickZ > 0.5D
+                        || stepZ < 0 && clickX > 0.5D
+                        || stepZ > 0 && clickX < 0.5D;
+                return rightHinge ? DoorHingeSide.RIGHT : DoorHingeSide.LEFT;
+            }
+            return DoorHingeSide.LEFT;
+        }
+        return DoorHingeSide.RIGHT;
+    }
+
+    private static boolean nativeHasAdjacentPower(ServerCubeCache cache, BlockPos pos) {
+        for (Direction direction : Direction.values()) {
+            BlockState state = cache.readOrGenerateBlock(pos.relative(direction)).orElseGet(() -> Blocks.AIR.defaultBlockState());
+            if (state.is(Blocks.REDSTONE_BLOCK)) {
+                return true;
+            }
+            if (state.getBlock() instanceof LeverBlock && state.hasProperty(BlockStateProperties.POWERED) && state.getValue(BlockStateProperties.POWERED)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean writePlayerBlock(ServerPlayer player, BlockPos pos, BlockState state, String reason) {

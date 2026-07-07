@@ -34,7 +34,8 @@ public record CubicExtremeInteractionPayload(
     public enum Action {
         BREAK,
         PLACE,
-        USE
+        USE,
+        PICK_BLOCK
     }
 
     public CubicExtremeInteractionPayload {
@@ -65,6 +66,10 @@ public record CubicExtremeInteractionPayload(
 
     public static CubicExtremeInteractionPayload useBlock(BlockPos clickedPos, Direction direction, InteractionHand hand, Vec3 hitLocation) {
         return new CubicExtremeInteractionPayload(Action.USE, clickedPos, direction, hand, hitLocation);
+    }
+
+    public static CubicExtremeInteractionPayload pickBlock(BlockPos pos, Direction direction) {
+        return new CubicExtremeInteractionPayload(Action.PICK_BLOCK, pos, direction, InteractionHand.MAIN_HAND, Vec3.atCenterOf(pos));
     }
 
     /**
