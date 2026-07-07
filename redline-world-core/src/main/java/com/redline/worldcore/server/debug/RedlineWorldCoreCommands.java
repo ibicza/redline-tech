@@ -1353,7 +1353,12 @@ public final class RedlineWorldCoreCommands {
         CubicNativePassiveSpawner.Snapshot spawnSnapshot = CubicNativePassiveSpawner.snapshot();
         source.sendSuccess(() -> Component.literal("RWC native fluids: queue=" + fluidSnapshot.queue()
                 + ", spreadLastTick=" + fluidSnapshot.spreadLastTick()
-                + ", totalSpread=" + fluidSnapshot.totalSpread()), false);
+                + ", decayLastTick=" + fluidSnapshot.decayLastTick()
+                + ", contactLastTick=" + fluidSnapshot.interactionLastTick()
+                + ", delayed=" + fluidSnapshot.delayedLastTick()
+                + ", totalSpread=" + fluidSnapshot.totalSpread()
+                + ", totalDecay=" + fluidSnapshot.totalDecay()
+                + ", totalContact=" + fluidSnapshot.totalInteractions()), false);
         source.sendSuccess(() -> Component.literal("RWC native passive spawner: attemptsLastTick=" + spawnSnapshot.attemptsLastTick()
                 + ", spawnedLastTick=" + spawnSnapshot.spawnedLastTick()
                 + ", totalSpawned=" + spawnSnapshot.totalSpawned()), false);
