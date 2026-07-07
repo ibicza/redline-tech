@@ -347,13 +347,22 @@ public final class ClientCubeNativeMeshBridge {
             try {
                 FluidState fluid = state.getFluidState();
                 fluidPresent = !fluid.isEmpty();
-                if (fluidPresent && fluidRenderer != null) {
-                    int beforeFluidQuads = task.quadCount();
-                    fluidRenderer.tesselate(view, pos, task.fluidOutput, state, fluid);
-                    fluidRendered = task.quadCount() > beforeFluidQuads;
-                    rendered |= fluidRendered;
+
+                // M19.8.7 root fix:
+                // Outside the vanilla shell our custom SubmitCustomGeometry path still does not reproduce the vanilla
+                // translucent fluid pass reliably.  Source water/lava exist physically and the client cube snapshot sees
+                // them, but the top surface is frequently omitted, so the player gets invisible fluid from above.
+                //
+                // Until we move fluids to a retained GPU path with the exact vanilla render ordering, treat water/lava as
+                // a dedicated cube-native translucent primitive and skip FluidRenderer here.  It is less pretty, but it is
+                // stable and, most importantly, actually visible.
+                if (fluidPresent) {
+                    buildFallbackFaces(sections, snapshot, state, localX, localY, localZ, worldX, worldY, worldZ, task);
+                    rendered = true;
+                    fluidRendered = true;
                 }
-                if (state.getRenderShape() == RenderShape.MODEL) {
+
+                if (!fluidPresent && state.getRenderShape() == RenderShape.MODEL) {
                     int beforeModelQuads = task.quadCount();
                     BlockStateModel model = modelManager.getBlockStateModelSet().get(state);
                     task.currentState = state;
@@ -370,13 +379,6 @@ public final class ClientCubeNativeMeshBridge {
                 task.currentPos = null;
             }
 
-            // Only use the crude translucent fallback if vanilla FluidRenderer emitted nothing at all.  Drawing fallback
-            // faces on top of successful fluid quads samples the whole block atlas with 0..1 UVs and creates the cursed
-            // blue texture-atlas mosaic that showed up in M19.8.4.
-            if (fluidPresent && !fluidRendered) {
-                buildFallbackFaces(sections, snapshot, state, localX, localY, localZ, worldX, worldY, worldZ, task);
-                rendered = true;
-            }
             if (!rendered && state.getRenderShape() != RenderShape.INVISIBLE) {
                 buildFallbackFaces(sections, snapshot, state, localX, localY, localZ, worldX, worldY, worldZ, task);
             }
