@@ -42,12 +42,19 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * M19.8.2 vanilla-backed native cube renderer.
+ * M19.9 sparse vanilla-section renderer bridge.
  *
- * <p>The renderer lifecycle is still fully cube-native: snapshots come from {@link ClientCubeSectionStore}, mesh dirtying
- * is by {@link CubePos}, and outside-shell rendering never writes into vanilla {@code ClientLevel}/{@code LevelChunkSection}.
- * The mesh builder now uses vanilla baked block quads and the vanilla fluid renderer through a small cube-backed
- * {@link BlockAndTintGetter}.  The old map-color cuboid renderer stays as a fallback for model failures only.</p>
+ * <p>This is the safe middle ground between the broken hand-written debug renderer and stretching vanilla
+ * {@code LevelRenderer/ViewArea} to a 32k-block-tall dimension.  The lifetime, culling and dirtying are still sparse and
+ * cube-native: only {@link CubePos} snapshots present in {@link ClientCubeSectionStore} are compiled.  The block geometry
+ * itself is compiled through vanilla baked block models against {@link CubeRenderView}, a cube-backed
+ * {@link BlockAndTintGetter}.</p>
+ *
+ * <p>M19.9.2 restores vanilla-backed fluid geometry on top of the sparse cube lifecycle.  The earlier invisible-water
+ * bug was not a backend/sync issue: the fluid mesh was compiled while {@link MeshBuildTask#currentPos} was {@code null},
+ * so {@link FluidRenderer}'s section-local vertices were kept near 0..15 instead of being translated to true cube world
+ * coordinates.  Fluids now use vanilla {@link FluidRenderer} first and fall back to the sparse color-only layer only if
+ * vanilla emits no quads.</p>
  */
 public final class ClientCubeNativeMeshBridge {
     private static final int HORIZONTAL_SCAN_RADIUS = 4;
@@ -75,7 +82,16 @@ public final class ClientCubeNativeMeshBridge {
     private static long solidBlocks;
     private static long vanillaQuadsBuilt;
     private static long fluidQuadsBuilt;
+    private static long vanillaFluidAttempts;
+    private static long vanillaFluidSectionsRendered;
+    private static long vanillaFluidZeroQuadFailures;
     private static long fallbackFacesBuilt;
+    private static long translucentFallbackFacesBuilt;
+    private static long sparseFluidFacesBuilt;
+    private static long submittedSparseFluidFaces;
+    private static long waterFallbackFacesBuilt;
+    private static long lavaFallbackFacesBuilt;
+    private static long fluidInteriorFacesSkipped;
     private static long modelFailures;
     private static long hashHits;
     private static long invalidations;
@@ -140,17 +156,20 @@ public final class ClientCubeNativeMeshBridge {
 
         int solidQuads = 0;
         int translucentQuads = 0;
+        int sparseFluidFaces = 0;
         for (NativeSectionMesh mesh : renderList) {
             solidQuads += mesh.solidQuads.size() + mesh.cutoutQuads.size() + mesh.fallbackFaces.size();
             translucentQuads += mesh.translucentQuads.size();
+            sparseFluidFaces += mesh.translucentFallbackFaces.size();
         }
         renderedMeshesLastFrame = renderList.size();
         solidQuadsLastFrame = solidQuads;
-        translucentQuadsLastFrame = translucentQuads;
+        translucentQuadsLastFrame = translucentQuads + sparseFluidFaces;
         renderSubmits++;
         RuntimeProfiler.addCount("client.native_renderer_submit_meshes", renderList.size());
         RuntimeProfiler.addCount("client.native_renderer_submit_solid_quads", solidQuads);
         RuntimeProfiler.addCount("client.native_renderer_submit_translucent_quads", translucentQuads);
+        RuntimeProfiler.addCount("client.native_renderer_submit_sparse_fluid_faces", sparseFluidFaces);
 
         PoseStack poseStack = event.getPoseStack();
         poseStack.pushPose();
@@ -170,7 +189,15 @@ public final class ClientCubeNativeMeshBridge {
         if (translucentQuads > 0) {
             event.getSubmitNodeCollector().submitCustomGeometry(poseStack, RenderTypes.translucentMovingBlock(), (pose, consumer) -> {
                 for (NativeSectionMesh mesh : renderList) {
-                    mesh.emitTranslucent(pose, consumer);
+                    mesh.emitTranslucentQuads(pose, consumer);
+                }
+            });
+        }
+        if (sparseFluidFaces > 0) {
+            submittedSparseFluidFaces += sparseFluidFaces;
+            event.getSubmitNodeCollector().submitCustomGeometry(poseStack, RenderTypes.debugQuads(), (pose, consumer) -> {
+                for (NativeSectionMesh mesh : renderList) {
+                    mesh.emitSparseFluidFallback(pose, consumer);
                 }
             });
         }
@@ -344,41 +371,51 @@ public final class ClientCubeNativeMeshBridge {
             boolean rendered = false;
             boolean fluidPresent = false;
             boolean fluidRendered = false;
-            try {
-                FluidState fluid = state.getFluidState();
-                fluidPresent = !fluid.isEmpty();
+            FluidState fluid = state.getFluidState();
+            fluidPresent = !fluid.isEmpty();
 
-                // M19.8.7 root fix:
-                // Outside the vanilla shell our custom SubmitCustomGeometry path still does not reproduce the vanilla
-                // translucent fluid pass reliably.  Source water/lava exist physically and the client cube snapshot sees
-                // them, but the top surface is frequently omitted, so the player gets invisible fluid from above.
-                //
-                // Until we move fluids to a retained GPU path with the exact vanilla render ordering, treat water/lava as
-                // a dedicated cube-native translucent primitive and skip FluidRenderer here.  It is less pretty, but it is
-                // stable and, most importantly, actually visible.
-                if (fluidPresent) {
-                    buildFallbackFaces(sections, snapshot, state, localX, localY, localZ, worldX, worldY, worldZ, task);
-                    rendered = true;
-                    fluidRendered = true;
+            // Keep currentPos set for both vanilla block models and vanilla fluids.  FluidRenderer emits vertices in
+            // section-local coordinates, and CollectingVertexConsumer needs currentPos to translate those vertices back
+            // into our sparse cube world-space mesh.  Without this, water at Y=9000 was compiled near Y=8..15.
+            task.currentState = state;
+            task.currentPos = pos;
+            try {
+                if (fluidPresent && fluidRenderer != null) {
+                    vanillaFluidAttempts++;
+                    RuntimeProfiler.addCount("client.native_vanilla_fluid_attempts", 1);
+                    int beforeFluidQuads = task.quadCount();
+                    fluidRenderer.tesselate(view, pos, task.fluidOutput, state, fluid);
+                    fluidRendered = task.quadCount() > beforeFluidQuads;
+                    if (fluidRendered) {
+                        rendered = true;
+                        vanillaFluidSectionsRendered++;
+                        RuntimeProfiler.addCount("client.native_vanilla_fluid_rendered", 1);
+                    } else {
+                        vanillaFluidZeroQuadFailures++;
+                        RuntimeProfiler.addCount("client.native_vanilla_fluid_zero_quads", 1);
+                    }
                 }
 
-                if (!fluidPresent && state.getRenderShape() == RenderShape.MODEL) {
+                // Waterlogged blocks still have a normal block model.  Do not skip the model just because a FluidState is
+                // present; vanilla renders both the block and the fluid overlay for those states.
+                if (state.getRenderShape() == RenderShape.MODEL) {
                     int beforeModelQuads = task.quadCount();
                     BlockStateModel model = modelManager.getBlockStateModelSet().get(state);
-                    task.currentState = state;
-                    task.currentPos = pos;
                     modelRenderer.tesselateBlock(task.blockOutput, 0.0F, 0.0F, 0.0F, view, pos, state, model, net.minecraft.util.Mth.getSeed(pos));
                     rendered |= task.quadCount() > beforeModelQuads;
                 }
             } catch (Throwable failure) {
                 modelFailures++;
                 RuntimeProfiler.addCount("client.native_model_failures", 1);
-                rendered = false;
             } finally {
                 task.currentState = null;
                 task.currentPos = null;
             }
 
+            if (fluidPresent && !fluidRendered) {
+                buildFallbackFaces(sections, snapshot, state, localX, localY, localZ, worldX, worldY, worldZ, task);
+                rendered = true;
+            }
             if (!rendered && state.getRenderShape() != RenderShape.INVISIBLE) {
                 buildFallbackFaces(sections, snapshot, state, localX, localY, localZ, worldX, worldY, worldZ, task);
             }
@@ -407,6 +444,11 @@ public final class ClientCubeNativeMeshBridge {
     private static void buildFallbackFaces(Map<CubePos, ClientCubeSectionSnapshot> sections, ClientCubeSectionSnapshot snapshot,
                                            BlockState state, int localX, int localY, int localZ, int worldX, int worldY, int worldZ,
                                            MeshBuildTask task) {
+        if (!state.getFluidState().isEmpty()) {
+            buildSparseFluidFaces(sections, snapshot, state, localX, localY, localZ, worldX, worldY, worldZ, task);
+            return;
+        }
+
         int baseColor = fallbackColor(state);
         boolean translucent = isTranslucentFallback(state);
         for (Direction direction : Direction.values()) {
@@ -414,12 +456,80 @@ public final class ClientCubeNativeMeshBridge {
                 NativeFallbackFace face = new NativeFallbackFace(worldX, worldY, worldZ, direction, shadeColor(baseColor, direction, translucent));
                 if (translucent) {
                     task.translucentFallbackFaces.add(face);
+                    translucentFallbackFacesBuilt++;
                 } else {
                     task.fallbackFaces.add(face);
                 }
                 fallbackFacesBuilt++;
             }
         }
+    }
+
+    private static void buildSparseFluidFaces(Map<CubePos, ClientCubeSectionSnapshot> sections, ClientCubeSectionSnapshot snapshot,
+                                              BlockState state, int localX, int localY, int localZ, int worldX, int worldY, int worldZ,
+                                              MeshBuildTask task) {
+        FluidState fluid = state.getFluidState();
+        int baseColor = sparseFluidColor(fluid);
+        float topHeight = sparseFluidTopHeight(fluid);
+
+        for (Direction direction : Direction.values()) {
+            BlockState neighbor = neighborStateForFace(sections, snapshot, localX, localY, localZ, direction);
+            FluidState neighborFluid = neighbor == null ? net.minecraft.world.level.material.Fluids.EMPTY.defaultFluidState() : neighbor.getFluidState();
+            if (sameFluid(fluid, neighborFluid)) {
+                fluidInteriorFacesSkipped++;
+                continue;
+            }
+
+            // Water/lava against opaque blocks is hidden by that block.  Skipping those faces removes the ugly blue box
+            // walls inside closed pits while still leaving open sides, top surfaces and waterfalls visible.
+            if (direction != Direction.UP && neighbor != null && !neighbor.isAir() && neighbor.getFluidState().isEmpty() && !isTranslucentFallback(neighbor)) {
+                continue;
+            }
+            if (direction == Direction.DOWN && neighbor != null && !neighbor.isAir()) {
+                continue;
+            }
+
+            int color = shadeColor(baseColor, direction, true);
+            NativeFallbackFace face = new NativeFallbackFace(worldX, worldY, worldZ, direction, color, topHeight);
+            task.translucentFallbackFaces.add(face);
+            translucentFallbackFacesBuilt++;
+            sparseFluidFacesBuilt++;
+            if (state.getBlock() == Blocks.LAVA || fluid.is(net.minecraft.world.level.material.Fluids.LAVA)) {
+                lavaFallbackFacesBuilt++;
+            } else {
+                waterFallbackFacesBuilt++;
+            }
+            fallbackFacesBuilt++;
+        }
+    }
+
+    private static BlockState neighborStateForFace(Map<CubePos, ClientCubeSectionSnapshot> sections, ClientCubeSectionSnapshot snapshot,
+                                                   int localX, int localY, int localZ, Direction direction) {
+        int nx = localX + direction.getStepX();
+        int ny = localY + direction.getStepY();
+        int nz = localZ + direction.getStepZ();
+        if (CubePos.isLocal(nx) && CubePos.isLocal(ny) && CubePos.isLocal(nz)) {
+            return snapshot.blockStateAtLocalIndex(CubePos.localIndex(nx, ny, nz));
+        }
+        return neighborAcrossCubeBoundary(sections, snapshot, nx, ny, nz);
+    }
+
+    private static boolean sameFluid(FluidState first, FluidState second) {
+        return !first.isEmpty() && !second.isEmpty() && first.getType().isSame(second.getType());
+    }
+
+    private static float sparseFluidTopHeight(FluidState fluid) {
+        if (fluid.is(net.minecraft.world.level.material.Fluids.LAVA)) {
+            return fluid.isSource() ? 0.98F : 0.88F;
+        }
+        return fluid.isSource() ? 0.92F : 0.82F;
+    }
+
+    private static int sparseFluidColor(FluidState fluid) {
+        if (fluid.is(net.minecraft.world.level.material.Fluids.LAVA)) {
+            return argb(185, 255, 96, 18);
+        }
+        return argb(132, 64, 126, 220);
     }
 
     private static boolean faceVisible(Map<CubePos, ClientCubeSectionSnapshot> sections, ClientCubeSectionSnapshot snapshot,
@@ -470,10 +580,10 @@ public final class ClientCubeNativeMeshBridge {
 
     private static int fallbackColor(BlockState state) {
         if (state.getBlock() == Blocks.WATER || !state.getFluidState().isEmpty() && state.liquid()) {
-            return state.getBlock() == Blocks.LAVA ? argb(220, 255, 96, 20) : argb(190, 55, 130, 255);
+            return state.getBlock() == Blocks.LAVA ? argb(185, 255, 96, 18) : argb(132, 64, 126, 220);
         }
         if (state.getBlock() == Blocks.LAVA) {
-            return argb(230, 255, 96, 20);
+            return argb(185, 255, 96, 18);
         }
         return argb(255, 190, 190, 190);
     }
@@ -583,7 +693,7 @@ public final class ClientCubeNativeMeshBridge {
 
     public static String statusLine() {
         return "enabled=" + enabled
-                + " mode=vanilla-backed"
+                + " mode=sparse-vanilla-section"
                 + " meshes=" + meshCount
                 + " ready=" + readyAroundPlayer
                 + " queue=" + queueSize
@@ -592,6 +702,11 @@ public final class ClientCubeNativeMeshBridge {
                 + " caps=" + MAX_RENDER_MESHES_PER_FRAME + "/" + MAX_RENDER_QUADS_PER_FRAME
                 + " built=" + sectionsBuilt
                 + " modelFail=" + modelFailures
+                + " fluidFallback=" + sparseFluidFacesBuilt
+                + " waterFaces=" + waterFallbackFacesBuilt
+                + " lavaFaces=" + lavaFallbackFacesBuilt
+                + " fluidSkip=" + fluidInteriorFacesSkipped
+                + " submittedFluid=" + submittedSparseFluidFaces
                 + " reset=" + lastResetReason;
     }
 
@@ -609,8 +724,8 @@ public final class ClientCubeNativeMeshBridge {
     public static long blocksScanned() { return blocksScanned; }
     public static long solidBlocks() { return solidBlocks; }
     public static long facesEstimated() { return vanillaQuadsBuilt + fluidQuadsBuilt + fallbackFacesBuilt; }
-    public static long solidFacesBuilt() { return vanillaQuadsBuilt + fallbackFacesBuilt; }
-    public static long translucentFacesBuilt() { return fluidQuadsBuilt; }
+    public static long solidFacesBuilt() { return vanillaQuadsBuilt + fallbackFacesBuilt - translucentFallbackFacesBuilt; }
+    public static long translucentFacesBuilt() { return fluidQuadsBuilt + translucentFallbackFacesBuilt; }
     public static long hashHits() { return hashHits; }
     public static long invalidations() { return invalidations; }
     public static long budgetHits() { return budgetHits; }
@@ -687,12 +802,15 @@ public final class ClientCubeNativeMeshBridge {
             }
         }
 
-        private void emitTranslucent(PoseStack.Pose pose, VertexConsumer consumer) {
+        private void emitTranslucentQuads(PoseStack.Pose pose, VertexConsumer consumer) {
             for (NativeRenderableQuad quad : translucentQuads) {
                 quad.emit(pose, consumer);
             }
+        }
+
+        private void emitSparseFluidFallback(PoseStack.Pose pose, VertexConsumer consumer) {
             for (NativeFallbackFace face : translucentFallbackFaces) {
-                face.emit(pose, consumer);
+                face.emitColorOnly(pose, consumer);
             }
         }
     }
@@ -761,11 +879,11 @@ public final class ClientCubeNativeMeshBridge {
 
         @Override
         public VertexConsumer addVertex(float x, float y, float z) {
-            // FluidRenderer emits coordinates local to the 16x16x16 render section (pos & 15), while our native renderer
-            // stores world-space meshes.  Until M19.8.5 these local vertices were kept as-is, so water at Y=9000 was
-            // actually submitted near Y=8/9 and became invisible from the real camera.
+            // FluidRenderer normally emits section-local coordinates (0..16).  Our sparse renderer stores world-space
+            // meshes, so translate local fluid vertices by the cube section origin.  Keep a world-coordinate fallback too
+            // because this method is shared with any future vanilla paths that may already provide absolute positions.
             BlockPos pos = task.currentPos;
-            if (pos != null) {
+            if (pos != null && looksSectionLocal(x, y, z)) {
                 this.x = (pos.getX() & ~CubePos.MASK) + x;
                 this.y = (pos.getY() & ~CubePos.MASK) + y;
                 this.z = (pos.getZ() & ~CubePos.MASK) + z;
@@ -775,6 +893,12 @@ public final class ClientCubeNativeMeshBridge {
                 this.z = z;
             }
             return this;
+        }
+
+        private static boolean looksSectionLocal(float x, float y, float z) {
+            return x >= -0.001F && x <= CubePos.SIZE + 0.001F
+                    && y >= -0.001F && y <= CubePos.SIZE + 0.001F
+                    && z >= -0.001F && z <= CubePos.SIZE + 0.001F;
         }
 
         @Override
@@ -860,21 +984,33 @@ public final class ClientCubeNativeMeshBridge {
     private record NativeVertex(float x, float y, float z, int color, float u, float v, int overlay, int light, float nx, float ny, float nz) {
     }
 
-    private record NativeFallbackFace(int x, int y, int z, Direction direction, int argb) {
+    private record NativeFallbackFace(int x, int y, int z, Direction direction, int argb, float topHeight) {
+        private NativeFallbackFace(int x, int y, int z, Direction direction, int argb) {
+            this(x, y, z, direction, argb, 1.0F);
+        }
+
         private void emit(PoseStack.Pose pose, VertexConsumer consumer) {
+            emitInternal(pose, consumer, true);
+        }
+
+        private void emitColorOnly(PoseStack.Pose pose, VertexConsumer consumer) {
+            emitInternal(pose, consumer, false);
+        }
+
+        private void emitInternal(PoseStack.Pose pose, VertexConsumer consumer, boolean withUv) {
             float x0 = x;
             float y0 = y;
             float z0 = z;
             float x1 = x + 1.0F;
-            float y1 = y + 1.0F;
+            float y1 = y + Math.max(0.05F, Math.min(1.0F, topHeight));
             float z1 = z + 1.0F;
             switch (direction) {
-                case UP -> quad(pose, consumer, x0, y1, z1, x1, y1, z1, x1, y1, z0, x0, y1, z0, 0.0F, 1.0F, 0.0F);
-                case DOWN -> quad(pose, consumer, x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1, 0.0F, -1.0F, 0.0F);
-                case NORTH -> quad(pose, consumer, x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0, 0.0F, 0.0F, -1.0F);
-                case SOUTH -> quad(pose, consumer, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1, 0.0F, 0.0F, 1.0F);
-                case WEST -> quad(pose, consumer, x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0, -1.0F, 0.0F, 0.0F);
-                case EAST -> quad(pose, consumer, x1, y0, z1, x1, y0, z0, x1, y1, z0, x1, y1, z1, 1.0F, 0.0F, 0.0F);
+                case UP -> quad(pose, consumer, x0, y1, z1, x1, y1, z1, x1, y1, z0, x0, y1, z0, 0.0F, 1.0F, 0.0F, withUv);
+                case DOWN -> quad(pose, consumer, x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1, 0.0F, -1.0F, 0.0F, withUv);
+                case NORTH -> quad(pose, consumer, x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0, 0.0F, 0.0F, -1.0F, withUv);
+                case SOUTH -> quad(pose, consumer, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1, 0.0F, 0.0F, 1.0F, withUv);
+                case WEST -> quad(pose, consumer, x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0, -1.0F, 0.0F, 0.0F, withUv);
+                case EAST -> quad(pose, consumer, x1, y0, z1, x1, y0, z0, x1, y1, z0, x1, y1, z1, 1.0F, 0.0F, 0.0F, withUv);
             }
         }
 
@@ -883,19 +1019,23 @@ public final class ClientCubeNativeMeshBridge {
                           float bx, float by, float bz,
                           float cx, float cy, float cz,
                           float dx, float dy, float dz,
-                          float nx, float ny, float nz) {
-            // Fallback is color/debug geometry, not texture geometry.  Keep UV pinned to avoid sampling the whole block atlas.
-            vertex(pose, consumer, ax, ay, az, 0.0F, 0.0F, nx, ny, nz);
-            vertex(pose, consumer, bx, by, bz, 0.0F, 0.0F, nx, ny, nz);
-            vertex(pose, consumer, cx, cy, cz, 0.0F, 0.0F, nx, ny, nz);
-            vertex(pose, consumer, dx, dy, dz, 0.0F, 0.0F, nx, ny, nz);
+                          float nx, float ny, float nz, boolean withUv) {
+            // Fallback is color/debug geometry, not texture geometry.  For the normal moving-block render types we still
+            // provide harmless pinned UVs.  For debugQuads, skip UV writes entirely so water cannot disappear because the
+            // block atlas pixel at 0,0 is transparent.
+            vertex(pose, consumer, ax, ay, az, 0.0F, 0.0F, nx, ny, nz, withUv);
+            vertex(pose, consumer, bx, by, bz, 0.0F, 0.0F, nx, ny, nz, withUv);
+            vertex(pose, consumer, cx, cy, cz, 0.0F, 0.0F, nx, ny, nz, withUv);
+            vertex(pose, consumer, dx, dy, dz, 0.0F, 0.0F, nx, ny, nz, withUv);
         }
 
-        private void vertex(PoseStack.Pose pose, VertexConsumer consumer, float vx, float vy, float vz, float u, float v, float nx, float ny, float nz) {
-            consumer.addVertex(pose, vx, vy, vz)
-                    .setColor((argb >> 16) & 255, (argb >> 8) & 255, argb & 255, (argb >>> 24) & 255)
-                    .setUv(u, v)
-                    .setLight(FULL_BRIGHT)
+        private void vertex(PoseStack.Pose pose, VertexConsumer consumer, float vx, float vy, float vz, float u, float v, float nx, float ny, float nz, boolean withUv) {
+            VertexConsumer next = consumer.addVertex(pose, vx, vy, vz)
+                    .setColor((argb >> 16) & 255, (argb >> 8) & 255, argb & 255, (argb >>> 24) & 255);
+            if (withUv) {
+                next.setUv(u, v);
+            }
+            next.setLight(FULL_BRIGHT)
                     .setNormal(pose, nx, ny, nz);
         }
     }
