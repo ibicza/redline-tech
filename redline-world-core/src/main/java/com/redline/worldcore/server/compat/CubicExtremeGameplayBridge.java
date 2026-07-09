@@ -315,6 +315,7 @@ public final class CubicExtremeGameplayBridge {
                 playButtonSound(level, clickedPos, true);
                 refreshNativeShapesAround(level, player, clickedPos, reason + "_button_refresh");
                 CubicNativeRedstoneBridge.refreshAround(level, clickedPos, reason + "_button_redstone");
+                CubicNativeRedstoneTicker.scheduleButtonRelease(level, clickedPos, 20, reason + "_button_release");
             }
             return NativePacketActionResult.consumed(applied, applied ? "button_powered=true" : "button_press_rejected");
         }

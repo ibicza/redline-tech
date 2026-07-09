@@ -6,6 +6,7 @@ import com.redline.worldcore.network.WorldCoreNetwork;
 import com.redline.worldcore.server.compat.CubicClientSyncBridge;
 import com.redline.worldcore.server.compat.CubicNativeFluidTicker;
 import com.redline.worldcore.server.compat.CubicNativePassiveSpawner;
+import com.redline.worldcore.server.compat.CubicNativeRedstoneTicker;
 import com.redline.worldcore.server.compat.CubicTestGameplayGuard;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.debug.CubeMathSelfTest;
@@ -49,6 +50,7 @@ public final class RedlineWorldCore {
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> CubePregenManager.MANAGER.onServerTick(event));
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> CubicClientSyncBridge.onServerTick(event));
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> CubicNativeFluidTicker.onServerTick(event));
+        NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> CubicNativeRedstoneTicker.onServerTick(event));
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> CubicNativePassiveSpawner.onServerTick(event));
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> CubeOwnershipAutoTest.onServerTick(event));
         NeoForge.EVENT_BUS.addListener((BreakBlockEvent event) -> CubicClientSyncBridge.onBlockBreak(event));

@@ -4,6 +4,7 @@ import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.cube.query.ServerCubeBlockGetter;
 import com.redline.worldcore.server.cube.query.ServerCubeWorldQuery;
 import com.redline.worldcore.server.profiler.RuntimeProfiler;
+import com.redline.worldcore.runtime.DynamicVanillaSectionBridge;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.BlockGetter;
@@ -26,13 +27,17 @@ public abstract class LevelCubeWorldQueryMixin {
     @Inject(method = "getBlockState", at = @At("HEAD"), cancellable = true)
     private void redline$cubeBackedGetBlockState(BlockPos pos, CallbackInfoReturnable<BlockState> cir) {
         Level level = (Level) (Object) this;
-        ServerCubeWorldQuery.blockState(level, pos).ifPresent(cir::setReturnValue);
+        DynamicVanillaSectionBridge.readBlockState(level, pos)
+                .or(() -> ServerCubeWorldQuery.blockState(level, pos))
+                .ifPresent(cir::setReturnValue);
     }
 
     @Inject(method = "getFluidState", at = @At("HEAD"), cancellable = true)
     private void redline$cubeBackedGetFluidState(BlockPos pos, CallbackInfoReturnable<FluidState> cir) {
         Level level = (Level) (Object) this;
-        ServerCubeWorldQuery.fluidState(level, pos).ifPresent(cir::setReturnValue);
+        DynamicVanillaSectionBridge.readFluidState(level, pos)
+                .or(() -> ServerCubeWorldQuery.fluidState(level, pos))
+                .ifPresent(cir::setReturnValue);
     }
 
     @Inject(method = "getChunkForCollisions", at = @At("HEAD"), cancellable = true)

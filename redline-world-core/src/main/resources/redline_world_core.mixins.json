@@ -7,6 +7,8 @@
     "FlowingFluidWaterSurfaceSupportMixin",
     "LevelLiveBlockChangeCaptureMixin",
     "LevelCubeWorldQueryMixin",
+    "LevelChunkDynamicSectionsMixin",
+    "ChunkAccessDynamicSectionsMixin",
     "EntityFluidInteractionCubicLoadedMixin",
     "EntityCubicBelowWorldGuardMixin",
     "ServerGamePacketListenerCubicExtremeInteractionMixin"

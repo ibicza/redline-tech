@@ -36,6 +36,9 @@ import com.redline.worldcore.server.compat.CubicClientSyncBridge;
 import com.redline.worldcore.server.compat.CubicTestGameplayGuard;
 import com.redline.worldcore.server.compat.CubicNativeFluidTicker;
 import com.redline.worldcore.server.compat.CubicNativePassiveSpawner;
+import com.redline.worldcore.server.compat.CubicNativeRedstoneBridge;
+import com.redline.worldcore.server.compat.CubicNativeRedstoneTicker;
+import com.redline.worldcore.runtime.DynamicVanillaSectionBridge;
 import com.redline.worldcore.server.compat.WaterSurfaceSupportDebug;
 import com.redline.worldcore.server.cube.WorldCoreCubeLoading;
 import com.redline.worldcore.server.cube.access.CubeMutationContext;
@@ -1359,9 +1362,23 @@ public final class RedlineWorldCoreCommands {
                 + ", totalSpread=" + fluidSnapshot.totalSpread()
                 + ", totalDecay=" + fluidSnapshot.totalDecay()
                 + ", totalContact=" + fluidSnapshot.totalInteractions()), false);
+        CubicNativeRedstoneBridge.Snapshot redstoneSnapshot = CubicNativeRedstoneBridge.snapshot();
+        CubicNativeRedstoneTicker.Snapshot redstoneTickSnapshot = CubicNativeRedstoneTicker.snapshot();
+        source.sendSuccess(() -> Component.literal("RWC native redstone: changedLast=" + redstoneSnapshot.changedLastRefresh()
+                + ", dustLast=" + redstoneSnapshot.dustChangedLastRefresh()
+                + ", consumersLast=" + redstoneSnapshot.consumerChangedLastRefresh()
+                + ", pistonLast=" + redstoneSnapshot.pistonActionsLastRefresh()
+                + ", total=" + redstoneSnapshot.totalChanged()), false);
+        source.sendSuccess(() -> Component.literal("RWC native redstone ticks: queue=" + redstoneTickSnapshot.queue()
+                + ", processedLast=" + redstoneTickSnapshot.processedLastTick()
+                + ", repeaterLast=" + redstoneTickSnapshot.repeaterLastTick()
+                + ", buttonReleaseLast=" + redstoneTickSnapshot.buttonReleaseLastTick()
+                + ", delayed=" + redstoneTickSnapshot.delayedLastTick()), false);
         source.sendSuccess(() -> Component.literal("RWC native passive spawner: attemptsLastTick=" + spawnSnapshot.attemptsLastTick()
                 + ", spawnedLastTick=" + spawnSnapshot.spawnedLastTick()
                 + ", totalSpawned=" + spawnSnapshot.totalSpawned()), false);
+        DynamicVanillaSectionBridge.Snapshot dynamicSectionSnapshot = DynamicVanillaSectionBridge.snapshot();
+        source.sendSuccess(() -> Component.literal("RWC dynamic vanilla sections: " + dynamicSectionSnapshot.oneLine()), false);
         source.sendSuccess(() -> Component.literal("RWC gameplay mode: cube ticket gates are authoritative for diagnostics; vanilla tick cancellation mixins are still staged behind this gate."), false);
         return entitySnapshot.trackedEntities() + blockEntitySnapshot.trackedBlockEntities() + scheduledTickSnapshot.dueTicks();
     }

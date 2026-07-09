@@ -8,7 +8,10 @@ import com.redline.worldcore.network.CubeSectionDeltaPayload;
 import com.redline.worldcore.network.CubeSectionSnapshotBatchPayload;
 import com.redline.worldcore.network.CubeSectionSnapshotPayload;
 import com.redline.worldcore.network.CubeSectionUnloadPayload;
+import com.redline.worldcore.runtime.DynamicVanillaSectionBridge;
 
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.ArrayList;
@@ -70,12 +73,17 @@ public final class ClientCubeSectionStore {
         if (previous != null && previous.hash() != payload.hash()) {
             replacedSnapshots++;
         }
+        mirrorDynamicVanillaSection(SECTIONS.get(cubePos));
         ClientCubeRenderBridge.invalidate(cubePos);
         ClientCubeRenderBridge.forceDirtySection(cubePos);
         ClientCubeNativeMeshBridge.invalidate(cubePos);
         while (SECTIONS.size() > MAX_SECTIONS) {
             CubePos eldest = SECTIONS.keySet().iterator().next();
             SECTIONS.remove(eldest);
+            ClientLevel level = currentClientLevel();
+            if (level != null) {
+                DynamicVanillaSectionBridge.unloadClientSection(level, eldest);
+            }
             PENDING_ACKS.remove(eldest);
             PENDING_REQUESTS.remove(eldest);
             ClientCubeRenderBridge.forget(eldest);
@@ -114,6 +122,8 @@ public final class ClientCubeSectionStore {
         SECTIONS.put(cubePos, updated);
         enqueueAck(cubePos, payload.newHash());
         appliedDeltas++;
+        BlockState[] deltaStates = states.toArray(BlockState[]::new);
+        mirrorDynamicVanillaDelta(cubePos, payload.localIndices(), deltaStates);
         ClientCubeRenderBridge.invalidate(cubePos);
         ClientCubeRenderBridge.applyImmediateDelta(previous, updated, payload.localIndices());
         ClientCubeNativeMeshBridge.invalidate(cubePos);
@@ -123,11 +133,35 @@ public final class ClientCubeSectionStore {
         CubePos cubePos = payload.cubePos();
         if (SECTIONS.remove(cubePos) != null) {
             unloads++;
+            ClientLevel level = currentClientLevel();
+            if (level != null) {
+                DynamicVanillaSectionBridge.unloadClientSection(level, cubePos);
+            }
         }
         PENDING_ACKS.remove(cubePos);
         PENDING_REQUESTS.remove(cubePos);
         ClientCubeRenderBridge.forget(cubePos);
         ClientCubeNativeMeshBridge.forget(cubePos);
+    }
+
+
+    private static void mirrorDynamicVanillaSection(ClientCubeSectionSnapshot snapshot) {
+        ClientLevel level = currentClientLevel();
+        if (level != null && snapshot != null) {
+            DynamicVanillaSectionBridge.mirrorClientSnapshot(level, snapshot);
+        }
+    }
+
+    private static void mirrorDynamicVanillaDelta(CubePos cubePos, int[] localIndices, BlockState[] states) {
+        ClientLevel level = currentClientLevel();
+        if (level != null) {
+            DynamicVanillaSectionBridge.mirrorClientDelta(level, cubePos, localIndices, states);
+        }
+    }
+
+    private static ClientLevel currentClientLevel() {
+        Minecraft minecraft = Minecraft.getInstance();
+        return minecraft == null ? null : minecraft.level;
     }
 
     private static void enqueueAck(CubePos cubePos, long hash) {
