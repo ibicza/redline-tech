@@ -2,6 +2,7 @@ package com.ibicza.redlineatlasworldgen.landcover;
 
 import com.ibicza.redlineatlasworldgen.RedlineAtlasWorldgen;
 import com.ibicza.redlineatlasworldgen.config.AtlasWorldgenConfig;
+import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -76,20 +77,25 @@ public final class AtlasLandcoverIndex {
     }
 
     public Optional<LandcoverSample> sample(double latitude, double longitude) {
-        for (LandcoverTile tile : tiles) {
-            if (!tile.contains(latitude, longitude)) {
-                continue;
-            }
-            try {
-                Optional<LandcoverSample> sample = tile.sample(latitude, longitude);
-                if (sample.isPresent()) {
-                    return sample;
+        long started = AtlasWorldgenProfiler.start();
+        try {
+            for (LandcoverTile tile : tiles) {
+                if (!tile.contains(latitude, longitude)) {
+                    continue;
                 }
-            } catch (IOException | RuntimeException ex) {
-                RedlineAtlasWorldgen.LOGGER.warn("Failed to sample landcover tile {} at lat={}, lon={}", tile.id(), latitude, longitude, ex);
+                try {
+                    Optional<LandcoverSample> sample = tile.sample(latitude, longitude);
+                    if (sample.isPresent()) {
+                        return sample;
+                    }
+                } catch (IOException | RuntimeException ex) {
+                    RedlineAtlasWorldgen.LOGGER.warn("Failed to sample landcover tile {} at lat={}, lon={}", tile.id(), latitude, longitude, ex);
+                }
             }
+            return Optional.empty();
+        } finally {
+            AtlasWorldgenProfiler.recordSince("sample.landcover", started);
         }
-        return Optional.empty();
     }
 
     public int tileCount() {

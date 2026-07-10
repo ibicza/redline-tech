@@ -1,5 +1,6 @@
 package com.ibicza.redlineatlasworldgen.terrain;
 
+import com.ibicza.redlineatlasworldgen.bathymetry.AtlasOpenWaterGuide;
 import com.ibicza.redlineatlasworldgen.config.AtlasWorldgenConfig;
 import com.ibicza.redlineatlasworldgen.heightmap.AtlasCoordinateMapper;
 import com.ibicza.redlineatlasworldgen.heightmap.AtlasHeightmapIndex;
@@ -124,6 +125,9 @@ public final class AtlasNoiseGuide {
     }
 
     private static Optional<HeightSample> sample(AtlasHeightmapIndex index, int blockX, int blockZ) {
+        if (AtlasWorldgenConfig.OPEN_WATER_USE_FOR_NOISE_GUIDE.get()) {
+            return AtlasOpenWaterGuide.compositeHeightSample(blockX, blockZ);
+        }
         GeoPoint geo = AtlasCoordinateMapper.toGeo(blockX, blockZ);
         return index.sample(geo.latitude(), geo.longitude());
     }

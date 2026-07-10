@@ -1,6 +1,7 @@
 package com.ibicza.redlineatlasworldgen.mixin;
 
 import com.ibicza.redlineatlasworldgen.terrain.AtlasNoiseContext;
+import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 import net.minecraft.server.level.GenerationChunkHolder;
 import net.minecraft.util.StaticCache2D;
 import net.minecraft.world.level.chunk.ChunkAccess;
@@ -42,4 +43,47 @@ public abstract class ChunkStatusTasksMixin {
         }
         future.whenComplete((ignored, throwable) -> AtlasNoiseContext.unregister(chunk.getPos(), context.level().dimension()));
     }
+
+    @Inject(method = "generateBiomes", at = @At("RETURN"))
+    private static void redlineAtlasWorldgen$profileGenerateBiomes(WorldGenContext context, ChunkStep step,
+                                                                   StaticCache2D<GenerationChunkHolder> cache,
+                                                                   ChunkAccess chunk,
+                                                                   CallbackInfoReturnable<CompletableFuture<ChunkAccess>> cir) {
+        profileFuture("chunkStatus.generateBiomes", cir);
+    }
+
+    @Inject(method = "generateNoise", at = @At("RETURN"))
+    private static void redlineAtlasWorldgen$profileGenerateNoise(WorldGenContext context, ChunkStep step,
+                                                                  StaticCache2D<GenerationChunkHolder> cache,
+                                                                  ChunkAccess chunk,
+                                                                  CallbackInfoReturnable<CompletableFuture<ChunkAccess>> cir) {
+        profileFuture("chunkStatus.generateNoise", cir);
+    }
+
+    @Inject(method = "generateSurface", at = @At("RETURN"))
+    private static void redlineAtlasWorldgen$profileGenerateSurface(WorldGenContext context, ChunkStep step,
+                                                                    StaticCache2D<GenerationChunkHolder> cache,
+                                                                    ChunkAccess chunk,
+                                                                    CallbackInfoReturnable<CompletableFuture<ChunkAccess>> cir) {
+        profileFuture("chunkStatus.generateSurface", cir);
+    }
+
+    @Inject(method = "generateCarvers", at = @At("RETURN"))
+    private static void redlineAtlasWorldgen$profileGenerateCarvers(WorldGenContext context, ChunkStep step,
+                                                                    StaticCache2D<GenerationChunkHolder> cache,
+                                                                    ChunkAccess chunk,
+                                                                    CallbackInfoReturnable<CompletableFuture<ChunkAccess>> cir) {
+        profileFuture("chunkStatus.generateCarvers", cir);
+    }
+
+    private static void profileFuture(String stage, CallbackInfoReturnable<CompletableFuture<ChunkAccess>> cir) {
+        long started = AtlasWorldgenProfiler.start();
+        CompletableFuture<ChunkAccess> future = cir.getReturnValue();
+        if (future == null) {
+            AtlasWorldgenProfiler.recordSince(stage, started);
+            return;
+        }
+        future.whenComplete((ignored, throwable) -> AtlasWorldgenProfiler.recordSince(stage, started));
+    }
+
 }

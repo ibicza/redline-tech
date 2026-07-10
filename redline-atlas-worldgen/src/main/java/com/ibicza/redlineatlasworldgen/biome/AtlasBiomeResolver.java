@@ -1,5 +1,6 @@
 package com.ibicza.redlineatlasworldgen.biome;
 
+import com.ibicza.redlineatlasworldgen.bathymetry.AtlasOpenWaterGuide;
 import com.ibicza.redlineatlasworldgen.config.AtlasWorldgenConfig;
 import com.ibicza.redlineatlasworldgen.heightmap.AtlasCoordinateMapper;
 import com.ibicza.redlineatlasworldgen.heightmap.AtlasHeightmapIndex;
@@ -8,6 +9,7 @@ import com.ibicza.redlineatlasworldgen.heightmap.HeightSample;
 import com.ibicza.redlineatlasworldgen.landcover.AtlasLandcoverIndex;
 import com.ibicza.redlineatlasworldgen.landcover.LandcoverClass;
 import com.ibicza.redlineatlasworldgen.landcover.LandcoverSample;
+import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Biomes;
@@ -19,16 +21,20 @@ import java.util.Optional;
 
 public final class AtlasBiomeResolver {
     public static Optional<AtlasBiomeContext> context(int blockX, int blockY, int blockZ, long seed) {
+        long started = AtlasWorldgenProfiler.start();
+        try {
         if (!AtlasWorldgenConfig.BIOME_GUIDE_ENABLED.get()) {
             return Optional.empty();
         }
 
         GeoPoint geo = AtlasCoordinateMapper.toGeo(blockX, blockZ);
-        Optional<HeightSample> height = AtlasHeightmapIndex.active().sample(geo.latitude(), geo.longitude());
+        Optional<HeightSample> height = AtlasOpenWaterGuide.compositeHeightSample(blockX, blockZ);
         if (height.isEmpty()) {
             return Optional.empty();
         }
 
+        AtlasOpenWaterGuide.OpenWaterSample openWater = AtlasOpenWaterGuide.sample(blockX, blockZ);
+        WaterContext water = waterContext(openWater);
         LandcoverDecision landcover = landcoverDecision(blockX, blockZ, geo);
         double elevationMeters = height.get().meters();
         int surfaceY = AtlasCoordinateMapper.metersToWorldY(elevationMeters);
@@ -40,15 +46,24 @@ public final class AtlasBiomeResolver {
         return Optional.of(new AtlasBiomeContext(blockX, blockY, blockZ,
                 geo.latitude(), geo.longitude(), elevationMeters, surfaceY, relativeY,
                 landcover.landcover(), landcover.rawCode(), landcover.source(), slope.slope(), slope.roughness(),
-                temperature, humidity, WaterContext.NONE, seed));
+                temperature, humidity, water, seed));
+        } finally {
+            AtlasWorldgenProfiler.recordSince("biome.context", started);
+        }
     }
 
     public static ResourceKey<Biome> resolve(AtlasBiomeContext ctx, ResourceKey<Biome> vanillaBiome) {
+        long started = AtlasWorldgenProfiler.start();
+        try {
         if (ctx.relativeY() < AtlasWorldgenConfig.BIOME_SURFACE_RELATIVE_MIN_Y.get()) {
             return vanillaBiome;
         }
-        if (ctx.landcover() == LandcoverClass.WATER) {
-            // Water/coast/river layer is intentionally not active yet. Avoid creating slope-water bugs again.
+        ResourceKey<Biome> waterBiome = resolveOpenWater(ctx, vanillaBiome);
+        if (waterBiome != null) {
+            return waterBiome;
+        }
+        if (ctx.landcover() == LandcoverClass.WATER && !ctx.water().hasWaterData()) {
+            // WorldCover water alone is still ignored. Physical water/coast decisions come from bathymetry layers.
             return vanillaBiome;
         }
 
@@ -93,6 +108,39 @@ public final class AtlasBiomeResolver {
                     : configured(AtlasWorldgenConfig.BIOME_BARE_ROUGH.get(), vanillaBiome);
             case UNKNOWN, WATER -> fallbackByHeight(ctx, vanillaBiome);
         };
+        } finally {
+            AtlasWorldgenProfiler.recordSince("biome.resolve", started);
+        }
+    }
+
+    private static ResourceKey<Biome> resolveOpenWater(AtlasBiomeContext ctx, ResourceKey<Biome> vanillaBiome) {
+        if (!ctx.water().hasWaterData()) {
+            return null;
+        }
+
+        if (ctx.water().kind() == WaterContext.WaterKind.OPEN_OCEAN) {
+            boolean deep = ctx.water().waterDepthMeters() >= AtlasWorldgenConfig.OPEN_WATER_DEEP_DEPTH_METERS.get();
+            if (ctx.temperatureC() <= AtlasWorldgenConfig.BIOME_FREEZING_TEMPERATURE_C.get()) {
+                return configured(deep ? AtlasWorldgenConfig.BIOME_DEEP_FROZEN_OCEAN.get() : AtlasWorldgenConfig.BIOME_FROZEN_OCEAN.get(), vanillaBiome);
+            }
+            if (ctx.temperatureC() <= AtlasWorldgenConfig.BIOME_COLD_TEMPERATURE_C.get() + 4.0D) {
+                return configured(deep ? AtlasWorldgenConfig.BIOME_DEEP_COLD_OCEAN.get() : AtlasWorldgenConfig.BIOME_COLD_OCEAN.get(), vanillaBiome);
+            }
+            return configured(deep ? AtlasWorldgenConfig.BIOME_DEEP_OCEAN.get() : AtlasWorldgenConfig.BIOME_OCEAN.get(), vanillaBiome);
+        }
+
+        if (ctx.water().kind() == WaterContext.WaterKind.OPEN_OCEAN_COAST) {
+            if (ctx.slope() <= AtlasWorldgenConfig.OPEN_WATER_BEACH_MAX_SLOPE.get()) {
+                return configured(ctx.temperatureC() <= AtlasWorldgenConfig.BIOME_FREEZING_TEMPERATURE_C.get()
+                        ? AtlasWorldgenConfig.BIOME_SNOWY_BEACH.get()
+                        : AtlasWorldgenConfig.BIOME_BEACH.get(), vanillaBiome);
+            }
+            if (ctx.slope() >= AtlasWorldgenConfig.OPEN_WATER_STONY_SHORE_SLOPE.get()) {
+                return configured(AtlasWorldgenConfig.BIOME_STONY_SHORE.get(), vanillaBiome);
+            }
+        }
+
+        return null;
     }
 
     private static ResourceKey<Biome> resolveSnowIce(AtlasBiomeContext ctx, ResourceKey<Biome> vanillaBiome) {
@@ -370,7 +418,7 @@ public final class AtlasBiomeResolver {
         };
         for (int[] offset : offsets) {
             GeoPoint geo = AtlasCoordinateMapper.toGeo(blockX + offset[0], blockZ + offset[1]);
-            Optional<HeightSample> sample = index.sample(geo.latitude(), geo.longitude());
+            Optional<HeightSample> sample = AtlasOpenWaterGuide.compositeHeightSample(blockX + offset[0], blockZ + offset[1]);
             if (sample.isPresent()) {
                 double delta = Math.abs(sample.get().meters() - centerMeters);
                 maxDelta = Math.max(maxDelta, delta);
@@ -420,6 +468,21 @@ public final class AtlasBiomeResolver {
 
     private static double clamp01(double value) {
         return Math.max(0.0D, Math.min(1.0D, value));
+    }
+
+    private static WaterContext waterContext(AtlasOpenWaterGuide.OpenWaterSample sample) {
+        return switch (sample.kind()) {
+            case NONE -> WaterContext.NONE;
+            case OCEAN -> new WaterContext(WaterContext.WaterKind.OPEN_OCEAN, true, true, sample.distanceToOceanBlocks(),
+                    Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, sample.depthMeters(), sample.bottomMeters(),
+                    sample.waterSurfaceMeters(), sample.sourceId(), sample.resolutionMeters());
+            case COAST -> new WaterContext(WaterContext.WaterKind.OPEN_OCEAN_COAST, true, false, sample.distanceToOceanBlocks(),
+                    Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, sample.depthMeters(), sample.bottomMeters(),
+                    sample.waterSurfaceMeters(), sample.sourceId(), sample.resolutionMeters());
+            case NON_OCEAN_OR_LAND_GEBCO -> new WaterContext(WaterContext.WaterKind.GEBCO_LAND_OR_CLOSED_WATER, false, false,
+                    Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, sample.depthMeters(),
+                    sample.bottomMeters(), sample.waterSurfaceMeters(), sample.sourceId(), sample.resolutionMeters());
+        };
     }
 
     private record LandcoverDecision(LandcoverClass landcover, int rawCode, String source, int sampleCount) {

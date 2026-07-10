@@ -22,6 +22,36 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue MAX_TERRAIN_DELTA_PER_PASS;
     public static final ModConfigSpec.BooleanValue FILL_WATER_BELOW_SEA_LEVEL;
     public static final ModConfigSpec.ConfigValue<String> LANDCOVER_TILE_ROOT;
+    public static final ModConfigSpec.ConfigValue<String> OCEAN_BATHYMETRY_TILE_ROOT;
+    public static final ModConfigSpec.BooleanValue OPEN_WATER_GUIDE_ENABLED;
+    public static final ModConfigSpec.BooleanValue OPEN_WATER_USE_FOR_NOISE_GUIDE;
+    public static final ModConfigSpec.DoubleValue OPEN_WATER_SEA_LEVEL_METERS;
+    public static final ModConfigSpec.DoubleValue OPEN_WATER_MIN_OCEAN_DEPTH_METERS;
+    public static final ModConfigSpec.DoubleValue OPEN_WATER_LAND_OVERRIDE_METERS;
+    public static final ModConfigSpec.IntValue OPEN_WATER_COAST_RADIUS_BLOCKS;
+    public static final ModConfigSpec.IntValue OPEN_WATER_COAST_STEP_BLOCKS;
+    public static final ModConfigSpec.DoubleValue OPEN_WATER_SHALLOW_DEPTH_METERS;
+    public static final ModConfigSpec.DoubleValue OPEN_WATER_DEEP_DEPTH_METERS;
+    public static final ModConfigSpec.DoubleValue OPEN_WATER_BEACH_MAX_SLOPE;
+    public static final ModConfigSpec.DoubleValue OPEN_WATER_STONY_SHORE_SLOPE;
+    public static final ModConfigSpec.BooleanValue OPEN_WATER_USE_LAND_DEM_FOR_COAST;
+    public static final ModConfigSpec.BooleanValue SURFACE_POLISH_ENABLED;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_CHUNKS_PER_TICK;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_COLUMNS_PER_TICK;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_TOP_SCAN_BLOCKS;
+    public static final ModConfigSpec.BooleanValue SURFACE_POLISH_ONLY_NEW_CHUNKS;
+    public static final ModConfigSpec.BooleanValue PROFILER_ENABLED;
+    public static final ModConfigSpec.BooleanValue PROFILER_LOG_PERIODICALLY;
+    public static final ModConfigSpec.IntValue PROFILER_LOG_INTERVAL_TICKS;
+    public static final ModConfigSpec.ConfigValue<String> BIOME_OCEAN;
+    public static final ModConfigSpec.ConfigValue<String> BIOME_COLD_OCEAN;
+    public static final ModConfigSpec.ConfigValue<String> BIOME_FROZEN_OCEAN;
+    public static final ModConfigSpec.ConfigValue<String> BIOME_DEEP_OCEAN;
+    public static final ModConfigSpec.ConfigValue<String> BIOME_DEEP_COLD_OCEAN;
+    public static final ModConfigSpec.ConfigValue<String> BIOME_DEEP_FROZEN_OCEAN;
+    public static final ModConfigSpec.ConfigValue<String> BIOME_BEACH;
+    public static final ModConfigSpec.ConfigValue<String> BIOME_STONY_SHORE;
+    public static final ModConfigSpec.ConfigValue<String> BIOME_SNOWY_BEACH;
     public static final ModConfigSpec.BooleanValue BIOME_GUIDE_ENABLED;
     public static final ModConfigSpec.DoubleValue BIOME_GUIDE_STRENGTH;
     public static final ModConfigSpec.IntValue BIOME_CELL_SIZE_BLOCKS;
@@ -142,8 +172,59 @@ public final class AtlasWorldgenConfig {
                 .define("tileRoot", "config/redline-atlas-worldgen/landcover");
         builder.pop();
 
+        builder.push("ocean_bathymetry");
+        OCEAN_BATHYMETRY_TILE_ROOT = builder.comment("Open ocean / ocean-connected sea bathymetry tile directory. Relative paths are resolved against the game directory. Put GEBCO data GeoTIFF tiles here. Bounds are inferred from filenames with n/s/w/e or bbox_west_south_east_north, or from .rbathy.properties sidecars.")
+                .define("tileRoot", "config/redline-atlas-worldgen/ocean_bathymetry");
+        OPEN_WATER_GUIDE_ENABLED = builder.comment("Enable open-ocean bathymetry/coast classification. This does not place fluids; it only guides terrain macro-height and biome choice.")
+                .define("enabled", true);
+        OPEN_WATER_USE_FOR_NOISE_GUIDE = builder.comment("When true, ocean bathymetry can guide the vanilla density shifter in places where land DEM does not override it. This creates ocean-floor macro-heights, but still does not manually place water.")
+                .define("useForNoiseGuide", true);
+        OPEN_WATER_SEA_LEVEL_METERS = builder.comment("Real-world open ocean water surface in meters. Open oceans and ocean-connected seas use 0m; closed seas/lakes will be separate layers later.")
+                .defineInRange("seaLevelMeters", 0.0D, -10000.0D, 10000.0D);
+        OPEN_WATER_MIN_OCEAN_DEPTH_METERS = builder.comment("Minimum positive depth for a bathymetry sample to be treated as open water. Keeps tiny/noisy near-zero values from turning land into ocean.")
+                .defineInRange("minOceanDepthMeters", 1.0D, 0.0D, 1000.0D);
+        OPEN_WATER_LAND_OVERRIDE_METERS = builder.comment("If land DEM at a point is above seaLevelMeters by more than this amount, land wins over coarse ocean bathymetry at that point. This protects detailed coasts/islands.")
+                .defineInRange("landOverrideMeters", 2.0D, -100.0D, 1000.0D);
+        OPEN_WATER_COAST_RADIUS_BLOCKS = builder.comment("Radius in Minecraft blocks to search for nearby open ocean when classifying land as coast.")
+                .defineInRange("coastRadiusBlocks", 96, 0, 2048);
+        OPEN_WATER_COAST_STEP_BLOCKS = builder.comment("Step in Minecraft blocks for open-ocean coast search. Larger is faster; smaller gives tighter shore detection.")
+                .defineInRange("coastStepBlocks", 16, 1, 512);
+        OPEN_WATER_SHALLOW_DEPTH_METERS = builder.comment("Depth under which water is considered shallow/coastal ocean for debug and future surface rules.")
+                .defineInRange("shallowDepthMeters", 8.0D, 0.0D, 10000.0D);
+        OPEN_WATER_DEEP_DEPTH_METERS = builder.comment("Depth at which ocean biomes switch from ocean to deep_ocean variants.")
+                .defineInRange("deepDepthMeters", 80.0D, 1.0D, 12000.0D);
+        OPEN_WATER_BEACH_MAX_SLOPE = builder.comment("Maximum atlas slope for coast land to become beach/snowy_beach.")
+                .defineInRange("beachMaxSlope", 0.12D, 0.0D, 8.0D);
+        OPEN_WATER_STONY_SHORE_SLOPE = builder.comment("Minimum atlas slope for coast land to become stony_shore. Between beachMaxSlope and this value the resolver keeps the normal land biome.")
+                .defineInRange("stonyShoreSlope", 0.28D, 0.0D, 8.0D);
+        OPEN_WATER_USE_LAND_DEM_FOR_COAST = builder.comment("When true, positive/negative land DEM near sea level is used as the precise coastline while coarse GEBCO remains the ocean-floor layer. This is the preferred mode for GLO-30 coasts.")
+                .define("useLandDemForCoast", true);
+        builder.pop();
+
+        builder.push("surface_polish");
+        SURFACE_POLISH_ENABLED = builder.comment("Apply a lightweight post-generation top-material polish on newly loaded chunks. This fixes stone/deepslate exposed by atlas Y-shift without rewriting terrain shape.")
+                .define("enabled", true);
+        SURFACE_POLISH_ONLY_NEW_CHUNKS = builder.comment("When true, surface polish is only queued for newly generated chunks. Disable for debugging old test chunks.")
+                .define("onlyNewChunks", true);
+        SURFACE_POLISH_CHUNKS_PER_TICK = builder.comment("Maximum chunks processed by surface polish per server tick.")
+                .defineInRange("chunksPerTick", 1, 0, 64);
+        SURFACE_POLISH_COLUMNS_PER_TICK = builder.comment("Maximum columns processed by surface polish per server tick.")
+                .defineInRange("columnsPerTick", 512, 0, 65536);
+        SURFACE_POLISH_TOP_SCAN_BLOCKS = builder.comment("How many blocks below the heightmap top to scan for the first solid block.")
+                .defineInRange("topScanBlocks", 24, 1, 256);
+        builder.pop();
+
+        builder.push("profiler");
+        PROFILER_ENABLED = builder.comment("Enable lightweight atlas/worldgen profiler counters. Use /rla profile to view timings.")
+                .define("enabled", true);
+        PROFILER_LOG_PERIODICALLY = builder.comment("When true, logs profiler summary every profiler.logIntervalTicks server ticks.")
+                .define("logPeriodically", false);
+        PROFILER_LOG_INTERVAL_TICKS = builder.comment("Profiler periodic log interval in server ticks.")
+                .defineInRange("logIntervalTicks", 200, 20, 72000);
+        builder.pop();
+
         builder.push("biome_guide");
-        BIOME_GUIDE_ENABLED = builder.comment("Patch vanilla Overworld biome selection using atlas height + ESA WorldCover landcover. Water/coast logic is intentionally disabled in this MVP.")
+        BIOME_GUIDE_ENABLED = builder.comment("Patch vanilla Overworld biome selection using atlas height + ESA WorldCover landcover + optional open-ocean bathymetry/coast guide.")
                 .define("enabled", true);
         BIOME_GUIDE_STRENGTH = builder.comment("Chance/strength of replacing vanilla biome when atlas biome context is available. 1.0 = always use atlas resolver, 0.0 = vanilla.")
                 .defineInRange("strength", 1.0D, 0.0D, 1.0D);
@@ -155,7 +236,7 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("landcoverSmoothRadiusBlocks", 48, 0, 512);
         BIOME_LANDCOVER_SMOOTH_STEP_BLOCKS = builder.comment("Step in blocks for landcover majority filtering. Larger is faster; smaller follows source tiles more tightly.")
                 .defineInRange("landcoverSmoothStepBlocks", 24, 1, 256);
-        BIOME_IGNORE_WATER_LANDCOVER = builder.comment("When true, WorldCover water pixels are ignored by the biome layer until a dedicated water/coast atlas exists.")
+        BIOME_IGNORE_WATER_LANDCOVER = builder.comment("When true, WorldCover water pixels are ignored by the biome layer. Open-ocean water comes from ocean_bathymetry instead.")
                 .define("ignoreWaterLandcover", true);
         BIOME_EQUATOR_TEMPERATURE_C = builder.comment("Base sea-level temperature at equator, before latitude/elevation/noise corrections.")
                 .defineInRange("equatorTemperatureC", 30.0D, -100.0D, 100.0D);
@@ -234,6 +315,24 @@ public final class AtlasWorldgenConfig {
                 .define("wetlandBiome", "minecraft:swamp");
         BIOME_MANGROVE = builder.comment("Biome for mangrove landcover.")
                 .define("mangroveBiome", "minecraft:mangrove_swamp");
+        BIOME_OCEAN = builder.comment("Biome for normal open ocean water.")
+                .define("oceanBiome", "minecraft:ocean");
+        BIOME_COLD_OCEAN = builder.comment("Biome for cold open ocean water.")
+                .define("coldOceanBiome", "minecraft:cold_ocean");
+        BIOME_FROZEN_OCEAN = builder.comment("Biome for freezing open ocean water.")
+                .define("frozenOceanBiome", "minecraft:frozen_ocean");
+        BIOME_DEEP_OCEAN = builder.comment("Biome for deep open ocean water.")
+                .define("deepOceanBiome", "minecraft:deep_ocean");
+        BIOME_DEEP_COLD_OCEAN = builder.comment("Biome for deep cold open ocean water.")
+                .define("deepColdOceanBiome", "minecraft:deep_cold_ocean");
+        BIOME_DEEP_FROZEN_OCEAN = builder.comment("Biome for deep freezing open ocean water.")
+                .define("deepFrozenOceanBiome", "minecraft:deep_frozen_ocean");
+        BIOME_BEACH = builder.comment("Biome for low-slope open-ocean coast.")
+                .define("beachBiome", "minecraft:beach");
+        BIOME_STONY_SHORE = builder.comment("Biome for steep open-ocean coast.")
+                .define("stonyShoreBiome", "minecraft:stony_shore");
+        BIOME_SNOWY_BEACH = builder.comment("Biome for low-slope freezing open-ocean coast.")
+                .define("snowyBeachBiome", "minecraft:snowy_beach");
         builder.pop();
 
         builder.push("debug");

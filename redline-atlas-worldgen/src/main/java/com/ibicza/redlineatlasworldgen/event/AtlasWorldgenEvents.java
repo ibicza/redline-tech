@@ -1,6 +1,7 @@
 package com.ibicza.redlineatlasworldgen.event;
 
 import com.ibicza.redlineatlasworldgen.RedlineAtlasWorldgen;
+import com.ibicza.redlineatlasworldgen.bathymetry.AtlasOceanBathymetryIndex;
 import com.ibicza.redlineatlasworldgen.command.AtlasWorldgenCommands;
 import com.ibicza.redlineatlasworldgen.config.AtlasWorldgenConfig;
 import com.ibicza.redlineatlasworldgen.heightmap.AtlasHeightmapIndex;
@@ -8,6 +9,8 @@ import com.ibicza.redlineatlasworldgen.landcover.AtlasLandcoverIndex;
 import com.ibicza.redlineatlasworldgen.biome.AtlasBiomeHolderLookup;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasNoiseGuide;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasTerrainShaper;
+import com.ibicza.redlineatlasworldgen.surface.AtlasSurfaceMaterialPolisher;
+import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 import net.minecraft.server.level.ServerLevel;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -23,6 +26,7 @@ public final class AtlasWorldgenEvents {
         if (event.getLevel() instanceof ServerLevel level) {
             AtlasHeightmapIndex.reload(level.getServer().getServerDirectory());
             AtlasLandcoverIndex.reload(level.getServer().getServerDirectory());
+            AtlasOceanBathymetryIndex.reload(level.getServer().getServerDirectory());
             AtlasNoiseGuide.clearCache();
             AtlasBiomeHolderLookup.clearCache();
         }
@@ -33,6 +37,9 @@ public final class AtlasWorldgenEvents {
         if (!(event.getLevel() instanceof ServerLevel level)) {
             return;
         }
+
+        AtlasSurfaceMaterialPolisher.enqueue(level, event.getChunk().getPos(), event.isNewChunk());
+
         if (!AtlasWorldgenConfig.AUTO_POST_SHAPE_CHUNKS.get()) {
             return;
         }
@@ -47,6 +54,8 @@ public final class AtlasWorldgenEvents {
     @SubscribeEvent
     public static void onServerTick(ServerTickEvent.Post event) {
         AtlasTerrainShaper.tick(event.getServer());
+        AtlasSurfaceMaterialPolisher.tick(event.getServer());
+        AtlasWorldgenProfiler.serverTick();
     }
 
     @SubscribeEvent

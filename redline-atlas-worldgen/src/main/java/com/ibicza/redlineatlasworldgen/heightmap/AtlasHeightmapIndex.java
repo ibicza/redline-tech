@@ -2,6 +2,7 @@ package com.ibicza.redlineatlasworldgen.heightmap;
 
 import com.ibicza.redlineatlasworldgen.RedlineAtlasWorldgen;
 import com.ibicza.redlineatlasworldgen.config.AtlasWorldgenConfig;
+import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -78,20 +79,25 @@ public final class AtlasHeightmapIndex {
     }
 
     public Optional<HeightSample> sample(double latitude, double longitude) {
-        for (HeightTile tile : tiles) {
-            if (!tile.contains(latitude, longitude)) {
-                continue;
-            }
-            try {
-                var sample = tile.sampleMeters(latitude, longitude);
-                if (sample.isPresent()) {
-                    return Optional.of(new HeightSample(sample.getAsDouble(), tile.id(), tile.nominalResolutionMeters()));
+        long started = AtlasWorldgenProfiler.start();
+        try {
+            for (HeightTile tile : tiles) {
+                if (!tile.contains(latitude, longitude)) {
+                    continue;
                 }
-            } catch (IOException | RuntimeException ex) {
-                RedlineAtlasWorldgen.LOGGER.warn("Failed to sample height tile {} at lat={}, lon={}", tile.id(), latitude, longitude, ex);
+                try {
+                    var sample = tile.sampleMeters(latitude, longitude);
+                    if (sample.isPresent()) {
+                        return Optional.of(new HeightSample(sample.getAsDouble(), tile.id(), tile.nominalResolutionMeters()));
+                    }
+                } catch (IOException | RuntimeException ex) {
+                    RedlineAtlasWorldgen.LOGGER.warn("Failed to sample height tile {} at lat={}, lon={}", tile.id(), latitude, longitude, ex);
+                }
             }
+            return Optional.empty();
+        } finally {
+            AtlasWorldgenProfiler.recordSince("sample.height", started);
         }
-        return Optional.empty();
     }
 
     public int tileCount() {
