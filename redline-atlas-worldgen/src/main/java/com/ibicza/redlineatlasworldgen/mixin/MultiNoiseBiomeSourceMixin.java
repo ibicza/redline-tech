@@ -3,8 +3,11 @@ package com.ibicza.redlineatlasworldgen.mixin;
 import com.ibicza.redlineatlasworldgen.biome.AtlasBiomeContext;
 import com.ibicza.redlineatlasworldgen.biome.AtlasBiomeHolderLookup;
 import com.ibicza.redlineatlasworldgen.biome.AtlasBiomeResolver;
+import com.ibicza.redlineatlasworldgen.terrain.AtlasNoiseContext;
 import net.minecraft.core.Holder;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
@@ -14,6 +17,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.Optional;
+import java.util.OptionalLong;
 
 @Mixin(MultiNoiseBiomeSource.class)
 public abstract class MultiNoiseBiomeSourceMixin {
@@ -29,7 +33,14 @@ public abstract class MultiNoiseBiomeSourceMixin {
         int blockX = quartX << 2;
         int blockY = quartY << 2;
         int blockZ = quartZ << 2;
-        Optional<AtlasBiomeContext> context = AtlasBiomeResolver.context(blockX, blockY, blockZ, 0L);
+        ChunkPos chunkPos = new ChunkPos(blockX >> 4, blockZ >> 4);
+        Optional<ResourceKey<Level>> dimension = AtlasNoiseContext.dimensionFor(chunkPos);
+        if (dimension.isEmpty() || !AtlasNoiseContext.shouldGuideBiome(dimension.get())) {
+            return;
+        }
+
+        OptionalLong seed = AtlasNoiseContext.seedFor(chunkPos);
+        Optional<AtlasBiomeContext> context = AtlasBiomeResolver.context(blockX, blockY, blockZ, seed.orElse(0L));
         if (context.isEmpty()) {
             return;
         }

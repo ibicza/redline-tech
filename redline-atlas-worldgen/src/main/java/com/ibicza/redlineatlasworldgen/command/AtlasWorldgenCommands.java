@@ -140,7 +140,6 @@ public final class AtlasWorldgenCommands {
         int blockX = (int) Math.floor(pos.x());
         int blockY = (int) Math.floor(pos.y());
         int blockZ = (int) Math.floor(pos.z());
-
         BlockPos blockPos = new BlockPos(blockX, blockY, blockZ);
 
         var actualBiomeHolder = level.getBiome(blockPos);
@@ -148,6 +147,7 @@ public final class AtlasWorldgenCommands {
                 .map(String::valueOf)
                 .orElse(actualBiomeHolder.toString());
 
+        // Use level seed here so the debug command matches the biome guide used during new chunk generation.
         var biomeContext = AtlasBiomeResolver.context(blockX, blockY, blockZ, level.getSeed());
         if (biomeContext.isEmpty()) {
             context.getSource().sendFailure(Component.literal("RLA no biome atlas context at x=" + blockX + ", y=" + blockY + ", z=" + blockZ
@@ -157,19 +157,19 @@ public final class AtlasWorldgenCommands {
 
         AtlasBiomeContext ctx = biomeContext.get();
         var selected = AtlasBiomeResolver.resolve(ctx, Biomes.PLAINS);
-
         context.getSource().sendSuccess(() -> Component.literal("RLA biome_sample x=" + blockX + ", y=" + blockY + ", z=" + blockZ
                 + " -> lat=" + ctx.latitude() + ", lon=" + ctx.longitude()
                 + ", height=" + ctx.elevationMeters() + "m"
                 + ", surfaceY=" + ctx.surfaceY()
                 + ", relY=" + ctx.relativeY()
                 + ", landcover=" + ctx.landcover().id() + "(" + ctx.landcoverRawCode() + ")"
+                + ", lcSource=" + ctx.landcoverSource()
                 + ", slope=" + ctx.slope()
+                + ", rough=" + ctx.roughness()
                 + ", temp=" + ctx.temperatureC() + "C"
                 + ", humidity=" + ctx.humidity01()
                 + ", selected=" + selected
                 + ", actual=" + actualBiome), false);
-
         return ctx.surfaceY();
     }
 

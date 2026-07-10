@@ -31,19 +31,18 @@ public final class AtlasBiomeHolderLookup {
     private static Map<ResourceKey<Biome>, Holder<Biome>> scan(Object biomeSource) {
         Map<ResourceKey<Biome>, Holder<Biome>> result = new HashMap<>();
 
-        // Главный путь: публичный BiomeSource#possibleBiomes().
-        // Он должен дать все Holder<Biome>, которые этот biome source вообще может вернуть.
+        // Main path: public BiomeSource#possibleBiomes(). It exposes every holder this source can return.
         if (biomeSource instanceof BiomeSource source) {
             try {
                 for (Holder<Biome> holder : source.possibleBiomes()) {
                     put(result, holder);
                 }
             } catch (RuntimeException ignored) {
-                // Ниже есть reflection fallback.
+                // Reflection fallback below.
             }
         }
 
-        // Старый fallback через reflection оставляем на всякий случай.
+        // Best-effort fallback for custom/changed biome sources.
         Class<?> type = biomeSource.getClass();
         while (type != null && type != Object.class) {
             for (Field field : type.getDeclaredFields()) {
@@ -54,14 +53,11 @@ public final class AtlasBiomeHolderLookup {
                         continue;
                     }
 
-                    // Прямой Climate.ParameterList.
                     if (value.getClass().getName().contains("Climate$ParameterList")) {
                         readParameterList(value, result);
                         continue;
                     }
 
-                    // Иногда список может лежать внутри holder/either/record-обёрток.
-                    // Пытаемся найти метод value(), который вернёт ParameterList.
                     try {
                         Method valueMethod = value.getClass().getMethod("value");
                         Object inner = valueMethod.invoke(value);
@@ -72,7 +68,7 @@ public final class AtlasBiomeHolderLookup {
                         // best effort
                     }
                 } catch (ReflectiveOperationException | RuntimeException ignored) {
-                    // Best-effort reflection.
+                    // best effort
                 }
             }
             type = type.getSuperclass();

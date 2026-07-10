@@ -25,11 +25,22 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.BooleanValue BIOME_GUIDE_ENABLED;
     public static final ModConfigSpec.DoubleValue BIOME_GUIDE_STRENGTH;
     public static final ModConfigSpec.IntValue BIOME_CELL_SIZE_BLOCKS;
+    public static final ModConfigSpec.IntValue BIOME_SURFACE_RELATIVE_MIN_Y;
+    public static final ModConfigSpec.IntValue BIOME_LANDCOVER_SMOOTH_RADIUS_BLOCKS;
+    public static final ModConfigSpec.IntValue BIOME_LANDCOVER_SMOOTH_STEP_BLOCKS;
+    public static final ModConfigSpec.BooleanValue BIOME_IGNORE_WATER_LANDCOVER;
     public static final ModConfigSpec.DoubleValue BIOME_EQUATOR_TEMPERATURE_C;
     public static final ModConfigSpec.DoubleValue BIOME_LATITUDE_TEMPERATURE_LOSS_C;
     public static final ModConfigSpec.DoubleValue BIOME_LAPSE_RATE_C_PER_KM;
     public static final ModConfigSpec.DoubleValue BIOME_TEMPERATURE_NOISE_C;
+    public static final ModConfigSpec.DoubleValue BIOME_FREEZING_TEMPERATURE_C;
+    public static final ModConfigSpec.DoubleValue BIOME_COLD_TEMPERATURE_C;
+    public static final ModConfigSpec.DoubleValue BIOME_HOT_TEMPERATURE_C;
+    public static final ModConfigSpec.DoubleValue BIOME_TROPICAL_TEMPERATURE_C;
     public static final ModConfigSpec.DoubleValue BIOME_HUMIDITY_NOISE;
+    public static final ModConfigSpec.DoubleValue BIOME_DRY_HUMIDITY;
+    public static final ModConfigSpec.DoubleValue BIOME_WET_HUMIDITY;
+    public static final ModConfigSpec.DoubleValue BIOME_TROPICAL_WET_HUMIDITY;
     public static final ModConfigSpec.DoubleValue BIOME_ELEVATION_DRYING_PER_KM;
     public static final ModConfigSpec.DoubleValue BIOME_SLOPE_DRYING;
     public static final ModConfigSpec.IntValue BIOME_SLOPE_RADIUS_BLOCKS;
@@ -138,6 +149,14 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("strength", 1.0D, 0.0D, 1.0D);
         BIOME_CELL_SIZE_BLOCKS = builder.comment("Stable cell size for biome variant noise. Larger values make bigger biome patches and less mosaic noise.")
                 .defineInRange("cellSizeBlocks", 384, 16, 8192);
+        BIOME_SURFACE_RELATIVE_MIN_Y = builder.comment("Biome guide is applied only above this Y relative to atlas surface. Lower values keep cave/underground biomes closer to vanilla.")
+                .defineInRange("surfaceRelativeMinY", -48, -4096, 4096);
+        BIOME_LANDCOVER_SMOOTH_RADIUS_BLOCKS = builder.comment("Radius in blocks for majority-filtering ESA WorldCover before biome choice. 0 = exact pixel. Helps avoid 10m landcover mosaic.")
+                .defineInRange("landcoverSmoothRadiusBlocks", 48, 0, 512);
+        BIOME_LANDCOVER_SMOOTH_STEP_BLOCKS = builder.comment("Step in blocks for landcover majority filtering. Larger is faster; smaller follows source tiles more tightly.")
+                .defineInRange("landcoverSmoothStepBlocks", 24, 1, 256);
+        BIOME_IGNORE_WATER_LANDCOVER = builder.comment("When true, WorldCover water pixels are ignored by the biome layer until a dedicated water/coast atlas exists.")
+                .define("ignoreWaterLandcover", true);
         BIOME_EQUATOR_TEMPERATURE_C = builder.comment("Base sea-level temperature at equator, before latitude/elevation/noise corrections.")
                 .defineInRange("equatorTemperatureC", 30.0D, -100.0D, 100.0D);
         BIOME_LATITUDE_TEMPERATURE_LOSS_C = builder.comment("Temperature loss per absolute latitude degree.")
@@ -146,8 +165,22 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("lapseRateCPerKm", 6.5D, 0.0D, 20.0D);
         BIOME_TEMPERATURE_NOISE_C = builder.comment("Seed climate noise amplitude in Celsius.")
                 .defineInRange("temperatureNoiseC", 3.0D, 0.0D, 30.0D);
+        BIOME_FREEZING_TEMPERATURE_C = builder.comment("Temperature threshold treated as freezing for snow/ice decisions.")
+                .defineInRange("freezingTemperatureC", 0.0D, -50.0D, 50.0D);
+        BIOME_COLD_TEMPERATURE_C = builder.comment("Temperature threshold treated as cold/taiga/grove.")
+                .defineInRange("coldTemperatureC", 2.0D, -50.0D, 50.0D);
+        BIOME_HOT_TEMPERATURE_C = builder.comment("Temperature threshold treated as hot for savanna/desert decisions.")
+                .defineInRange("hotTemperatureC", 22.0D, -50.0D, 80.0D);
+        BIOME_TROPICAL_TEMPERATURE_C = builder.comment("Temperature threshold treated as tropical for jungle decisions.")
+                .defineInRange("tropicalTemperatureC", 24.0D, -50.0D, 80.0D);
         BIOME_HUMIDITY_NOISE = builder.comment("Seed humidity noise amplitude, added to 0..1 humidity.")
                 .defineInRange("humidityNoise", 0.12D, 0.0D, 1.0D);
+        BIOME_DRY_HUMIDITY = builder.comment("Humidity threshold treated as dry for savanna/desert decisions.")
+                .defineInRange("dryHumidity", 0.35D, 0.0D, 1.0D);
+        BIOME_WET_HUMIDITY = builder.comment("Humidity threshold treated as wet for dark forest/wet variants.")
+                .defineInRange("wetHumidity", 0.72D, 0.0D, 1.0D);
+        BIOME_TROPICAL_WET_HUMIDITY = builder.comment("Humidity threshold for tropical wet tree cover to become jungle.")
+                .defineInRange("tropicalWetHumidity", 0.62D, 0.0D, 1.0D);
         BIOME_ELEVATION_DRYING_PER_KM = builder.comment("Humidity removed per 1000 meters of elevation.")
                 .defineInRange("elevationDryingPerKm", 0.08D, 0.0D, 1.0D);
         BIOME_SLOPE_DRYING = builder.comment("Humidity removed at steep slopes. Multiplied by computed slope.")

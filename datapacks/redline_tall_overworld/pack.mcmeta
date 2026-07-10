@@ -1,6 +1,6 @@
 {
   "pack": {
     "pack_format": 103,
-    "description": "Redline Tall Overworld: vanilla-limit height -2032..2031 for Minecraft 26.2"
+    "description": "Redline Tall Overworld + Noise Height: -2032..2031, sea level 0, aquifers off for atlas worldgen"
   }
 }

@@ -12,7 +12,9 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Biomes;
 
+import java.util.EnumMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 
 public final class AtlasBiomeResolver {
@@ -27,27 +29,22 @@ public final class AtlasBiomeResolver {
             return Optional.empty();
         }
 
-        Optional<LandcoverSample> landcoverSample = AtlasLandcoverIndex.active().sample(geo.latitude(), geo.longitude());
-        LandcoverClass landcover = landcoverSample.map(LandcoverSample::landcover).orElse(LandcoverClass.UNKNOWN);
-        int rawLandcover = landcoverSample.map(LandcoverSample::rawCode).orElse(0);
-        String landcoverSource = landcoverSample.map(LandcoverSample::sourceId).orElse("none");
-
+        LandcoverDecision landcover = landcoverDecision(blockX, blockZ, geo);
         double elevationMeters = height.get().meters();
         int surfaceY = AtlasCoordinateMapper.metersToWorldY(elevationMeters);
         int relativeY = blockY - surfaceY;
-        double slope = slope(blockX, blockZ, elevationMeters);
-        double roughness = slope;
+        SlopeInfo slope = slope(blockX, blockZ, elevationMeters);
         double temperature = temperatureC(blockX, blockZ, geo.latitude(), elevationMeters, seed);
-        double humidity = humidity01(blockX, blockZ, landcover, elevationMeters, slope, geo.latitude(), seed);
+        double humidity = humidity01(blockX, blockZ, landcover.landcover(), elevationMeters, slope.roughness(), geo.latitude(), seed);
 
         return Optional.of(new AtlasBiomeContext(blockX, blockY, blockZ,
                 geo.latitude(), geo.longitude(), elevationMeters, surfaceY, relativeY,
-                landcover, rawLandcover, landcoverSource, slope, roughness,
+                landcover.landcover(), landcover.rawCode(), landcover.source(), slope.slope(), slope.roughness(),
                 temperature, humidity, WaterContext.NONE, seed));
     }
 
     public static ResourceKey<Biome> resolve(AtlasBiomeContext ctx, ResourceKey<Biome> vanillaBiome) {
-        if (ctx.relativeY() < -48) {
+        if (ctx.relativeY() < AtlasWorldgenConfig.BIOME_SURFACE_RELATIVE_MIN_Y.get()) {
             return vanillaBiome;
         }
         if (ctx.landcover() == LandcoverClass.WATER) {
@@ -76,7 +73,7 @@ public final class AtlasBiomeResolver {
                     ? AtlasWorldgenConfig.BIOME_HIGH_STEEP.get()
                     : AtlasWorldgenConfig.BIOME_HIGH_FLAT.get(), vanillaBiome);
         }
-        if (ctx.elevationMeters() >= AtlasWorldgenConfig.BIOME_ALPINE_METERS.get() && ctx.temperatureC() < 4.0D) {
+        if (ctx.elevationMeters() >= AtlasWorldgenConfig.BIOME_ALPINE_METERS.get() && ctx.temperatureC() < AtlasWorldgenConfig.BIOME_COLD_TEMPERATURE_C.get() + 2.0D) {
             return configured(ctx.slope() >= AtlasWorldgenConfig.BIOME_STEEP_SLOPE.get()
                     ? AtlasWorldgenConfig.BIOME_ALPINE_STEEP.get()
                     : AtlasWorldgenConfig.BIOME_ALPINE_FLAT.get(), vanillaBiome);
@@ -91,7 +88,7 @@ public final class AtlasBiomeResolver {
             case CROPLAND, URBAN -> resolveGrassLike(ctx, vanillaBiome);
             case WETLAND -> configured(AtlasWorldgenConfig.BIOME_WETLAND.get(), vanillaBiome);
             case MANGROVE -> configured(AtlasWorldgenConfig.BIOME_MANGROVE.get(), vanillaBiome);
-            case MOSS_LICHEN -> ctx.temperatureC() < 2.0D
+            case MOSS_LICHEN -> ctx.temperatureC() < AtlasWorldgenConfig.BIOME_COLD_TEMPERATURE_C.get()
                     ? configured(AtlasWorldgenConfig.BIOME_TREES_COLD.get(), vanillaBiome)
                     : configured(AtlasWorldgenConfig.BIOME_BARE_ROUGH.get(), vanillaBiome);
             case UNKNOWN, WATER -> fallbackByHeight(ctx, vanillaBiome);
@@ -108,13 +105,13 @@ public final class AtlasBiomeResolver {
     }
 
     private static ResourceKey<Biome> resolveBare(AtlasBiomeContext ctx, ResourceKey<Biome> vanillaBiome) {
-        if (ctx.temperatureC() > 22.0D && ctx.humidity01() < 0.25D) {
+        if (ctx.temperatureC() > AtlasWorldgenConfig.BIOME_HOT_TEMPERATURE_C.get() && ctx.humidity01() < AtlasWorldgenConfig.BIOME_DRY_HUMIDITY.get()) {
             return configured(AtlasWorldgenConfig.BIOME_BARE_HOT_DRY.get(), vanillaBiome);
         }
         if (ctx.slope() >= AtlasWorldgenConfig.BIOME_STEEP_SLOPE.get() || ctx.elevationMeters() >= AtlasWorldgenConfig.BIOME_MONTANE_METERS.get()) {
             return configured(AtlasWorldgenConfig.BIOME_BARE_ROUGH.get(), vanillaBiome);
         }
-        if (ctx.temperatureC() < 0.0D) {
+        if (ctx.temperatureC() < AtlasWorldgenConfig.BIOME_FREEZING_TEMPERATURE_C.get()) {
             return configured(AtlasWorldgenConfig.BIOME_SNOW_LOW.get(), vanillaBiome);
         }
         return configured(AtlasWorldgenConfig.BIOME_GRASS_TEMPERATE.get(), vanillaBiome);
@@ -122,16 +119,20 @@ public final class AtlasBiomeResolver {
 
     private static ResourceKey<Biome> resolveTrees(AtlasBiomeContext ctx, ResourceKey<Biome> vanillaBiome) {
         if (ctx.elevationMeters() >= AtlasWorldgenConfig.BIOME_ALPINE_METERS.get()) {
-            return configured(ctx.temperatureC() < 2.0D ? AtlasWorldgenConfig.BIOME_ALPINE_STEEP.get() : AtlasWorldgenConfig.BIOME_ALPINE_FLAT.get(), vanillaBiome);
+            return configured(ctx.temperatureC() < AtlasWorldgenConfig.BIOME_COLD_TEMPERATURE_C.get()
+                    ? AtlasWorldgenConfig.BIOME_ALPINE_STEEP.get()
+                    : AtlasWorldgenConfig.BIOME_ALPINE_FLAT.get(), vanillaBiome);
         }
-        if (ctx.temperatureC() >= 24.0D && ctx.humidity01() >= 0.62D) {
+        if (ctx.temperatureC() >= AtlasWorldgenConfig.BIOME_TROPICAL_TEMPERATURE_C.get()
+                && ctx.humidity01() >= AtlasWorldgenConfig.BIOME_TROPICAL_WET_HUMIDITY.get()) {
             return configured(AtlasWorldgenConfig.BIOME_TREES_TROPICAL_WET.get(), vanillaBiome);
         }
-        if (ctx.temperatureC() >= 18.0D && ctx.humidity01() < 0.42D) {
+        if (ctx.temperatureC() >= AtlasWorldgenConfig.BIOME_HOT_TEMPERATURE_C.get()
+                && ctx.humidity01() < AtlasWorldgenConfig.BIOME_DRY_HUMIDITY.get()) {
             return configured(AtlasWorldgenConfig.BIOME_GRASS_HOT_DRY.get(), vanillaBiome);
         }
-        if (ctx.temperatureC() >= 8.0D) {
-            return configured(ctx.humidity01() >= 0.72D
+        if (ctx.temperatureC() >= AtlasWorldgenConfig.BIOME_COLD_TEMPERATURE_C.get() + 6.0D) {
+            return configured(ctx.humidity01() >= AtlasWorldgenConfig.BIOME_WET_HUMIDITY.get()
                     ? AtlasWorldgenConfig.BIOME_TREES_TEMPERATE_WET.get()
                     : AtlasWorldgenConfig.BIOME_TREES_TEMPERATE.get(), vanillaBiome);
         }
@@ -140,22 +141,26 @@ public final class AtlasBiomeResolver {
 
     private static ResourceKey<Biome> resolveGrass(AtlasBiomeContext ctx, ResourceKey<Biome> vanillaBiome) {
         if (ctx.elevationMeters() >= AtlasWorldgenConfig.BIOME_ALPINE_METERS.get()) {
-            return configured(ctx.temperatureC() < 0.0D ? AtlasWorldgenConfig.BIOME_ALPINE_STEEP.get() : AtlasWorldgenConfig.BIOME_ALPINE_FLAT.get(), vanillaBiome);
+            return configured(ctx.temperatureC() < AtlasWorldgenConfig.BIOME_FREEZING_TEMPERATURE_C.get()
+                    ? AtlasWorldgenConfig.BIOME_ALPINE_STEEP.get()
+                    : AtlasWorldgenConfig.BIOME_ALPINE_FLAT.get(), vanillaBiome);
         }
-        if (ctx.temperatureC() >= 22.0D && ctx.humidity01() < 0.35D) {
+        if (ctx.temperatureC() >= AtlasWorldgenConfig.BIOME_HOT_TEMPERATURE_C.get()
+                && ctx.humidity01() < AtlasWorldgenConfig.BIOME_DRY_HUMIDITY.get()) {
             return configured(AtlasWorldgenConfig.BIOME_GRASS_HOT_DRY.get(), vanillaBiome);
         }
         if (ctx.elevationMeters() >= AtlasWorldgenConfig.BIOME_MONTANE_METERS.get()) {
             return configured(AtlasWorldgenConfig.BIOME_GRASS_HIGH.get(), vanillaBiome);
         }
-        if (ctx.temperatureC() < 2.0D) {
+        if (ctx.temperatureC() < AtlasWorldgenConfig.BIOME_COLD_TEMPERATURE_C.get()) {
             return configured(AtlasWorldgenConfig.BIOME_SNOW_LOW.get(), vanillaBiome);
         }
         return configured(AtlasWorldgenConfig.BIOME_GRASS_TEMPERATE.get(), vanillaBiome);
     }
 
     private static ResourceKey<Biome> resolveShrub(AtlasBiomeContext ctx, ResourceKey<Biome> vanillaBiome) {
-        if (ctx.temperatureC() >= 22.0D && ctx.humidity01() < 0.42D) {
+        if (ctx.temperatureC() >= AtlasWorldgenConfig.BIOME_HOT_TEMPERATURE_C.get()
+                && ctx.humidity01() < AtlasWorldgenConfig.BIOME_DRY_HUMIDITY.get() + 0.07D) {
             return configured(AtlasWorldgenConfig.BIOME_SHRUB_HOT_DRY.get(), vanillaBiome);
         }
         if (ctx.slope() >= AtlasWorldgenConfig.BIOME_STEEP_SLOPE.get()) {
@@ -168,10 +173,11 @@ public final class AtlasBiomeResolver {
         if (ctx.elevationMeters() >= AtlasWorldgenConfig.BIOME_MONTANE_METERS.get()) {
             return configured(AtlasWorldgenConfig.BIOME_GRASS_HIGH.get(), vanillaBiome);
         }
-        if (ctx.temperatureC() >= 22.0D && ctx.humidity01() < 0.35D) {
+        if (ctx.temperatureC() >= AtlasWorldgenConfig.BIOME_HOT_TEMPERATURE_C.get()
+                && ctx.humidity01() < AtlasWorldgenConfig.BIOME_DRY_HUMIDITY.get()) {
             return configured(AtlasWorldgenConfig.BIOME_GRASS_HOT_DRY.get(), vanillaBiome);
         }
-        if (ctx.temperatureC() < 2.0D) {
+        if (ctx.temperatureC() < AtlasWorldgenConfig.BIOME_COLD_TEMPERATURE_C.get()) {
             return configured(AtlasWorldgenConfig.BIOME_SNOW_LOW.get(), vanillaBiome);
         }
         return configured(AtlasWorldgenConfig.BIOME_GRASS_TEMPERATE.get(), vanillaBiome);
@@ -185,6 +191,80 @@ public final class AtlasBiomeResolver {
             return configured(AtlasWorldgenConfig.BIOME_ALPINE_FLAT.get(), vanillaBiome);
         }
         return vanillaBiome;
+    }
+
+    private static LandcoverDecision landcoverDecision(int blockX, int blockZ, GeoPoint centerGeo) {
+        Optional<LandcoverSample> center = AtlasLandcoverIndex.active().sample(centerGeo.latitude(), centerGeo.longitude());
+        int radius = Math.max(0, AtlasWorldgenConfig.BIOME_LANDCOVER_SMOOTH_RADIUS_BLOCKS.get());
+        if (radius <= 0) {
+            return fromSample(center, "local");
+        }
+
+        int step = Math.max(1, AtlasWorldgenConfig.BIOME_LANDCOVER_SMOOTH_STEP_BLOCKS.get());
+        boolean ignoreWater = AtlasWorldgenConfig.BIOME_IGNORE_WATER_LANDCOVER.get();
+        EnumMap<LandcoverClass, Integer> counts = new EnumMap<>(LandcoverClass.class);
+        int samples = 0;
+        for (int dz = -radius; dz <= radius; dz += step) {
+            for (int dx = -radius; dx <= radius; dx += step) {
+                GeoPoint geo = dx == 0 && dz == 0 ? centerGeo : AtlasCoordinateMapper.toGeo(blockX + dx, blockZ + dz);
+                Optional<LandcoverSample> sample = AtlasLandcoverIndex.active().sample(geo.latitude(), geo.longitude());
+                if (sample.isEmpty()) {
+                    continue;
+                }
+                LandcoverClass landcover = sample.get().landcover();
+                if (ignoreWater && landcover == LandcoverClass.WATER) {
+                    continue;
+                }
+                counts.merge(landcover, 1, Integer::sum);
+                samples++;
+            }
+        }
+
+        if (counts.isEmpty()) {
+            if (center.isPresent() && (!ignoreWater || center.get().landcover() != LandcoverClass.WATER)) {
+                return fromSample(center, "local");
+            }
+            return new LandcoverDecision(LandcoverClass.UNKNOWN, 0, "none", 0);
+        }
+
+        LandcoverClass centerClass = center.map(LandcoverSample::landcover).orElse(LandcoverClass.UNKNOWN);
+        LandcoverClass best = LandcoverClass.UNKNOWN;
+        int bestCount = -1;
+        for (Map.Entry<LandcoverClass, Integer> entry : counts.entrySet()) {
+            LandcoverClass candidate = entry.getKey();
+            int count = entry.getValue();
+            if (count > bestCount
+                    || (count == bestCount && candidate == centerClass)
+                    || (count == bestCount && candidate != centerClass && landcoverPriority(candidate) > landcoverPriority(best))) {
+                best = candidate;
+                bestCount = count;
+            }
+        }
+        return new LandcoverDecision(best, best.esaCode(), "smoothed:" + bestCount + "/" + samples, samples);
+    }
+
+    private static LandcoverDecision fromSample(Optional<LandcoverSample> sample, String sourcePrefix) {
+        if (sample.isEmpty()) {
+            return new LandcoverDecision(LandcoverClass.UNKNOWN, 0, "none", 0);
+        }
+        LandcoverSample value = sample.get();
+        return new LandcoverDecision(value.landcover(), value.rawCode(), sourcePrefix + ":" + value.sourceId(), 1);
+    }
+
+    private static int landcoverPriority(LandcoverClass landcover) {
+        return switch (landcover) {
+            case SNOW_ICE -> 100;
+            case WETLAND, MANGROVE -> 95;
+            case TREES -> 90;
+            case BARE_SPARSE -> 80;
+            case GRASS -> 70;
+            case SHRUB -> 60;
+            case CROPLAND -> 50;
+            case URBAN -> 40;
+            case MOSS_LICHEN -> 30;
+            case WATER -> 20;
+            case UNKNOWN -> 0;
+        };
     }
 
     private static ResourceKey<Biome> configured(String value, ResourceKey<Biome> fallback) {
@@ -267,10 +347,10 @@ public final class AtlasBiomeResolver {
         return base - elevationLoss + noise;
     }
 
-    private static double humidity01(int blockX, int blockZ, LandcoverClass landcover, double elevationMeters, double slope, double latitude, long seed) {
+    private static double humidity01(int blockX, int blockZ, LandcoverClass landcover, double elevationMeters, double roughness, double latitude, long seed) {
         double humidity = baseHumidity(landcover);
         humidity -= Math.max(0.0D, elevationMeters) / 1000.0D * AtlasWorldgenConfig.BIOME_ELEVATION_DRYING_PER_KM.get();
-        humidity -= Math.max(0.0D, slope) * AtlasWorldgenConfig.BIOME_SLOPE_DRYING.get();
+        humidity -= Math.max(0.0D, roughness) * AtlasWorldgenConfig.BIOME_SLOPE_DRYING.get();
         humidity += signedCellNoise(blockX, blockZ, seed, 202) * AtlasWorldgenConfig.BIOME_HUMIDITY_NOISE.get();
         if (Math.abs(latitude) > 55.0D) {
             humidity += 0.05D;
@@ -278,25 +358,31 @@ public final class AtlasBiomeResolver {
         return clamp01(humidity);
     }
 
-    private static double slope(int blockX, int blockZ, double centerMeters) {
+    private static SlopeInfo slope(int blockX, int blockZ, double centerMeters) {
         int radius = Math.max(4, AtlasWorldgenConfig.BIOME_SLOPE_RADIUS_BLOCKS.get());
         AtlasHeightmapIndex index = AtlasHeightmapIndex.active();
         double maxDelta = 0.0D;
+        double sumDelta = 0.0D;
         int count = 0;
-        int[][] offsets = {{radius, 0}, {-radius, 0}, {0, radius}, {0, -radius}};
+        int[][] offsets = {
+                {radius, 0}, {-radius, 0}, {0, radius}, {0, -radius},
+                {radius, radius}, {radius, -radius}, {-radius, radius}, {-radius, -radius}
+        };
         for (int[] offset : offsets) {
             GeoPoint geo = AtlasCoordinateMapper.toGeo(blockX + offset[0], blockZ + offset[1]);
             Optional<HeightSample> sample = index.sample(geo.latitude(), geo.longitude());
             if (sample.isPresent()) {
-                maxDelta = Math.max(maxDelta, Math.abs(sample.get().meters() - centerMeters));
+                double delta = Math.abs(sample.get().meters() - centerMeters);
+                maxDelta = Math.max(maxDelta, delta);
+                sumDelta += delta;
                 count++;
             }
         }
         if (count == 0) {
-            return 0.0D;
+            return new SlopeInfo(0.0D, 0.0D);
         }
         double runMeters = Math.max(1.0D, radius * AtlasWorldgenConfig.HORIZONTAL_METERS_PER_BLOCK.get());
-        return maxDelta / runMeters;
+        return new SlopeInfo(maxDelta / runMeters, (sumDelta / count) / runMeters);
     }
 
     private static double baseHumidity(LandcoverClass landcover) {
@@ -334,6 +420,12 @@ public final class AtlasBiomeResolver {
 
     private static double clamp01(double value) {
         return Math.max(0.0D, Math.min(1.0D, value));
+    }
+
+    private record LandcoverDecision(LandcoverClass landcover, int rawCode, String source, int sampleCount) {
+    }
+
+    private record SlopeInfo(double slope, double roughness) {
     }
 
     private AtlasBiomeResolver() {

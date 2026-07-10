@@ -24,7 +24,7 @@ public abstract class ChunkStatusTasksMixin {
                                                                       StaticCache2D<GenerationChunkHolder> cache,
                                                                       ChunkAccess chunk,
                                                                       CallbackInfoReturnable<CompletableFuture<ChunkAccess>> cir) {
-        AtlasNoiseContext.register(chunk.getPos(), context.level().dimension());
+        AtlasNoiseContext.register(chunk.getPos(), context.level().dimension(), context.level().getSeed());
     }
 
     @Inject(
