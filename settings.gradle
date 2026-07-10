@@ -10,4 +10,5 @@ plugins {
 
 rootProject.name = 'redline-tech'
 
-include 'redline-world-core'
+include 'redline-chunk-priority'
+include 'redline-atlas-worldgen'

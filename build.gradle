@@ -12,7 +12,9 @@ tasks.named('wrapper', Wrapper).configure {
 version = mod_version
 group = mod_group_id
 
-evaluationDependsOn(':redline-world-core')
+evaluationDependsOn(':redline-chunk-priority')
+evaluationDependsOn(':redline-atlas-worldgen')
+
 
 sourceSets.main.resources {
     srcDir('src/generated/resources')
@@ -73,8 +75,12 @@ neoForge {
     }
 
     mods {
-        "${world_core_mod_id}" {
-            sourceSet(project(":redline-world-core").sourceSets.main)
+        "${chunk_priority_mod_id}" {
+            sourceSet(project(":redline-chunk-priority").sourceSets.main)
+        }
+
+        "${atlas_worldgen_mod_id}" {
+            sourceSet(project(":redline-atlas-worldgen").sourceSets.main)
         }
 
         "${mod_id}" {
@@ -88,7 +94,9 @@ configurations {
 }
 
 dependencies {
-    implementation project(":redline-world-core")
+    implementation project(":redline-chunk-priority")
+    implementation project(":redline-atlas-worldgen")
+
 
     // JEI integration: API is compile-only, full mod is available only in dev runtime.
     compileOnly "mezz.jei:jei-${minecraft_version}-common-api:${jei_version}"
@@ -110,7 +118,8 @@ var generateModMetadata = tasks.register("generateModMetadata", ProcessResources
             mod_version            : mod_version,
             mod_authors            : mod_authors,
             mod_description        : mod_description,
-            world_core_mod_id      : world_core_mod_id,
+            chunk_priority_mod_id   : chunk_priority_mod_id,
+            atlas_worldgen_mod_id   : atlas_worldgen_mod_id,
     ]
     inputs.properties replaceProperties
     expand replaceProperties

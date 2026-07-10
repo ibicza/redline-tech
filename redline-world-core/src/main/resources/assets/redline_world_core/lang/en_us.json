@@ -1,5 +1,0 @@
-{
-  "commands.redline_world_core.status": "Redline World Core is loaded.",
-  "commands.redline_world_core.selftest.ok": "Redline World Core math self-test passed.",
-  "commands.redline_world_core.selftest.fail": "Redline World Core math self-test failed: %s"
-}

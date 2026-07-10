@@ -20,18 +20,3 @@ description='''${mod_description}'''
     versionRange="${minecraft_version_range}"
     ordering="NONE"
     side="BOTH"
-
-
-[[dependencies.${mod_id}]]
-    modId="jei"
-    type="optional"
-    versionRange="[30.2.0,)"
-    ordering="AFTER"
-    side="BOTH"
-
-[[dependencies.${mod_id}]]
-    modId="jade"
-    type="optional"
-    versionRange="[26.2.0,)"
-    ordering="AFTER"
-    side="BOTH"
