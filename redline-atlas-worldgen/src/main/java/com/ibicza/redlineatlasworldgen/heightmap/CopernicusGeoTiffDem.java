@@ -98,14 +98,14 @@ public final class CopernicusGeoTiffDem {
         this.height = requiredInt(ifd, TAG_IMAGE_LENGTH, "ImageLength");
         this.bitsPerSample = firstOrDefault(ifd, TAG_BITS_PER_SAMPLE, 32);
         this.bytesPerSample = bitsPerSample / 8;
-        this.sampleFormat = firstOrDefault(ifd, TAG_SAMPLE_FORMAT, SAMPLE_FORMAT_IEEE_FLOAT);
+        this.sampleFormat = firstOrDefault(ifd, TAG_SAMPLE_FORMAT, bitsPerSample <= 32 ? SAMPLE_FORMAT_UNSIGNED : SAMPLE_FORMAT_IEEE_FLOAT);
         this.samplesPerPixel = firstOrDefault(ifd, TAG_SAMPLES_PER_PIXEL, 1);
         this.planarConfiguration = firstOrDefault(ifd, TAG_PLANAR_CONFIGURATION, 1);
         this.compression = firstOrDefault(ifd, TAG_COMPRESSION, COMPRESSION_NONE);
         this.predictor = firstOrDefault(ifd, TAG_PREDICTOR, 1);
         this.noData = readNoData(ifd);
 
-        if (bitsPerSample != 16 && bitsPerSample != 32 && bitsPerSample != 64) {
+        if (bitsPerSample != 8 && bitsPerSample != 16 && bitsPerSample != 32 && bitsPerSample != 64) {
             throw new IOException("Unsupported GeoTIFF bitsPerSample=" + bitsPerSample + " for " + path);
         }
         if (samplesPerPixel != 1) {
@@ -302,11 +302,13 @@ public final class CopernicusGeoTiffDem {
                     default -> throw new IOException("Unsupported float bitsPerSample=" + bitsPerSample + " in " + path);
                 };
                 case SAMPLE_FORMAT_SIGNED -> switch (bitsPerSample) {
+                    case 8 -> buffer.get();
                     case 16 -> buffer.getShort();
                     case 32 -> buffer.getInt();
                     default -> throw new IOException("Unsupported signed bitsPerSample=" + bitsPerSample + " in " + path);
                 };
                 case SAMPLE_FORMAT_UNSIGNED -> switch (bitsPerSample) {
+                    case 8 -> buffer.get() & 0xFF;
                     case 16 -> buffer.getShort() & 0xFFFF;
                     case 32 -> (float) (buffer.getInt() & 0xFFFFFFFFL);
                     default -> throw new IOException("Unsupported unsigned bitsPerSample=" + bitsPerSample + " in " + path);

@@ -4,6 +4,8 @@ import com.ibicza.redlineatlasworldgen.RedlineAtlasWorldgen;
 import com.ibicza.redlineatlasworldgen.command.AtlasWorldgenCommands;
 import com.ibicza.redlineatlasworldgen.config.AtlasWorldgenConfig;
 import com.ibicza.redlineatlasworldgen.heightmap.AtlasHeightmapIndex;
+import com.ibicza.redlineatlasworldgen.landcover.AtlasLandcoverIndex;
+import com.ibicza.redlineatlasworldgen.biome.AtlasBiomeHolderLookup;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasNoiseGuide;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasTerrainShaper;
 import net.minecraft.server.level.ServerLevel;
@@ -20,7 +22,9 @@ public final class AtlasWorldgenEvents {
     public static void onLevelLoad(LevelEvent.Load event) {
         if (event.getLevel() instanceof ServerLevel level) {
             AtlasHeightmapIndex.reload(level.getServer().getServerDirectory());
+            AtlasLandcoverIndex.reload(level.getServer().getServerDirectory());
             AtlasNoiseGuide.clearCache();
+            AtlasBiomeHolderLookup.clearCache();
         }
     }
 
