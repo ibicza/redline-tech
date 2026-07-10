@@ -35,11 +35,20 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.DoubleValue OPEN_WATER_BEACH_MAX_SLOPE;
     public static final ModConfigSpec.DoubleValue OPEN_WATER_STONY_SHORE_SLOPE;
     public static final ModConfigSpec.BooleanValue OPEN_WATER_USE_LAND_DEM_FOR_COAST;
+    public static final ModConfigSpec.IntValue OPEN_WATER_CACHE_CELL_SIZE_BLOCKS;
+    public static final ModConfigSpec.IntValue OPEN_WATER_SAMPLE_CACHE_LIMIT;
+    public static final ModConfigSpec.BooleanValue OPEN_WATER_ENABLE_COAST_SCAN_IN_BIOME_GUIDE;
     public static final ModConfigSpec.BooleanValue SURFACE_POLISH_ENABLED;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_CHUNKS_PER_TICK;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_COLUMNS_PER_TICK;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_TOP_SCAN_BLOCKS;
     public static final ModConfigSpec.BooleanValue SURFACE_POLISH_ONLY_NEW_CHUNKS;
+    public static final ModConfigSpec.BooleanValue SURFACE_POLISH_FILL_OPEN_OCEAN_WATER;
+    public static final ModConfigSpec.BooleanValue SURFACE_POLISH_BUILD_OPEN_OCEAN_SHORES;
+    public static final ModConfigSpec.BooleanValue SURFACE_POLISH_EXACT_COAST_SAMPLES;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_OCEAN_CARVE_ABOVE_SEA_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_OCEAN_MAX_FILL_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_SHORE_SAND_DEPTH_BLOCKS;
     public static final ModConfigSpec.BooleanValue PROFILER_ENABLED;
     public static final ModConfigSpec.BooleanValue PROFILER_LOG_PERIODICALLY;
     public static final ModConfigSpec.IntValue PROFILER_LOG_INTERVAL_TICKS;
@@ -59,6 +68,7 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue BIOME_LANDCOVER_SMOOTH_RADIUS_BLOCKS;
     public static final ModConfigSpec.IntValue BIOME_LANDCOVER_SMOOTH_STEP_BLOCKS;
     public static final ModConfigSpec.BooleanValue BIOME_IGNORE_WATER_LANDCOVER;
+    public static final ModConfigSpec.IntValue BIOME_COLUMN_CACHE_LIMIT;
     public static final ModConfigSpec.DoubleValue BIOME_EQUATOR_TEMPERATURE_C;
     public static final ModConfigSpec.DoubleValue BIOME_LATITUDE_TEMPERATURE_LOSS_C;
     public static final ModConfigSpec.DoubleValue BIOME_LAPSE_RATE_C_PER_KM;
@@ -199,6 +209,12 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("stonyShoreSlope", 0.28D, 0.0D, 8.0D);
         OPEN_WATER_USE_LAND_DEM_FOR_COAST = builder.comment("When true, positive/negative land DEM near sea level is used as the precise coastline while coarse GEBCO remains the ocean-floor layer. This is the preferred mode for GLO-30 coasts.")
                 .define("useLandDemForCoast", true);
+        OPEN_WATER_CACHE_CELL_SIZE_BLOCKS = builder.comment("Size of the cached water-classification grid in blocks. Worldgen/biome code samples water once per cell instead of once per biome quart/Y call. 16-64 is usually sane.")
+                .defineInRange("cacheCellSizeBlocks", 32, 4, 1024);
+        OPEN_WATER_SAMPLE_CACHE_LIMIT = builder.comment("Approximate maximum cached water cells. Cache is cleared when the limit is exceeded.")
+                .defineInRange("sampleCacheLimit", 262144, 1024, 8388608);
+        OPEN_WATER_ENABLE_COAST_SCAN_IN_BIOME_GUIDE = builder.comment("When false, biome generation uses only exact cached ocean/land classification and skips expensive coast-radius scans. /rla water_sample and /rla nearest_ocean still use exact scans.")
+                .define("enableCoastScanInBiomeGuide", false);
         builder.pop();
 
         builder.push("surface_polish");
@@ -211,7 +227,19 @@ public final class AtlasWorldgenConfig {
         SURFACE_POLISH_COLUMNS_PER_TICK = builder.comment("Maximum columns processed by surface polish per server tick.")
                 .defineInRange("columnsPerTick", 512, 0, 65536);
         SURFACE_POLISH_TOP_SCAN_BLOCKS = builder.comment("How many blocks below the heightmap top to scan for the first solid block.")
-                .defineInRange("topScanBlocks", 24, 1, 256);
+                .defineInRange("topScanBlocks", 32, 1, 512);
+        SURFACE_POLISH_FILL_OPEN_OCEAN_WATER = builder.comment("Fill open-ocean/ocean-connected sea columns with vanilla water up to mapping.seaLevelY. This is only for the ocean bathymetry layer, not lakes/rivers.")
+                .define("fillOpenOceanWater", true);
+        SURFACE_POLISH_BUILD_OPEN_OCEAN_SHORES = builder.comment("Replace exposed atlas-shift stone/deepslate at open-ocean coasts with sand/gravel/stone shore materials.")
+                .define("buildOpenOceanShores", true);
+        SURFACE_POLISH_EXACT_COAST_SAMPLES = builder.comment("Use exact coast-radius water samples during surface polish. This is slower than cached biome samples but runs only once per polished column and gives beaches/stony shores.")
+                .define("exactCoastSamples", true);
+        SURFACE_POLISH_OCEAN_CARVE_ABOVE_SEA_BLOCKS = builder.comment("In confirmed open-ocean columns, remove accidental terrain above sea level by at most this many blocks before filling water. Prevents vanilla spikes/islands caused by coarse bathymetry. 0 disables carving.")
+                .defineInRange("oceanCarveAboveSeaBlocks", 24, 0, 256);
+        SURFACE_POLISH_OCEAN_MAX_FILL_BLOCKS = builder.comment("Safety cap for vertical water fill per ocean column. Prevents filling extreme wrong columns if mapping or bathymetry is bad.")
+                .defineInRange("oceanMaxFillBlocks", 512, 1, 4096);
+        SURFACE_POLISH_SHORE_SAND_DEPTH_BLOCKS = builder.comment("How many top blocks in low-slope shore/ocean-bottom columns are converted to sand. The top block and this many blocks below become sand.")
+                .defineInRange("shoreSandDepthBlocks", 3, 1, 16);
         builder.pop();
 
         builder.push("profiler");
@@ -238,6 +266,8 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("landcoverSmoothStepBlocks", 24, 1, 256);
         BIOME_IGNORE_WATER_LANDCOVER = builder.comment("When true, WorldCover water pixels are ignored by the biome layer. Open-ocean water comes from ocean_bathymetry instead.")
                 .define("ignoreWaterLandcover", true);
+        BIOME_COLUMN_CACHE_LIMIT = builder.comment("Approximate cached atlas biome columns. This is important in tall worlds because vanilla asks biomes for many Y quart levels, while atlas height/landcover/water are mostly XZ data.")
+                .defineInRange("columnCacheLimit", 262144, 1024, 8388608);
         BIOME_EQUATOR_TEMPERATURE_C = builder.comment("Base sea-level temperature at equator, before latitude/elevation/noise corrections.")
                 .defineInRange("equatorTemperatureC", 30.0D, -100.0D, 100.0D);
         BIOME_LATITUDE_TEMPERATURE_LOSS_C = builder.comment("Temperature loss per absolute latitude degree.")

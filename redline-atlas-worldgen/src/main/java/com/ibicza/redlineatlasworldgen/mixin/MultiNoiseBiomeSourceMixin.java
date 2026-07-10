@@ -50,7 +50,8 @@ public abstract class MultiNoiseBiomeSourceMixin {
             return;
         }
 
-        Holder<Biome> replacement = AtlasBiomeHolderLookup.find(this, selected, vanilla);
+        Holder<Biome> replacement = AtlasNoiseContext.biomeHolderFor(chunkPos, selected)
+                .orElseGet(() -> AtlasBiomeHolderLookup.find(this, selected, vanilla));
         if (replacement != vanilla) {
             cir.setReturnValue(replacement);
         }

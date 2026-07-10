@@ -51,6 +51,8 @@ public final class AtlasWorldgenCommands {
                                 .then(Commands.argument("limit", IntegerArgumentType.integer(1, 64)).executes(context -> listTiles(context, IntegerArgumentType.getInteger(context, "limit")))))
                         .then(Commands.literal("shape_here").executes(context -> shapeHere(context, 0))
                                 .then(Commands.argument("radiusChunks", IntegerArgumentType.integer(0, 16)).executes(context -> shapeHere(context, IntegerArgumentType.getInteger(context, "radiusChunks")))))
+                        .then(Commands.literal("finish_here").executes(context -> finishHere(context, 0))
+                                .then(Commands.argument("radiusChunks", IntegerArgumentType.integer(0, 16)).executes(context -> finishHere(context, IntegerArgumentType.getInteger(context, "radiusChunks")))))
         );
     }
 
@@ -81,6 +83,8 @@ public final class AtlasWorldgenCommands {
         AtlasLandcoverIndex landcoverIndex = AtlasLandcoverIndex.reload(context.getSource().getServer().getServerDirectory());
         AtlasOceanBathymetryIndex oceanIndex = AtlasOceanBathymetryIndex.reload(context.getSource().getServer().getServerDirectory());
         AtlasNoiseGuide.clearCache();
+        AtlasOpenWaterGuide.clearCache();
+        AtlasBiomeResolver.clearCache();
         AtlasBiomeHolderLookup.clearCache();
         context.getSource().sendSuccess(() -> Component.literal("RLA reloaded " + index.tileCount() + " height tile(s) from " + index.root()
                 + "; " + landcoverIndex.tileCount() + " landcover tile(s) from " + landcoverIndex.root()
@@ -264,7 +268,9 @@ public final class AtlasWorldgenCommands {
     }
 
     private static int profile(CommandContext<CommandSourceStack> context, int limit) {
-        context.getSource().sendSuccess(() -> Component.literal("RLA profiler, surfacePolishQueue=" + AtlasSurfaceMaterialPolisher.queueSize()), false);
+        context.getSource().sendSuccess(() -> Component.literal("RLA profiler, surfacePolishQueue=" + AtlasSurfaceMaterialPolisher.queueSize()
+                + ", biomeColumnCache=" + AtlasBiomeResolver.cacheSize()
+                + ", waterCellCache=" + AtlasOpenWaterGuide.cacheSize()), false);
         for (String line : AtlasWorldgenProfiler.summaryLines(limit)) {
             context.getSource().sendSuccess(() -> Component.literal("  " + line), false);
         }
@@ -312,6 +318,27 @@ public final class AtlasWorldgenCommands {
         }
         int finalQueued = queued;
         context.getSource().sendSuccess(() -> Component.literal("RLA queued " + finalQueued + " chunk(s) around " + center.x() + "," + center.z()), true);
+        return queued;
+    }
+
+    private static int finishHere(CommandContext<CommandSourceStack> context, int radiusChunks) {
+        ServerPlayer player = context.getSource().getPlayer();
+        if (player == null) {
+            context.getSource().sendFailure(Component.literal("/rla finish_here must be executed by a player."));
+            return 0;
+        }
+        ServerLevel level = player.level();
+        ChunkPos center = player.chunkPosition();
+        int queued = 0;
+        for (int dz = -radiusChunks; dz <= radiusChunks; dz++) {
+            for (int dx = -radiusChunks; dx <= radiusChunks; dx++) {
+                AtlasSurfaceMaterialPolisher.enqueueForced(level, new ChunkPos(center.x() + dx, center.z() + dz));
+                queued++;
+            }
+        }
+        int finalQueued = queued;
+        context.getSource().sendSuccess(() -> Component.literal("RLA queued surface/water finish for " + finalQueued
+                + " chunk(s) around " + center.x() + "," + center.z()), true);
         return queued;
     }
 

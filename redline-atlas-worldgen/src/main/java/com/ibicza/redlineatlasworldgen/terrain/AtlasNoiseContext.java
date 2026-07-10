@@ -1,9 +1,12 @@
 package com.ibicza.redlineatlasworldgen.terrain;
 
 import com.ibicza.redlineatlasworldgen.config.AtlasWorldgenConfig;
+import net.minecraft.core.Holder;
+import net.minecraft.core.HolderGetter;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.biome.Biome;
 
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -22,17 +25,21 @@ public final class AtlasNoiseContext {
     private static final ConcurrentMap<Long, ChunkInfo> GENERATING_CHUNKS = new ConcurrentHashMap<>();
 
     public static void register(ChunkPos pos, ResourceKey<Level> dimension) {
-        register(pos, dimension, 0L);
+        register(pos, dimension, 0L, null);
     }
 
     public static void register(ChunkPos pos, ResourceKey<Level> dimension, long seed) {
+        register(pos, dimension, seed, null);
+    }
+
+    public static void register(ChunkPos pos, ResourceKey<Level> dimension, long seed, HolderGetter<Biome> biomeLookup) {
         if (!AtlasWorldgenConfig.ENABLED.get()) {
             return;
         }
         if (AtlasWorldgenConfig.OVERWORLD_ONLY.get() && dimension != Level.OVERWORLD) {
             return;
         }
-        GENERATING_CHUNKS.put(pos.pack(), new ChunkInfo(dimension, seed));
+        GENERATING_CHUNKS.put(pos.pack(), new ChunkInfo(dimension, seed, biomeLookup));
     }
 
     public static void unregister(ChunkPos pos, ResourceKey<Level> dimension) {
@@ -47,6 +54,14 @@ public final class AtlasNoiseContext {
     public static OptionalLong seedFor(ChunkPos pos) {
         ChunkInfo info = GENERATING_CHUNKS.get(pos.pack());
         return info == null ? OptionalLong.empty() : OptionalLong.of(info.seed());
+    }
+
+    public static Optional<Holder<Biome>> biomeHolderFor(ChunkPos pos, ResourceKey<Biome> key) {
+        ChunkInfo info = GENERATING_CHUNKS.get(pos.pack());
+        if (info == null || info.biomeLookup() == null || key == null) {
+            return Optional.empty();
+        }
+        return info.biomeLookup().get(key).map(holder -> (Holder<Biome>) holder);
     }
 
     public static boolean shouldGuideNoise(ResourceKey<Level> dimension) {
@@ -76,7 +91,7 @@ public final class AtlasNoiseContext {
         return shouldGuideNoise(dimension);
     }
 
-    private record ChunkInfo(ResourceKey<Level> dimension, long seed) {
+    private record ChunkInfo(ResourceKey<Level> dimension, long seed, HolderGetter<Biome> biomeLookup) {
     }
 
     private AtlasNoiseContext() {

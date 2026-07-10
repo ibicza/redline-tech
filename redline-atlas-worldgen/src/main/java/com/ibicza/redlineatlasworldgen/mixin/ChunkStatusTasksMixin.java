@@ -2,6 +2,7 @@ package com.ibicza.redlineatlasworldgen.mixin;
 
 import com.ibicza.redlineatlasworldgen.terrain.AtlasNoiseContext;
 import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.server.level.GenerationChunkHolder;
 import net.minecraft.util.StaticCache2D;
 import net.minecraft.world.level.chunk.ChunkAccess;
@@ -25,7 +26,7 @@ public abstract class ChunkStatusTasksMixin {
                                                                       StaticCache2D<GenerationChunkHolder> cache,
                                                                       ChunkAccess chunk,
                                                                       CallbackInfoReturnable<CompletableFuture<ChunkAccess>> cir) {
-        AtlasNoiseContext.register(chunk.getPos(), context.level().dimension(), context.level().getSeed());
+        AtlasNoiseContext.register(chunk.getPos(), context.level().dimension(), context.level().getSeed(), context.level().registryAccess().lookupOrThrow(Registries.BIOME));
     }
 
     @Inject(

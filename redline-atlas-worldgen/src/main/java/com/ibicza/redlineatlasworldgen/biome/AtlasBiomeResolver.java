@@ -18,38 +18,99 @@ import java.util.EnumMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class AtlasBiomeResolver {
+    private static final ConcurrentMap<Long, Optional<ColumnData>> COLUMN_CACHE = new ConcurrentHashMap<>();
+    private static final AtomicInteger CACHE_CLEAR_GUARD = new AtomicInteger();
+
     public static Optional<AtlasBiomeContext> context(int blockX, int blockY, int blockZ, long seed) {
         long started = AtlasWorldgenProfiler.start();
         try {
+            Optional<ColumnData> column = column(blockX, blockZ, seed);
+            if (column.isEmpty()) {
+                return Optional.empty();
+            }
+
+            ColumnData c = column.get();
+            int relativeY = blockY - c.surfaceY();
+            return Optional.of(new AtlasBiomeContext(blockX, blockY, blockZ,
+                    c.latitude(), c.longitude(), c.elevationMeters(), c.surfaceY(), relativeY,
+                    c.landcover(), c.landcoverRawCode(), c.landcoverSource(), c.slope(), c.roughness(),
+                    c.temperatureC(), c.humidity01(), c.water(), seed));
+        } finally {
+            AtlasWorldgenProfiler.recordSince("biome.context", started);
+        }
+    }
+
+    public static int cacheSize() {
+        return COLUMN_CACHE.size();
+    }
+
+    public static void clearCache() {
+        COLUMN_CACHE.clear();
+    }
+
+    private static Optional<ColumnData> column(int blockX, int blockZ, long seed) {
         if (!AtlasWorldgenConfig.BIOME_GUIDE_ENABLED.get()) {
             return Optional.empty();
         }
 
+        long key = columnKey(blockX, blockZ, seed);
+        Optional<ColumnData> cached = COLUMN_CACHE.get(key);
+        if (cached != null) {
+            return cached;
+        }
+
+        if (COLUMN_CACHE.size() > AtlasWorldgenConfig.BIOME_COLUMN_CACHE_LIMIT.get()
+                && CACHE_CLEAR_GUARD.compareAndSet(0, 1)) {
+            try {
+                COLUMN_CACHE.clear();
+            } finally {
+                CACHE_CLEAR_GUARD.set(0);
+            }
+        }
+
+        Optional<ColumnData> computed = computeColumn(blockX, blockZ, seed);
+        Optional<ColumnData> existing = COLUMN_CACHE.putIfAbsent(key, computed);
+        return existing == null ? computed : existing;
+    }
+
+    private static Optional<ColumnData> computeColumn(int blockX, int blockZ, long seed) {
         GeoPoint geo = AtlasCoordinateMapper.toGeo(blockX, blockZ);
         Optional<HeightSample> height = AtlasOpenWaterGuide.compositeHeightSample(blockX, blockZ);
         if (height.isEmpty()) {
             return Optional.empty();
         }
 
-        AtlasOpenWaterGuide.OpenWaterSample openWater = AtlasOpenWaterGuide.sample(blockX, blockZ);
+        AtlasOpenWaterGuide.OpenWaterSample openWater = AtlasOpenWaterGuide.sampleForBiome(blockX, blockZ);
         WaterContext water = waterContext(openWater);
         LandcoverDecision landcover = landcoverDecision(blockX, blockZ, geo);
         double elevationMeters = height.get().meters();
         int surfaceY = AtlasCoordinateMapper.metersToWorldY(elevationMeters);
-        int relativeY = blockY - surfaceY;
         SlopeInfo slope = slope(blockX, blockZ, elevationMeters);
         double temperature = temperatureC(blockX, blockZ, geo.latitude(), elevationMeters, seed);
         double humidity = humidity01(blockX, blockZ, landcover.landcover(), elevationMeters, slope.roughness(), geo.latitude(), seed);
 
-        return Optional.of(new AtlasBiomeContext(blockX, blockY, blockZ,
-                geo.latitude(), geo.longitude(), elevationMeters, surfaceY, relativeY,
+        return Optional.of(new ColumnData(geo.latitude(), geo.longitude(), elevationMeters, surfaceY,
                 landcover.landcover(), landcover.rawCode(), landcover.source(), slope.slope(), slope.roughness(),
-                temperature, humidity, water, seed));
-        } finally {
-            AtlasWorldgenProfiler.recordSince("biome.context", started);
-        }
+                temperature, humidity, water));
+    }
+
+    private static long columnKey(int blockX, int blockZ, long seed) {
+        long x = blockX;
+        long z = blockZ;
+        long h = seed;
+        h ^= x * 0x9E3779B97F4A7C15L;
+        h ^= z * 0xC2B2AE3D27D4EB4FL;
+        h ^= (h >>> 33);
+        h *= 0xff51afd7ed558ccdL;
+        h ^= (h >>> 33);
+        h *= 0xc4ceb9fe1a85ec53L;
+        h ^= (h >>> 33);
+        return h;
     }
 
     public static ResourceKey<Biome> resolve(AtlasBiomeContext ctx, ResourceKey<Biome> vanillaBiome) {
@@ -489,6 +550,12 @@ public final class AtlasBiomeResolver {
     }
 
     private record SlopeInfo(double slope, double roughness) {
+    }
+
+    private record ColumnData(double latitude, double longitude, double elevationMeters, int surfaceY,
+                              LandcoverClass landcover, int landcoverRawCode, String landcoverSource,
+                              double slope, double roughness, double temperatureC, double humidity01,
+                              WaterContext water) {
     }
 
     private AtlasBiomeResolver() {
