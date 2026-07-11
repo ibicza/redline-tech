@@ -38,6 +38,14 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue OPEN_WATER_CACHE_CELL_SIZE_BLOCKS;
     public static final ModConfigSpec.IntValue OPEN_WATER_SAMPLE_CACHE_LIMIT;
     public static final ModConfigSpec.BooleanValue OPEN_WATER_ENABLE_COAST_SCAN_IN_BIOME_GUIDE;
+    public static final ModConfigSpec.BooleanValue OPEN_WATER_COASTAL_FLOOD_ENABLED;
+    public static final ModConfigSpec.IntValue OPEN_WATER_COASTAL_FLOOD_CELL_SIZE_BLOCKS;
+    public static final ModConfigSpec.IntValue OPEN_WATER_COASTAL_FLOOD_MAX_DISTANCE_BLOCKS;
+    public static final ModConfigSpec.DoubleValue OPEN_WATER_COASTAL_FLOOD_TOLERANCE_METERS;
+    public static final ModConfigSpec.DoubleValue OPEN_WATER_COASTAL_FLOOD_MIN_DEPTH_METERS;
+    public static final ModConfigSpec.DoubleValue OPEN_WATER_COASTAL_FLOOD_MAX_DEPTH_METERS;
+    public static final ModConfigSpec.IntValue OPEN_WATER_COASTAL_FLOOD_CACHE_LIMIT;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_COASTAL_FLOOD_CARVE_ABOVE_SEA_BLOCKS;
     public static final ModConfigSpec.BooleanValue SURFACE_POLISH_ENABLED;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_CHUNKS_PER_TICK;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_COLUMNS_PER_TICK;
@@ -219,6 +227,20 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("sampleCacheLimit", 262144, 1024, 8388608);
         OPEN_WATER_ENABLE_COAST_SCAN_IN_BIOME_GUIDE = builder.comment("When false, biome generation uses only exact cached ocean/land classification and skips expensive coast-radius scans. /rla water_sample and /rla nearest_ocean still use exact scans.")
                 .define("enableCoastScanInBiomeGuide", false);
+        OPEN_WATER_COASTAL_FLOOD_ENABLED = builder.comment("Extend confirmed open ocean through connected low coastal land cells. This fixes coarse GEBCO coast gaps without flooding high land, lakes, or closed basins.")
+                .define("coastalFloodEnabled", true);
+        OPEN_WATER_COASTAL_FLOOD_CELL_SIZE_BLOCKS = builder.comment("Grid cell size for coastal flood fill. 16 is detailed enough for GLO-30 coasts; 32 is faster and smoother.")
+                .defineInRange("coastalFloodCellSizeBlocks", 16, 4, 128);
+        OPEN_WATER_COASTAL_FLOOD_MAX_DISTANCE_BLOCKS = builder.comment("Maximum distance from a confirmed GEBCO ocean seed that low coastal cells may be reconstructed as open ocean.")
+                .defineInRange("coastalFloodMaxDistanceBlocks", 384, 0, 4096);
+        OPEN_WATER_COASTAL_FLOOD_TOLERANCE_METERS = builder.comment("Land DEM cells at or below seaLevelMeters + this value can be flooded if connected to confirmed open ocean. Keep small to avoid flooding real lowland.")
+                .defineInRange("coastalFloodToleranceMeters", 8.0D, 0.0D, 100.0D);
+        OPEN_WATER_COASTAL_FLOOD_MIN_DEPTH_METERS = builder.comment("Minimum inferred water depth for reconstructed coastal flood cells where GEBCO is missing/positive.")
+                .defineInRange("coastalFloodMinDepthMeters", 2.0D, 0.5D, 64.0D);
+        OPEN_WATER_COASTAL_FLOOD_MAX_DEPTH_METERS = builder.comment("Maximum inferred water depth for reconstructed coastal flood cells. Exact negative GEBCO samples still keep their real depth.")
+                .defineInRange("coastalFloodMaxDepthMeters", 18.0D, 1.0D, 256.0D);
+        OPEN_WATER_COASTAL_FLOOD_CACHE_LIMIT = builder.comment("Approximate maximum cached coastal flood cells. Cache is cleared when the limit is exceeded.")
+                .defineInRange("coastalFloodCacheLimit", 262144, 1024, 8388608);
         builder.pop();
 
         builder.push("surface_polish");
@@ -242,6 +264,8 @@ public final class AtlasWorldgenConfig {
                 .define("fillCoastDepressionWater", true);
         SURFACE_POLISH_COAST_WATER_MAX_DISTANCE_BLOCKS = builder.comment("Maximum distance to confirmed open ocean for coast depression water fill. Set to 0 to fill only exact ocean columns.")
                 .defineInRange("coastWaterMaxDistanceBlocks", 32, 0, 2048);
+        SURFACE_POLISH_COASTAL_FLOOD_CARVE_ABOVE_SEA_BLOCKS = builder.comment("For reconstructed coastal flood cells only, remove at most this many blocks above sea level before filling water. This handles one/two-block vanilla noise lips without flattening real shores.")
+                .defineInRange("coastalFloodCarveAboveSeaBlocks", 2, 0, 16);
         SURFACE_POLISH_OCEAN_CARVE_ABOVE_SEA_BLOCKS = builder.comment("In confirmed open-ocean columns, remove accidental terrain above sea level by at most this many blocks before filling water. Prevents vanilla spikes/islands caused by coarse bathymetry. 0 disables carving.")
                 .defineInRange("oceanCarveAboveSeaBlocks", 0, 0, 256);
         SURFACE_POLISH_OCEAN_MAX_FILL_BLOCKS = builder.comment("Safety cap for vertical water fill per ocean/coast column. Prevents filling extreme wrong columns if mapping or bathymetry is bad.")

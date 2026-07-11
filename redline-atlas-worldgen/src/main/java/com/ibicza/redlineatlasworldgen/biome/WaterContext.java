@@ -12,6 +12,7 @@ public record WaterContext(WaterKind kind, boolean hasWaterData, boolean exactWa
     public enum WaterKind {
         NONE,
         OPEN_OCEAN,
+        OPEN_OCEAN_FLOOD,
         OPEN_OCEAN_COAST,
         GEBCO_LAND_OR_CLOSED_WATER
     }

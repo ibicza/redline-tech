@@ -270,7 +270,8 @@ public final class AtlasWorldgenCommands {
     private static int profile(CommandContext<CommandSourceStack> context, int limit) {
         context.getSource().sendSuccess(() -> Component.literal("RLA profiler, surfacePolishQueue=" + AtlasSurfaceMaterialPolisher.queueSize()
                 + ", biomeColumnCache=" + AtlasBiomeResolver.cacheSize()
-                + ", waterCellCache=" + AtlasOpenWaterGuide.cacheSize()), false);
+                + ", waterCellCache=" + AtlasOpenWaterGuide.cacheSize()
+                + ", coastalFloodCache=" + AtlasOpenWaterGuide.coastalFloodCacheSize()), false);
         for (String line : AtlasWorldgenProfiler.summaryLines(limit)) {
             context.getSource().sendSuccess(() -> Component.literal("  " + line), false);
         }

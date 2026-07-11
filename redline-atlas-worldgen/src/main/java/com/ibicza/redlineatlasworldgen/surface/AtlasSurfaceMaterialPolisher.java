@@ -121,7 +121,7 @@ public final class AtlasSurfaceMaterialPolisher {
                 AtlasOpenWaterGuide.OpenWaterSample water = waterForSurface(blockX, blockZ);
 
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_OPEN_OCEAN_WATER.get()
-                        && water.kind() == AtlasOpenWaterGuide.OpenWaterKind.OCEAN) {
+                        && isFillableOceanKind(water.kind())) {
                     changed |= finishOceanColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, maxY, seaY, water);
                     continue;
                 }
@@ -159,7 +159,7 @@ public final class AtlasSurfaceMaterialPolisher {
         if (!AtlasWorldgenConfig.SURFACE_POLISH_EXACT_COAST_SAMPLES.get()) {
             return cached;
         }
-        if (cached.kind() == AtlasOpenWaterGuide.OpenWaterKind.OCEAN) {
+        if (isFillableOceanKind(cached.kind())) {
             return cached;
         }
         return AtlasOpenWaterGuide.sample(blockX, blockZ);
@@ -176,9 +176,12 @@ public final class AtlasSurfaceMaterialPolisher {
                 return false;
             }
 
-            // Важно: больше НЕ срезаем породу выше sea level.
-            // Если coarse GEBCO сказал ocean, но vanilla/land DEM дал сушу выше уровня моря,
-            // считаем это островом/береговым override и только чиним верхние 2-3 блока под его биом.
+            if (water.kind() == AtlasOpenWaterGuide.OpenWaterKind.OCEAN_FLOOD) {
+                return finishCoastalFloodColumn(level, pos, x, z, terrainY, minY, seaY, water);
+            }
+
+            // Exact GEBCO ocean can still be wrong at coarse coast edges. Do not carve large land masses here.
+            // If terrain is above sea level, treat it as a small island/shore override and only repair surface cap.
             if (terrainY >= seaY) {
                 BlockState replacement = replacementFor(level, x, terrainY, z, AtlasOpenWaterGuide.OpenWaterSample.none());
                 return replacement != null && applySurfaceCap(level, pos, x, terrainY, z, minY, replacement, false);
@@ -190,6 +193,54 @@ public final class AtlasSurfaceMaterialPolisher {
             return changed;
         } finally {
             AtlasWorldgenProfiler.recordSince("surfacePolish.oceanColumn", started);
+        }
+    }
+
+    private static boolean finishCoastalFloodColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
+                                                    int terrainY, int minY, int seaY,
+                                                    AtlasOpenWaterGuide.OpenWaterSample water) {
+        long started = AtlasWorldgenProfiler.start();
+        try {
+            int carveAbove = Math.max(0, AtlasWorldgenConfig.SURFACE_POLISH_COASTAL_FLOOD_CARVE_ABOVE_SEA_BLOCKS.get());
+            if (terrainY > seaY + carveAbove) {
+                // Connected low-water mask says this is likely coarse-coast ocean, but actual vanilla terrain is too high.
+                // Keep it as shore/land and only repair the surface material.
+                BlockState replacement = replacementFor(level, x, terrainY, z, AtlasOpenWaterGuide.OpenWaterSample.none());
+                return replacement != null && applySurfaceCap(level, pos, x, terrainY, z, minY, replacement, false);
+            }
+
+            int depthBlocks = Math.max(1, (int) Math.ceil(water.depthMeters() / Math.max(0.001D, AtlasWorldgenConfig.VERTICAL_METERS_PER_BLOCK.get())));
+            int bottomY = Math.max(minY, seaY - depthBlocks);
+            BlockState bottomMaterial = oceanBottomMaterial(water);
+            boolean changed = false;
+
+            // Carve only the tiny lip above sea level; never flatten large terrain.
+            for (int y = seaY + 1; y <= terrainY; y++) {
+                pos.set(x, y, z);
+                BlockState state = level.getBlockState(pos);
+                if (!state.isAir() && (isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state) || isIgnoredSurfaceFeature(state))) {
+                    changed |= level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                }
+            }
+
+            for (int y = bottomY; y <= seaY; y++) {
+                pos.set(x, y, z);
+                BlockState state = level.getBlockState(pos);
+                if (y == bottomY) {
+                    if (isReplaceableTerrainMaterial(state, true) || state.isAir() || state.liquid()) {
+                        if (!state.is(bottomMaterial.getBlock())) {
+                            changed |= level.setBlock(pos, bottomMaterial, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                        }
+                    }
+                } else if (state.isAir() || state.liquid() || isReplaceableWaterColumnBlock(state) || isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state)) {
+                    if (!state.is(Blocks.WATER)) {
+                        changed |= level.setBlock(pos, Blocks.WATER.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                    }
+                }
+            }
+            return changed;
+        } finally {
+            AtlasWorldgenProfiler.recordSince("surfacePolish.coastalFloodColumn", started);
         }
     }
 
@@ -291,7 +342,7 @@ public final class AtlasSurfaceMaterialPolisher {
         ResourceKey<Biome> actualBiome = actualBiomeAt(level, blockX, blockY, blockZ).orElse(null);
         boolean actualOcean = isAnyOceanBiome(actualBiome);
 
-        if (water.kind() == AtlasOpenWaterGuide.OpenWaterKind.OCEAN && blockY < AtlasWorldgenConfig.SEA_LEVEL_Y.get()) {
+        if (isFillableOceanKind(water.kind()) && blockY < AtlasWorldgenConfig.SEA_LEVEL_Y.get()) {
             return oceanBottomMaterial(water);
         }
         if (actualOcean && blockY < AtlasWorldgenConfig.SEA_LEVEL_Y.get()) {
@@ -314,7 +365,7 @@ public final class AtlasSurfaceMaterialPolisher {
         }
 
         AtlasBiomeContext ctx = context.get();
-        if (ctx.water().kind() == WaterContext.WaterKind.OPEN_OCEAN && blockY < AtlasWorldgenConfig.SEA_LEVEL_Y.get()) {
+        if ((ctx.water().kind() == WaterContext.WaterKind.OPEN_OCEAN || ctx.water().kind() == WaterContext.WaterKind.OPEN_OCEAN_FLOOD) && blockY < AtlasWorldgenConfig.SEA_LEVEL_Y.get()) {
             return oceanBottomMaterial(water);
         }
         if (ctx.temperatureC() <= AtlasWorldgenConfig.BIOME_FREEZING_TEMPERATURE_C.get()
@@ -467,6 +518,11 @@ public final class AtlasSurfaceMaterialPolisher {
                 || state.is(Blocks.DEEPSLATE_EMERALD_ORE)
                 || state.is(Blocks.DEEPSLATE_LAPIS_ORE)
                 || state.is(Blocks.DEEPSLATE_DIAMOND_ORE);
+    }
+
+    private static boolean isFillableOceanKind(AtlasOpenWaterGuide.OpenWaterKind kind) {
+        return kind == AtlasOpenWaterGuide.OpenWaterKind.OCEAN
+                || kind == AtlasOpenWaterGuide.OpenWaterKind.OCEAN_FLOOD;
     }
 
     private static long key(ResourceKey<Level> dimension, ChunkPos pos) {

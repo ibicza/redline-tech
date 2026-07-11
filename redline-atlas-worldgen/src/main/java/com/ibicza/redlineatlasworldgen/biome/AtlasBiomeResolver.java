@@ -179,7 +179,7 @@ public final class AtlasBiomeResolver {
             return null;
         }
 
-        if (ctx.water().kind() == WaterContext.WaterKind.OPEN_OCEAN) {
+        if (ctx.water().kind() == WaterContext.WaterKind.OPEN_OCEAN || ctx.water().kind() == WaterContext.WaterKind.OPEN_OCEAN_FLOOD) {
             boolean deep = ctx.water().waterDepthMeters() >= AtlasWorldgenConfig.OPEN_WATER_DEEP_DEPTH_METERS.get();
             if (ctx.temperatureC() <= AtlasWorldgenConfig.BIOME_FREEZING_TEMPERATURE_C.get()) {
                 return configured(deep ? AtlasWorldgenConfig.BIOME_DEEP_FROZEN_OCEAN.get() : AtlasWorldgenConfig.BIOME_FROZEN_OCEAN.get(), vanillaBiome);
@@ -535,6 +535,9 @@ public final class AtlasBiomeResolver {
         return switch (sample.kind()) {
             case NONE -> WaterContext.NONE;
             case OCEAN -> new WaterContext(WaterContext.WaterKind.OPEN_OCEAN, true, true, sample.distanceToOceanBlocks(),
+                    Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, sample.depthMeters(), sample.bottomMeters(),
+                    sample.waterSurfaceMeters(), sample.sourceId(), sample.resolutionMeters());
+            case OCEAN_FLOOD -> new WaterContext(WaterContext.WaterKind.OPEN_OCEAN_FLOOD, true, false, sample.distanceToOceanBlocks(),
                     Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, sample.depthMeters(), sample.bottomMeters(),
                     sample.waterSurfaceMeters(), sample.sourceId(), sample.resolutionMeters());
             case COAST -> new WaterContext(WaterContext.WaterKind.OPEN_OCEAN_COAST, true, false, sample.distanceToOceanBlocks(),
