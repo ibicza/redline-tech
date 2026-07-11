@@ -131,6 +131,12 @@ public final class AtlasSurfaceMaterialPolisher {
                     continue;
                 }
 
+                if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_LAKE_WATER.get()
+                        && lake.kind() == LakeKind.LAKE_SHORE) {
+                    changed |= finishLakeShoreColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, maxY, lake);
+                    continue;
+                }
+
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_OPEN_OCEAN_WATER.get()
                         && isFillableOceanKind(water.kind())) {
                     changed |= finishOceanColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, maxY, seaY, water);
@@ -197,44 +203,184 @@ public final class AtlasSurfaceMaterialPolisher {
             }
 
             int waterY = AtlasCoordinateMapper.metersToWorldY(lake.waterSurfaceMeters());
-            int bottomY = Math.min(waterY - 1, AtlasCoordinateMapper.metersToWorldY(lake.bottomMeters()));
-            int maxFill = Math.max(1, AtlasWorldgenConfig.SURFACE_POLISH_LAKE_MAX_FILL_BLOCKS.get());
-            bottomY = Math.max(minY, Math.max(bottomY, waterY - maxFill));
-            int carveAbove = lakeCarveAboveWaterBlocks(lake);
-            if (terrainY > waterY + carveAbove) {
-                BlockState replacement = lakeShoreMaterial(level, x, terrainY, z, lake);
-                return replacement != null && applySurfaceCap(level, pos, x, terrainY, z, minY, replacement, shouldReplaceSoftSurface(replacement));
-            }
-
-            BlockState bottomMaterial = lakeBottomMaterial(lake);
+            int bottomY = lakeBottomY(waterY, lake, minY);
             boolean changed = false;
-            for (int y = waterY + 1; y <= terrainY; y++) {
+
+            // M30.6: exact water-mask columns are water. The lake level comes from the DEM basin fit,
+            // while the horizontal shape comes from WorldCover/manual water. Do not reject columns one
+            // by one because that tears the mask into strips. Carve the generated terrain down and fill.
+            int clearTopY = Math.min(maxY, Math.max(heightmapTopY, terrainY));
+            for (int y = waterY + 1; y <= clearTopY; y++) {
                 pos.set(x, y, z);
                 BlockState state = level.getBlockState(pos);
-                if (!state.isAir() && (isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state) || isIgnoredSurfaceFeature(state))) {
+                if (!state.isAir() && (state.liquid() || isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state) || isIgnoredSurfaceFeature(state))) {
                     changed |= level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
                 }
             }
 
-            for (int y = bottomY; y <= waterY; y++) {
-                pos.set(x, y, z);
-                BlockState state = level.getBlockState(pos);
-                if (y == bottomY) {
-                    if (isReplaceableTerrainMaterial(state, true) || state.isAir() || state.liquid()) {
-                        if (!state.is(bottomMaterial.getBlock())) {
-                            changed |= level.setBlock(pos, bottomMaterial, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
-                        }
-                    }
-                } else if (state.isAir() || state.liquid() || isReplaceableWaterColumnBlock(state) || isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state)) {
-                    if (!state.is(Blocks.WATER)) {
-                        changed |= level.setBlock(pos, Blocks.WATER.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
-                    }
-                }
-            }
+            changed |= carveAndFillLakeBowl(level, pos, x, z, bottomY, waterY, lake);
             return changed;
         } finally {
             AtlasWorldgenProfiler.recordSince("surfacePolish.lakeColumn", started);
         }
+    }
+
+
+    private static boolean finishLakeShoreColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
+                                                 int heightmapTopY, int minY, int maxY, LakeSample lake) {
+        long started = AtlasWorldgenProfiler.start();
+        try {
+            int terrainY = findTopTerrain(level, pos, x, z, Math.min(maxY, heightmapTopY), minY);
+            if (terrainY == Integer.MIN_VALUE) {
+                return false;
+            }
+
+            int waterY = AtlasCoordinateMapper.metersToWorldY(lake.waterSurfaceMeters());
+            int targetY = waterY + Math.max(0, AtlasWorldgenConfig.SURFACE_POLISH_LAKE_SHORE_TARGET_HEIGHT_BLOCKS.get());
+            int smoothCarve = Math.max(0, AtlasWorldgenConfig.SURFACE_POLISH_LAKE_SHORE_SMOOTH_CARVE_BLOCKS.get());
+            boolean changed = false;
+
+            // Shore columns are land, not water. Always clear old overfilled lake fluid/waterfall walls.
+            changed |= clearLiquidsInColumn(level, pos, x, z, Math.max(minY, Math.min(terrainY + 1, targetY + 1)), Math.min(maxY, heightmapTopY));
+
+            // M30.6 containment: if generated terrain around the water mask is too low, build the missing
+            // bank up to the fitted water level. This is the piece that prevents floating lake plates.
+            if (terrainY < targetY) {
+                boolean raised = raiseLakeContainmentBank(level, pos, x, z, terrainY, targetY, lake);
+                changed |= raised;
+                if (raised) {
+                    terrainY = targetY;
+                }
+            } else if (terrainY > targetY && terrainY <= targetY + smoothCarve) {
+                for (int y = targetY + 1; y <= terrainY; y++) {
+                    pos.set(x, y, z);
+                    BlockState state = level.getBlockState(pos);
+                    if (!state.isAir() && (state.liquid() || isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state) || isIgnoredSurfaceFeature(state))) {
+                        changed |= level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                    }
+                }
+                terrainY = targetY;
+            }
+
+            BlockState replacement = lakeShoreMaterial(level, x, terrainY, z, lake);
+            if (replacement != null) {
+                changed |= applySurfaceCap(level, pos, x, terrainY, z, minY, replacement, shouldReplaceSoftSurface(replacement));
+            }
+            return changed;
+        } finally {
+            AtlasWorldgenProfiler.recordSince("surfacePolish.lakeShoreColumn", started);
+        }
+    }
+
+    private static boolean raiseLakeContainmentBank(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
+                                                    int terrainY, int targetY, LakeSample lake) {
+        if (!AtlasWorldgenConfig.SURFACE_POLISH_LAKE_BUILD_CONTAINMENT_BANKS.get()) {
+            return false;
+        }
+        int raise = targetY - terrainY;
+        if (raise <= 0 || raise > Math.max(0, AtlasWorldgenConfig.SURFACE_POLISH_LAKE_BANK_MAX_RAISE_BLOCKS.get())) {
+            return false;
+        }
+        BlockState topMaterial = lakeShoreMaterial(level, x, targetY, z, lake);
+        if (topMaterial == null) {
+            topMaterial = Blocks.SAND.defaultBlockState();
+        }
+        boolean changed = false;
+        for (int y = terrainY + 1; y <= targetY; y++) {
+            pos.set(x, y, z);
+            BlockState current = level.getBlockState(pos);
+            if (current.isAir() || current.liquid() || isTerrainSurfaceCandidate(current) || isSoftSurfaceMaterial(current) || isIgnoredSurfaceFeature(current)) {
+                BlockState material = layerReplacement(topMaterial, targetY - y);
+                if (!current.is(material.getBlock())) {
+                    changed |= level.setBlock(pos, material, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                }
+            }
+        }
+        return changed;
+    }
+
+    private static boolean hasUnsafeLakeLeak(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
+                                               int waterY, int minY, int maxY) {
+        int radius = Math.max(0, AtlasWorldgenConfig.SURFACE_POLISH_LAKE_LEAK_GUARD_RADIUS_BLOCKS.get());
+        if (radius <= 0) {
+            return false;
+        }
+        int step = Math.max(1, AtlasWorldgenConfig.SURFACE_POLISH_LAKE_LEAK_GUARD_STEP_BLOCKS.get());
+        int maxDropoff = Math.max(0, AtlasWorldgenConfig.SURFACE_POLISH_LAKE_LEAK_MAX_DROPOFF_BLOCKS.get());
+        int minSupportingTerrainY = waterY - maxDropoff;
+
+        for (int dz = -radius; dz <= radius; dz += step) {
+            for (int dx = -radius; dx <= radius; dx += step) {
+                if (dx == 0 && dz == 0) {
+                    continue;
+                }
+                if (dx * (double) dx + dz * (double) dz > radius * (double) radius) {
+                    continue;
+                }
+                int sx = x + dx;
+                int sz = z + dz;
+                LakeSample nearbyLake = lakeForSurface(sx, sz);
+                if (AtlasLakeGuide.isLakeWater(nearbyLake.kind())) {
+                    continue;
+                }
+
+                int topY = Math.min(maxY, level.getHeight(Heightmap.Types.WORLD_SURFACE, sx, sz));
+                int terrainY = findTopTerrain(level, pos, sx, sz, topY, minY);
+                if (terrainY != Integer.MIN_VALUE && terrainY < minSupportingTerrainY) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static int lakeBottomY(int waterY, LakeSample lake, int minY) {
+        double verticalScale = Math.max(0.001D, AtlasWorldgenConfig.VERTICAL_METERS_PER_BLOCK.get());
+        int depthBlocksFromSample = Math.max(1, (int) Math.ceil(Math.max(0.0D, lake.depthMeters()) / verticalScale));
+        int minDepthBlocks = Math.max(1, AtlasWorldgenConfig.LAKE_SYNTHETIC_MIN_DEPTH_BLOCKS.get());
+        int maxDepthBlocks = Math.max(minDepthBlocks, AtlasWorldgenConfig.LAKE_SYNTHETIC_MAX_DEPTH_BLOCKS.get());
+        int depthBlocks = Math.max(minDepthBlocks, Math.min(maxDepthBlocks, depthBlocksFromSample));
+        int maxFill = Math.max(1, AtlasWorldgenConfig.SURFACE_POLISH_LAKE_MAX_FILL_BLOCKS.get());
+        depthBlocks = Math.min(depthBlocks, maxFill);
+        return Math.max(minY, waterY - depthBlocks);
+    }
+
+    private static boolean carveAndFillLakeBowl(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
+                                                int bottomY, int waterY, LakeSample lake) {
+        boolean changed = false;
+        for (int y = bottomY; y <= waterY; y++) {
+            pos.set(x, y, z);
+            BlockState state = level.getBlockState(pos);
+            if (y == bottomY) {
+                BlockState bottomMaterial = lakeBottomMaterial(lake, waterY - y);
+                if (isReplaceableTerrainMaterial(state, true) || state.isAir() || state.liquid()) {
+                    if (!state.is(bottomMaterial.getBlock())) {
+                        changed |= level.setBlock(pos, bottomMaterial, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                    }
+                }
+            } else if (state.isAir() || state.liquid() || isReplaceableWaterColumnBlock(state) || isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state)) {
+                if (!state.is(Blocks.WATER)) {
+                    changed |= level.setBlock(pos, Blocks.WATER.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                }
+            }
+        }
+        return changed;
+    }
+
+
+    private static boolean clearLiquidsInColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z, int fromY, int toY) {
+        if (toY < fromY) {
+            return false;
+        }
+        boolean changed = false;
+        for (int y = fromY; y <= toY; y++) {
+            pos.set(x, y, z);
+            BlockState state = level.getBlockState(pos);
+            if (state.liquid()) {
+                changed |= level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+            }
+        }
+        return changed;
     }
 
 
@@ -299,7 +445,7 @@ public final class AtlasSurfaceMaterialPolisher {
             for (int y = seaY + 1; y <= terrainY; y++) {
                 pos.set(x, y, z);
                 BlockState state = level.getBlockState(pos);
-                if (!state.isAir() && (isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state) || isIgnoredSurfaceFeature(state))) {
+                if (!state.isAir() && (state.liquid() || isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state) || isIgnoredSurfaceFeature(state))) {
                     changed |= level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
                 }
             }
@@ -430,7 +576,7 @@ public final class AtlasSurfaceMaterialPolisher {
             }
         }
         if (AtlasLakeGuide.isLakeWater(lake.kind()) && blockY <= AtlasCoordinateMapper.metersToWorldY(lake.waterSurfaceMeters())) {
-            return lakeBottomMaterial(lake);
+            return lakeBottomMaterial(lake, Math.max(1, AtlasCoordinateMapper.metersToWorldY(lake.waterSurfaceMeters()) - blockY));
         }
 
         if (isFillableOceanKind(water.kind()) && blockY < AtlasWorldgenConfig.SEA_LEVEL_Y.get()) {
@@ -580,8 +726,8 @@ public final class AtlasSurfaceMaterialPolisher {
         return Blocks.SAND.defaultBlockState();
     }
 
-    private static BlockState lakeBottomMaterial(LakeSample lake) {
-        double depth = Math.max(0.0D, lake.depthMeters());
+    private static BlockState lakeBottomMaterial(LakeSample lake, int depthBlocksBelowSurface) {
+        double depth = Math.max(Math.max(0.0D, lake.depthMeters()), depthBlocksBelowSurface * Math.max(0.001D, AtlasWorldgenConfig.VERTICAL_METERS_PER_BLOCK.get()));
         if (depth <= AtlasWorldgenConfig.SURFACE_POLISH_LAKE_SAND_DEPTH_METERS.get()) {
             return Blocks.SAND.defaultBlockState();
         }

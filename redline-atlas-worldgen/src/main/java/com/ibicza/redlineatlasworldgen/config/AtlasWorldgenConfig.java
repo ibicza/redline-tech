@@ -34,11 +34,31 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue LAKE_WORLDCOVER_WATER_RADIUS_BLOCKS;
     public static final ModConfigSpec.IntValue LAKE_WORLDCOVER_WATER_STEP_BLOCKS;
     public static final ModConfigSpec.DoubleValue LAKE_WORLDCOVER_MIN_WATER_FRACTION;
+    public static final ModConfigSpec.IntValue LAKE_WORLDCOVER_SURFACE_SEARCH_BLOCKS;
+    public static final ModConfigSpec.DoubleValue LAKE_WORLDCOVER_SURFACE_PERCENTILE;
+    public static final ModConfigSpec.DoubleValue LAKE_WORLDCOVER_SURFACE_MAX_ABOVE_MIN_METERS;
+    public static final ModConfigSpec.BooleanValue LAKE_BASIN_FIT_ENABLED;
+    public static final ModConfigSpec.IntValue LAKE_BASIN_FIT_SEARCH_BLOCKS;
+    public static final ModConfigSpec.IntValue LAKE_BASIN_FIT_CACHE_LIMIT;
+    public static final ModConfigSpec.IntValue LAKE_BASIN_CORE_MIN_WATER_NEIGHBORS;
+    public static final ModConfigSpec.IntValue LAKE_BASIN_MIN_CORE_SAMPLES;
+    public static final ModConfigSpec.DoubleValue LAKE_BASIN_CORE_SURFACE_PERCENTILE;
+    public static final ModConfigSpec.DoubleValue LAKE_BASIN_LOW_MEAN_FRACTION;
+    public static final ModConfigSpec.DoubleValue LAKE_BASIN_RIM_PERCENTILE;
+    public static final ModConfigSpec.DoubleValue LAKE_BASIN_RIM_CLEARANCE_METERS;
+    public static final ModConfigSpec.DoubleValue LAKE_BASIN_MAX_SURFACE_ABOVE_LOWEST_CORE_METERS;
+    public static final ModConfigSpec.DoubleValue LAKE_BASIN_WATER_COLUMN_MAX_ABOVE_SURFACE_METERS;
+    public static final ModConfigSpec.DoubleValue LAKE_BASIN_EDGE_WATER_COLUMN_MAX_ABOVE_SURFACE_METERS;
+    public static final ModConfigSpec.BooleanValue LAKE_SNAP_WATER_SURFACE_TO_BLOCK;
+    public static final ModConfigSpec.DoubleValue LAKE_SHORE_RING_LAND_FRACTION;
     public static final ModConfigSpec.IntValue LAKE_MAX_SHORE_SEARCH_BLOCKS;
     public static final ModConfigSpec.IntValue LAKE_SHORE_RADIUS_BLOCKS;
     public static final ModConfigSpec.DoubleValue LAKE_SHORE_MAX_HEIGHT_DELTA_METERS;
     public static final ModConfigSpec.DoubleValue LAKE_SYNTHETIC_MIN_DEPTH_METERS;
     public static final ModConfigSpec.DoubleValue LAKE_SYNTHETIC_MAX_DEPTH_METERS;
+    public static final ModConfigSpec.IntValue LAKE_TOPOGRAPHIC_SHORE_SCAN_BLOCKS;
+    public static final ModConfigSpec.IntValue LAKE_SYNTHETIC_MIN_DEPTH_BLOCKS;
+    public static final ModConfigSpec.IntValue LAKE_SYNTHETIC_MAX_DEPTH_BLOCKS;
     public static final ModConfigSpec.IntValue LAKE_FULL_DEPTH_DISTANCE_BLOCKS;
     public static final ModConfigSpec.DoubleValue LAKE_MANUAL_DEFAULT_SHORE_BLEND_METERS;
     public static final ModConfigSpec.BooleanValue OPEN_WATER_GUIDE_ENABLED;
@@ -89,6 +109,13 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_MAX_FILL_BLOCKS;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_CARVE_ABOVE_WATER_BLOCKS;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_WATER_MASK_CARVE_ABOVE_WATER_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_SHORE_TARGET_HEIGHT_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_SHORE_SMOOTH_CARVE_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_LEAK_GUARD_RADIUS_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_LEAK_GUARD_STEP_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_LEAK_MAX_DROPOFF_BLOCKS;
+    public static final ModConfigSpec.BooleanValue SURFACE_POLISH_LAKE_BUILD_CONTAINMENT_BANKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_BANK_MAX_RAISE_BLOCKS;
     public static final ModConfigSpec.DoubleValue SURFACE_POLISH_LAKE_SAND_DEPTH_METERS;
     public static final ModConfigSpec.DoubleValue SURFACE_POLISH_LAKE_GRAVEL_DEPTH_METERS;
     public static final ModConfigSpec.BooleanValue PROFILER_ENABLED;
@@ -248,6 +275,40 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("worldcoverWaterStepBlocks", 8, 1, 128);
         LAKE_WORLDCOVER_MIN_WATER_FRACTION = builder.comment("Minimum water fraction in the local WorldCover window to accept a small waterbody when the exact center pixel is not water.")
                 .defineInRange("worldcoverMinWaterFraction", 0.30D, 0.0D, 1.0D);
+        LAKE_WORLDCOVER_SURFACE_SEARCH_BLOCKS = builder.comment("Radius for estimating one stable water-surface level for a WorldCover small waterbody. Uses nearby water pixels so lake surface does not step up/down per column.")
+                .defineInRange("worldcoverSurfaceSearchBlocks", 128, 8, 2048);
+        LAKE_WORLDCOVER_SURFACE_PERCENTILE = builder.comment("Low percentile of nearby water-pixel DEM heights used as the small-waterbody surface. Keep this low: WorldCover often marks quarry banks as water, and high DEM outliers must not lift the whole lake into the air.")
+                .defineInRange("worldcoverSurfacePercentile", 0.05D, 0.0D, 1.0D);
+        LAKE_WORLDCOVER_SURFACE_MAX_ABOVE_MIN_METERS = builder.comment("Maximum meters the inferred WorldCover lake surface may rise above the lowest nearby water pixel. Prevents misclassified high banks from raising the whole lake; depth is carved downward instead.")
+                .defineInRange("worldcoverSurfaceMaxAboveMinMeters", 3.0D, 0.0D, 256.0D);
+        LAKE_BASIN_FIT_ENABLED = builder.comment("Fit small WorldCover waterbodies as one basin component instead of independent columns. Uses a connected water mask, inner water core, and surrounding rim to keep lake water below the local shore.")
+                .define("basinFitEnabled", true);
+        LAKE_BASIN_FIT_SEARCH_BLOCKS = builder.comment("Maximum block radius used to collect the connected WorldCover water component for a small lake/quarry basin fit.")
+                .defineInRange("basinFitSearchBlocks", 256, 32, 2048);
+        LAKE_BASIN_FIT_CACHE_LIMIT = builder.comment("Approximate maximum cached WorldCover basin fits. Cache is cleared when this limit is exceeded.")
+                .defineInRange("basinFitCacheLimit", 16384, 128, 1048576);
+        LAKE_BASIN_CORE_MIN_WATER_NEIGHBORS = builder.comment("Minimum 8-neighbour water count for a WorldCover water pixel to be considered inner water core. Core pixels avoid mixed bank/rim DEM samples lifting the whole lake.")
+                .defineInRange("basinCoreMinWaterNeighbors", 5, 0, 8);
+        LAKE_BASIN_MIN_CORE_SAMPLES = builder.comment("Minimum inner-core DEM samples before falling back to all connected water samples for lake level fitting.")
+                .defineInRange("basinMinCoreSamples", 4, 1, 4096);
+        LAKE_BASIN_CORE_SURFACE_PERCENTILE = builder.comment("Fallback low percentile of inner water-core DEM heights used as the raw lake surface. Kept for compatibility; M30.6 primarily uses the low-mean of the water mask.")
+                .defineInRange("basinCoreSurfacePercentile", 0.10D, 0.0D, 1.0D);
+        LAKE_BASIN_LOW_MEAN_FRACTION = builder.comment("Fraction of the lowest DEM samples inside the connected WorldCover water patch used to average one stable lake surface. This overlays the water mask on topography and ignores high mixed shore/bank pixels.")
+                .defineInRange("basinLowMeanFraction", 0.25D, 0.02D, 1.0D);
+        LAKE_BASIN_RIM_PERCENTILE = builder.comment("Low percentile of non-water rim DEM heights used as the overflow/rim clamp. The final water level is never above rim percentile minus rim clearance.")
+                .defineInRange("basinRimPercentile", 0.20D, 0.0D, 1.0D);
+        LAKE_BASIN_RIM_CLEARANCE_METERS = builder.comment("Meters below the low rim where the inferred lake water surface must stay. Prevents floating water slabs and waterfall walls around incomplete/misaligned water masks.")
+                .defineInRange("basinRimClearanceMeters", 1.0D, 0.0D, 64.0D);
+        LAKE_BASIN_MAX_SURFACE_ABOVE_LOWEST_CORE_METERS = builder.comment("Additional cap over the lowest inner-core water DEM sample. This is a second guard against mixed high water pixels raising the lake surface.")
+                .defineInRange("basinMaxSurfaceAboveLowestCoreMeters", 2.0D, 0.0D, 128.0D);
+        LAKE_BASIN_WATER_COLUMN_MAX_ABOVE_SURFACE_METERS = builder.comment("Topographic acceptance gate for WorldCover lake water columns. A water(80) pixel whose DEM height is more than this many meters above the fitted lake surface is treated as shore/land, not as water. This intersects the water mask with the real DEM basin and prevents hanging lakes over fields/banks.")
+                .defineInRange("basinWaterColumnMaxAboveSurfaceMeters", 6.0D, 0.0D, 256.0D);
+        LAKE_BASIN_EDGE_WATER_COLUMN_MAX_ABOVE_SURFACE_METERS = builder.comment("Stricter topographic gate for WorldCover water pixels close to shore. Edge/mixed pixels are often quarry banks in Copernicus DSM; keep this low so only the true low water basin is filled.")
+                .defineInRange("basinEdgeWaterColumnMaxAboveSurfaceMeters", 3.0D, 0.0D, 256.0D);
+        LAKE_SNAP_WATER_SURFACE_TO_BLOCK = builder.comment("Snap inferred lake water surface down to a Minecraft Y block. This keeps one flat water level and never rounds the lake surface upward.")
+                .define("snapWaterSurfaceToBlock", true);
+        LAKE_SHORE_RING_LAND_FRACTION = builder.comment("A WorldCover search ring is considered shore only when at least this fraction is non-water. This ignores tiny holes/noisy pixels inside quarry/lake masks and gives deeper centers.")
+                .defineInRange("shoreRingLandFraction", 0.35D, 0.0D, 1.0D);
         LAKE_MAX_SHORE_SEARCH_BLOCKS = builder.comment("Maximum distance searched from a water pixel to find lake shore. Controls synthetic bowl depth.")
                 .defineInRange("maxShoreSearchBlocks", 160, 8, 2048);
         LAKE_SHORE_RADIUS_BLOCKS = builder.comment("Land columns within this distance from inland water can become lake shore.")
@@ -257,9 +318,15 @@ public final class AtlasWorldgenConfig {
         LAKE_SHORE_MAX_HEIGHT_DELTA_METERS = builder.comment("Maximum real height difference between land and nearby WorldCover-water for lake shore classification.")
                 .defineInRange("shoreMaxHeightDeltaMeters", 8.0D, 0.0D, 256.0D);
         LAKE_SYNTHETIC_MIN_DEPTH_METERS = builder.comment("Minimum synthetic depth for small WorldCover/manual lakes without real bathymetry.")
-                .defineInRange("syntheticMinDepthMeters", 2.0D, 0.5D, 256.0D);
+                .defineInRange("syntheticMinDepthMeters", 18.0D, 0.5D, 256.0D);
         LAKE_SYNTHETIC_MAX_DEPTH_METERS = builder.comment("Maximum synthetic depth for small WorldCover/manual lakes without real bathymetry.")
-                .defineInRange("syntheticMaxDepthMeters", 16.0D, 1.0D, 512.0D);
+                .defineInRange("syntheticMaxDepthMeters", 54.0D, 1.0D, 512.0D);
+        LAKE_TOPOGRAPHIC_SHORE_SCAN_BLOCKS = builder.comment("Radius used to check whether a WorldCover water pixel is close to shore/mixed land. Edge water pixels use a stricter height-above-surface gate than inner water pixels.")
+                .defineInRange("topographicShoreScanBlocks", 24, 0, 256);
+        LAKE_SYNTHETIC_MIN_DEPTH_BLOCKS = builder.comment("Minimum synthetic depth in Minecraft blocks for small WorldCover lakes. This protects old configs with too-small meter values from making 1-block puddles.")
+                .defineInRange("syntheticMinDepthBlocks", 3, 1, 128);
+        LAKE_SYNTHETIC_MAX_DEPTH_BLOCKS = builder.comment("Maximum synthetic depth in Minecraft blocks for small WorldCover lakes. Actual depth still depends on distance to shore.")
+                .defineInRange("syntheticMaxDepthBlocks", 9, 1, 256);
         LAKE_FULL_DEPTH_DISTANCE_BLOCKS = builder.comment("Distance from shore where synthetic lakes reach max depth.")
                 .defineInRange("fullDepthDistanceBlocks", 96, 1, 2048);
         LAKE_MANUAL_DEFAULT_SHORE_BLEND_METERS = builder.comment("Default shore blend around manual circular lakes, in meters.")
@@ -365,8 +432,22 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("lakeMaxFillBlocks", 256, 1, 4096);
         SURFACE_POLISH_LAKE_CARVE_ABOVE_WATER_BLOCKS = builder.comment("For lake shore columns, remove at most this many blocks above local water level before filling. Keep small to avoid flattening shores.")
                 .defineInRange("lakeCarveAboveWaterBlocks", 2, 0, 64);
-        SURFACE_POLISH_LAKE_WATER_MASK_CARVE_ABOVE_WATER_BLOCKS = builder.comment("For exact WorldCover/manual lake water-mask columns, allow carving this many blocks above local water level before filling. This fixes lakes turning into tiny puddles when vanilla terrain remains above the mapped water surface.")
-                .defineInRange("lakeWaterMaskCarveAboveWaterBlocks", 96, 0, 512);
+        SURFACE_POLISH_LAKE_WATER_MASK_CARVE_ABOVE_WATER_BLOCKS = builder.comment("For exact lake water-mask columns, carve generated terrain down to the fitted lake surface before filling. The water mask is authoritative for area; DEM/basin fit is authoritative for level.")
+                .defineInRange("lakeWaterMaskCarveAboveWaterBlocks", 128, 0, 512);
+        SURFACE_POLISH_LAKE_SHORE_TARGET_HEIGHT_BLOCKS = builder.comment("Target lake shore terrain height relative to local water block. 0 means the shore block exists at the same Y as the water block, which contains vanilla water without making a raised rim.")
+                .defineInRange("lakeShoreTargetHeightBlocks", 0, 0, 16);
+        SURFACE_POLISH_LAKE_SHORE_SMOOTH_CARVE_BLOCKS = builder.comment("For near-lake shore columns, carve at most this many blocks down to the target shore height. Keeps high quarry walls/cliffs while smoothing 2-4 block lips.")
+                .defineInRange("lakeShoreSmoothCarveBlocks", 3, 0, 64);
+        SURFACE_POLISH_LAKE_LEAK_GUARD_RADIUS_BLOCKS = builder.comment("Runtime safety radius for lake filling. If nearby non-lake terrain is lower than the lake surface by more than lakeLeakMaxDropoffBlocks, the current water column is not filled. This is the final guard against floating water slabs when WorldCover and terrain disagree.")
+                .defineInRange("lakeLeakGuardRadiusBlocks", 24, 0, 256);
+        SURFACE_POLISH_LAKE_LEAK_GUARD_STEP_BLOCKS = builder.comment("Step in blocks for lake leak guard terrain probes.")
+                .defineInRange("lakeLeakGuardStepBlocks", 8, 1, 64);
+        SURFACE_POLISH_LAKE_LEAK_MAX_DROPOFF_BLOCKS = builder.comment("Legacy safety value. M30.6 contains lakes by building shore/bank columns from the water mask boundary instead of rejecting water columns.")
+                .defineInRange("lakeLeakMaxDropoffBlocks", 2, 0, 64);
+        SURFACE_POLISH_LAKE_BUILD_CONTAINMENT_BANKS = builder.comment("When true, non-water columns near the lake mask are guaranteed to contain the lake: if generated terrain is below the fitted water level, the polish pass fills it up to the water level with shore material. This prevents floating lake slabs and waterfall walls.")
+                .define("lakeBuildContainmentBanks", true);
+        SURFACE_POLISH_LAKE_BANK_MAX_RAISE_BLOCKS = builder.comment("Maximum number of blocks a near-lake shore column may be raised to contain the fitted water level. Larger values repair mismatched generated terrain; too large can create artificial embankments far from bad data.")
+                .defineInRange("lakeBankMaxRaiseBlocks", 24, 0, 256);
         SURFACE_POLISH_LAKE_SAND_DEPTH_METERS = builder.comment("Lake bed depth threshold for sand. Shallow lake bed up to this depth becomes sand.")
                 .defineInRange("lakeSandDepthMeters", 4.0D, 0.0D, 256.0D);
         SURFACE_POLISH_LAKE_GRAVEL_DEPTH_METERS = builder.comment("Lake bed depth threshold for gravel. Depths above lakeSandDepthMeters and up to this become gravel; deeper bottoms use clay/mud-like material.")

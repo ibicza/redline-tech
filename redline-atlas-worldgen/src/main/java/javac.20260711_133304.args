@@ -1,0 +1,6 @@
+-proc:none
+-d
+/tmp/rla_syntax
+com/ibicza/redlineatlasworldgen/config/AtlasWorldgenConfig.java
+com/ibicza/redlineatlasworldgen/lake/AtlasLakeGuide.java
+com/ibicza/redlineatlasworldgen/surface/AtlasSurfaceMaterialPolisher.java
