@@ -183,8 +183,8 @@ public final class AtlasSurfaceMaterialPolisher {
             // Exact GEBCO ocean can still be wrong at coarse coast edges. Do not carve large land masses here.
             // If terrain is above sea level, treat it as a small island/shore override and only repair surface cap.
             if (terrainY >= seaY) {
-                BlockState replacement = replacementFor(level, x, terrainY, z, AtlasOpenWaterGuide.OpenWaterSample.none());
-                return replacement != null && applySurfaceCap(level, pos, x, terrainY, z, minY, replacement, false);
+                BlockState replacement = replacementFor(level, x, terrainY, z, water);
+                return replacement != null && applySurfaceCap(level, pos, x, terrainY, z, minY, replacement, shouldReplaceSoftSurface(replacement));
             }
 
             BlockState bottomMaterial = oceanBottomMaterial(water);
@@ -205,8 +205,8 @@ public final class AtlasSurfaceMaterialPolisher {
             if (terrainY > seaY + carveAbove) {
                 // Connected low-water mask says this is likely coarse-coast ocean, but actual vanilla terrain is too high.
                 // Keep it as shore/land and only repair the surface material.
-                BlockState replacement = replacementFor(level, x, terrainY, z, AtlasOpenWaterGuide.OpenWaterSample.none());
-                return replacement != null && applySurfaceCap(level, pos, x, terrainY, z, minY, replacement, false);
+                BlockState replacement = replacementFor(level, x, terrainY, z, water);
+                return replacement != null && applySurfaceCap(level, pos, x, terrainY, z, minY, replacement, shouldReplaceSoftSurface(replacement));
             }
 
             int depthBlocks = Math.max(1, (int) Math.ceil(water.depthMeters() / Math.max(0.001D, AtlasWorldgenConfig.VERTICAL_METERS_PER_BLOCK.get())));
@@ -349,6 +349,11 @@ public final class AtlasSurfaceMaterialPolisher {
             return oceanBottomMaterial(water);
         }
 
+        BlockState shoreMaterial = shoreLandMaterial(level, blockX, blockY, blockZ, water);
+        if (shoreMaterial != null) {
+            return shoreMaterial;
+        }
+
         if (isSandyBiome(actualBiome)) {
             return Blocks.SAND.defaultBlockState();
         }
@@ -427,9 +432,52 @@ public final class AtlasSurfaceMaterialPolisher {
                 || replacement.is(Blocks.SNOW_BLOCK);
     }
 
+    private static BlockState shoreLandMaterial(ServerLevel level, int blockX, int blockY, int blockZ,
+                                                 AtlasOpenWaterGuide.OpenWaterSample water) {
+        if (!AtlasWorldgenConfig.SURFACE_POLISH_BUILD_OPEN_OCEAN_SHORES.get()) {
+            return null;
+        }
+        if (water.kind() != AtlasOpenWaterGuide.OpenWaterKind.COAST
+                && water.kind() != AtlasOpenWaterGuide.OpenWaterKind.OCEAN
+                && water.kind() != AtlasOpenWaterGuide.OpenWaterKind.OCEAN_FLOOD) {
+            return null;
+        }
+
+        double distance = water.distanceToOceanBlocks();
+        if (!Double.isFinite(distance)) {
+            distance = isFillableOceanKind(water.kind()) ? 0.0D : Double.POSITIVE_INFINITY;
+        }
+        if (distance > AtlasWorldgenConfig.SURFACE_POLISH_BEACH_DISTANCE_BLOCKS.get()) {
+            return null;
+        }
+
+        int seaY = AtlasWorldgenConfig.SEA_LEVEL_Y.get();
+        if (blockY > seaY + AtlasWorldgenConfig.SURFACE_POLISH_BEACH_MAX_HEIGHT_ABOVE_SEA_BLOCKS.get()) {
+            return null;
+        }
+
+        Optional<AtlasBiomeContext> context = AtlasBiomeResolver.context(blockX, blockY, blockZ, level.getSeed());
+        if (context.isPresent()) {
+            AtlasBiomeContext ctx = context.get();
+            if (ctx.slope() > AtlasWorldgenConfig.SURFACE_POLISH_BEACH_MAX_SLOPE.get()) {
+                return null;
+            }
+            if (ctx.slope() >= AtlasWorldgenConfig.OPEN_WATER_STONY_SHORE_SLOPE.get()
+                    && blockY > seaY + 2) {
+                return null;
+            }
+        }
+
+        return Blocks.SAND.defaultBlockState();
+    }
+
     private static BlockState oceanBottomMaterial(AtlasOpenWaterGuide.OpenWaterSample water) {
-        if (water.depthMeters() <= AtlasWorldgenConfig.OPEN_WATER_SHALLOW_DEPTH_METERS.get() * 2.0D) {
+        double depth = Math.max(0.0D, water.depthMeters());
+        if (depth <= AtlasWorldgenConfig.SURFACE_POLISH_OCEAN_SAND_DEPTH_METERS.get()) {
             return Blocks.SAND.defaultBlockState();
+        }
+        if (depth <= AtlasWorldgenConfig.SURFACE_POLISH_OCEAN_GRAVEL_DEPTH_METERS.get()) {
+            return Blocks.GRAVEL.defaultBlockState();
         }
         return Blocks.GRAVEL.defaultBlockState();
     }

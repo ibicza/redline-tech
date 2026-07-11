@@ -60,6 +60,11 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue SURFACE_POLISH_OCEAN_MAX_FILL_BLOCKS;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_SHORE_SAND_DEPTH_BLOCKS;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_TERRAIN_CAP_DEPTH_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_BEACH_DISTANCE_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_BEACH_MAX_HEIGHT_ABOVE_SEA_BLOCKS;
+    public static final ModConfigSpec.DoubleValue SURFACE_POLISH_BEACH_MAX_SLOPE;
+    public static final ModConfigSpec.DoubleValue SURFACE_POLISH_OCEAN_SAND_DEPTH_METERS;
+    public static final ModConfigSpec.DoubleValue SURFACE_POLISH_OCEAN_GRAVEL_DEPTH_METERS;
     public static final ModConfigSpec.BooleanValue SURFACE_POLISH_REPLACE_SURFACE_ORES;
     public static final ModConfigSpec.BooleanValue PROFILER_ENABLED;
     public static final ModConfigSpec.BooleanValue PROFILER_LOG_PERIODICALLY;
@@ -270,10 +275,20 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("oceanCarveAboveSeaBlocks", 0, 0, 256);
         SURFACE_POLISH_OCEAN_MAX_FILL_BLOCKS = builder.comment("Safety cap for vertical water fill per ocean/coast column. Prevents filling extreme wrong columns if mapping or bathymetry is bad.")
                 .defineInRange("oceanMaxFillBlocks", 512, 1, 4096);
-        SURFACE_POLISH_SHORE_SAND_DEPTH_BLOCKS = builder.comment("How many top blocks in low-slope shore/ocean-bottom columns are converted to sand. The top block and this many blocks below become sand.")
+        SURFACE_POLISH_SHORE_SAND_DEPTH_BLOCKS = builder.comment("How many top blocks in shore/ocean-bottom columns are converted to sand/gravel. The top block and this many blocks below become the chosen material.")
                 .defineInRange("shoreSandDepthBlocks", 3, 1, 16);
         SURFACE_POLISH_TERRAIN_CAP_DEPTH_BLOCKS = builder.comment("How many blocks below exposed land surface are repaired when atlas Y-shift exposes underground stone/deepslate/ores. Grass creates dirt below it; sand/gravel/stone remain homogeneous.")
                 .defineInRange("terrainCapDepthBlocks", 3, 1, 32);
+        SURFACE_POLISH_BEACH_DISTANCE_BLOCKS = builder.comment("How far from confirmed open ocean a low land column may be capped as sandy beach. This is only a thin surface cap, not terrain carving.")
+                .defineInRange("beachDistanceBlocks", 96, 0, 1024);
+        SURFACE_POLISH_BEACH_MAX_HEIGHT_ABOVE_SEA_BLOCKS = builder.comment("Maximum terrain height above sea level that can become sandy beach through surface polish. Higher land keeps normal biome material.")
+                .defineInRange("beachMaxHeightAboveSeaBlocks", 6, 0, 128);
+        SURFACE_POLISH_BEACH_MAX_SLOPE = builder.comment("Maximum atlas slope for surface polish to force sand on a near-ocean land column. Steeper shores stay grass/stone according to biome.")
+                .defineInRange("beachMaxSlope", 0.45D, 0.0D, 8.0D);
+        SURFACE_POLISH_OCEAN_SAND_DEPTH_METERS = builder.comment("Ocean bottom depth threshold for sand. Shallow seabed up to this depth becomes sand.")
+                .defineInRange("oceanSandDepthMeters", 32.0D, 0.0D, 1000.0D);
+        SURFACE_POLISH_OCEAN_GRAVEL_DEPTH_METERS = builder.comment("Ocean bottom depth threshold for gravel. Depths above oceanSandDepthMeters and up to this become gravel; deeper bottoms remain stone-like later.")
+                .defineInRange("oceanGravelDepthMeters", 128.0D, 0.0D, 12000.0D);
         SURFACE_POLISH_REPLACE_SURFACE_ORES = builder.comment("Replace exposed ore blocks in the surface repair pass. This prevents ore/deepslate patches on beaches and lowland surfaces created by shifted terrain.")
                 .define("replaceSurfaceOres", true);
         builder.pop();
