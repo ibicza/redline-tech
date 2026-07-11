@@ -556,7 +556,7 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("riverMaxFillBlocks", 64, 1, 1024);
         SURFACE_POLISH_RIVER_BANK_SMOOTH_CARVE_BLOCKS = builder.comment("Maximum bank lowering toward the local water level. Mountain rivers keep cliffs beyond this small smoothing amount.")
                 .defineInRange("riverBankSmoothCarveBlocks", 4, 0, 64);
-        SURFACE_POLISH_RIVER_BANK_MAX_RAISE_BLOCKS = builder.comment("Maximum bank raising used to contain a channel whose fitted water surface is above local generated terrain.")
+        SURFACE_POLISH_RIVER_BANK_MAX_RAISE_BLOCKS = builder.comment("Legacy compatibility value. River banks are no longer raised: M31.1 lowers the fitted/runtime river surface to the lower surrounding bank instead.")
                 .defineInRange("riverBankMaxRaiseBlocks", 12, 0, 128);
         SURFACE_POLISH_RIVER_SAND_DEPTH_METERS = builder.comment("River-bed depth threshold for sand. Very shallow/slow edges use sand.")
                 .defineInRange("riverSandDepthMeters", 3.0D, 0.0D, 128.0D);

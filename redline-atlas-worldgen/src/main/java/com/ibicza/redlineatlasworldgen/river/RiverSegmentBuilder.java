@@ -44,16 +44,17 @@ final class RiverSegmentBuilder {
             FittedPoint point = fitted.get(i);
             x[i] = point.x();
             z[i] = point.z();
-            candidateSurface[i] = point.heightMeters();
             WidthResult measured = widthAt(fitted, i, raw.attributes());
             width[i] = measured.widthBlocks();
             worldcover[i] = measured.worldcoverWater();
+            candidateSurface[i] = bankLimitedSurface(fitted, i, width[i]);
             int depthBlocks = clamp((int) Math.round(width[i] * AtlasWorldgenConfig.RIVER_DEPTH_WIDTH_FACTOR.get()),
                     AtlasWorldgenConfig.RIVER_MIN_DEPTH_BLOCKS.get(), AtlasWorldgenConfig.RIVER_MAX_DEPTH_BLOCKS.get());
             depth[i] = depthBlocks * verticalMeters;
         }
 
-        double[] water = monotonicNonIncreasing(candidateSurface);
+        double[] water = lowerOnlyNonIncreasing(candidateSurface);
+        limitDropByLoweringUpstream(water, x, z, verticalMeters);
         if (AtlasWorldgenConfig.RIVER_PROFILE_SNAP_TO_BLOCK.get()) {
             for (int i = 0; i < water.length; i++) {
                 water[i] = Math.floor(water[i] / verticalMeters) * verticalMeters;
@@ -63,6 +64,71 @@ final class RiverSegmentBuilder {
             }
         }
         return new RiverSegment(raw.sourceId(), raw.attributes(), x, z, width, water, depth, worldcover);
+    }
+
+    private double bankLimitedSurface(List<FittedPoint> points, int index, double widthBlocks) {
+        FittedPoint center = points.get(index);
+        OptionalDouble support = bankSupportHeight(points, index, widthBlocks);
+        if (support.isEmpty()) {
+            return center.heightMeters();
+        }
+        // Never lift a river to match its banks. The lower bank only acts as an upper bound.
+        return Math.min(center.heightMeters(), support.getAsDouble());
+    }
+
+    private OptionalDouble bankSupportHeight(List<FittedPoint> points, int index, double widthBlocks) {
+        FittedPoint center = points.get(index);
+        FittedPoint before = points.get(Math.max(0, index - 1));
+        FittedPoint after = points.get(Math.min(points.size() - 1, index + 1));
+        double tangentX = after.x() - before.x();
+        double tangentZ = after.z() - before.z();
+        double tangentLength = Math.hypot(tangentX, tangentZ);
+        if (tangentLength <= 1.0E-6D) {
+            return OptionalDouble.empty();
+        }
+        double normalX = -tangentZ / tangentLength;
+        double normalZ = tangentX / tangentLength;
+        OptionalDouble left = sideSupportHeight(center, -normalX, -normalZ, widthBlocks);
+        OptionalDouble right = sideSupportHeight(center, normalX, normalZ, widthBlocks);
+        if (left.isPresent() && right.isPresent()) {
+            return OptionalDouble.of(Math.min(left.getAsDouble(), right.getAsDouble()));
+        }
+        return left.isPresent() ? left : right;
+    }
+
+    private OptionalDouble sideSupportHeight(FittedPoint center, double normalX, double normalZ,
+                                             double widthBlocks) {
+        double[] distances = supportProbeDistances(widthBlocks);
+        double[] values = new double[distances.length];
+        int count = 0;
+        for (double distance : distances) {
+            OptionalDouble height = heightAt(center.x() + normalX * distance,
+                    center.z() + normalZ * distance);
+            if (height.isPresent()) {
+                values[count++] = height.getAsDouble();
+            }
+        }
+        if (count == 0) {
+            return OptionalDouble.empty();
+        }
+        java.util.Arrays.sort(values, 0, count);
+        // Lower-third instead of an absolute minimum: one bad DSM pit cannot sink a whole river,
+        // while a genuinely low bank still clamps the fitted water surface.
+        int index = Math.min(count - 1, count / 3);
+        return OptionalDouble.of(values[index]);
+    }
+
+    private static double[] supportProbeDistances(double widthBlocks) {
+        double halfWidth = Math.max(0.5D, widthBlocks * 0.5D);
+        double bankWidth = Math.max(2.0D, AtlasWorldgenConfig.RIVER_BANK_WIDTH_BLOCKS.get());
+        double step = Math.max(2.0D, AtlasWorldgenConfig.RIVER_REFINE_STEP_BLOCKS.get());
+        return new double[]{
+                halfWidth + 1.0D,
+                halfWidth + Math.max(2.0D, bankWidth * 0.33D),
+                halfWidth + Math.max(3.0D, bankWidth * 0.66D),
+                halfWidth + bankWidth,
+                halfWidth + bankWidth + step
+        };
     }
 
     private List<WorldPoint> toWorld(List<GeoRiverPoint> points) {
@@ -292,34 +358,29 @@ final class RiverSegmentBuilder {
         return water;
     }
 
-    private static double[] monotonicNonIncreasing(double[] values) {
-        int n = values.length;
-        double[] means = new double[n];
-        int[] weights = new int[n];
-        int[] starts = new int[n];
-        int blocks = 0;
-        for (int i = 0; i < n; i++) {
-            means[blocks] = values[i];
-            weights[blocks] = 1;
-            starts[blocks] = i;
-            blocks++;
-            while (blocks >= 2 && means[blocks - 2] < means[blocks - 1]) {
-                int combinedWeight = weights[blocks - 2] + weights[blocks - 1];
-                means[blocks - 2] = (means[blocks - 2] * weights[blocks - 2]
-                        + means[blocks - 1] * weights[blocks - 1]) / combinedWeight;
-                weights[blocks - 2] = combinedWeight;
-                blocks--;
-            }
-        }
-        double[] result = new double[n];
-        for (int block = 0; block < blocks; block++) {
-            int start = starts[block];
-            int end = block + 1 < blocks ? starts[block + 1] : n;
-            for (int i = start; i < end; i++) {
-                result[i] = means[block];
-            }
+    private static double[] lowerOnlyNonIncreasing(double[] values) {
+        double[] result = values.clone();
+        for (int i = 1; i < result.length; i++) {
+            result[i] = Math.min(result[i - 1], result[i]);
         }
         return result;
+    }
+
+    private static void limitDropByLoweringUpstream(double[] water, double[] x, double[] z,
+                                                    double verticalMetersPerBlock) {
+        // One water-level block per eight horizontal blocks still permits steep mountain streams,
+        // but turns DEM cliffs into a descending staircase. Crucially this pass only lowers the
+        // upstream side; it never raises a downstream valley or a low bank.
+        final double horizontalBlocksPerDropBlock = 8.0D;
+        for (int i = water.length - 2; i >= 0; i--) {
+            double distance = Math.max(1.0D, Math.hypot(x[i + 1] - x[i], z[i + 1] - z[i]));
+            double allowedRiseMeters = Math.max(verticalMetersPerBlock,
+                    distance / horizontalBlocksPerDropBlock * verticalMetersPerBlock);
+            water[i] = Math.min(water[i], water[i + 1] + allowedRiseMeters);
+        }
+        for (int i = 1; i < water.length; i++) {
+            water[i] = Math.min(water[i - 1], water[i]);
+        }
     }
 
     private static long key(int x, int z) {

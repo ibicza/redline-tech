@@ -4,11 +4,14 @@ public record RiverSample(RiverKind kind, boolean exactWater, double distanceToC
                           double halfWidthBlocks, double distanceToBankBlocks,
                           double waterSurfaceMeters, double bottomMeters, double depthMeters,
                           long riverId, long nextDownId, int strahlerOrder, double dischargeCms,
-                          String sourceId, double resolutionMeters) {
+                          String sourceId, double resolutionMeters,
+                          double centerXBlocks, double centerZBlocks,
+                          double normalX, double normalZ) {
     public static RiverSample none() {
         return new RiverSample(RiverKind.NONE, false, Double.POSITIVE_INFINITY, 0.0D,
                 Double.POSITIVE_INFINITY, Double.NaN, Double.NaN, 0.0D,
-                0L, 0L, 0, 0.0D, "none", 0.0D);
+                0L, 0L, 0, 0.0D, "none", 0.0D,
+                Double.NaN, Double.NaN, 0.0D, 0.0D);
     }
 
     public boolean hasRiverData() {

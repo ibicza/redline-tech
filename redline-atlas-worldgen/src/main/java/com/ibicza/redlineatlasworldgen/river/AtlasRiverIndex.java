@@ -352,7 +352,9 @@ public final class AtlasRiverIndex {
     private static String configurationFingerprint(Path gameDirectory, Optional<RiverSourceBounds> bounds) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            update(digest, "river-codec-v3");
+            // v4 changes the cooked profile semantics without changing the binary codec:
+            // water is clamped by both DEM banks and every profile correction is lower-only.
+            update(digest, "river-profile-bank-support-v4");
             update(digest, bounds.map(RiverSourceBounds::toString).orElse("all"));
             update(digest, Integer.toString(AtlasWorldgenConfig.RIVER_MIN_STRAHLER_ORDER.get()));
             update(digest, Double.toString(AtlasWorldgenConfig.ORIGIN_LATITUDE.get()));
@@ -375,6 +377,8 @@ public final class AtlasRiverIndex {
             update(digest, Integer.toString(AtlasWorldgenConfig.RIVER_MIN_DEPTH_BLOCKS.get()));
             update(digest, Integer.toString(AtlasWorldgenConfig.RIVER_MAX_DEPTH_BLOCKS.get()));
             update(digest, Double.toString(AtlasWorldgenConfig.RIVER_DEPTH_WIDTH_FACTOR.get()));
+            update(digest, Integer.toString(AtlasWorldgenConfig.RIVER_BANK_WIDTH_BLOCKS.get()));
+            update(digest, Boolean.toString(AtlasWorldgenConfig.RIVER_PROFILE_SNAP_TO_BLOCK.get()));
             return java.util.HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException(ex);

@@ -93,10 +93,26 @@ final class RiverSegment {
         double depth = lerp(depthMeters[bestEdge], depthMeters[bestEdge + 1], bestT);
         RiverKind kind = distance <= halfWidth ? RiverKind.CHANNEL : RiverKind.BANK;
         boolean exact = worldcoverWater[bestEdge] || worldcoverWater[bestEdge + 1];
+
+        double edgeX = x[bestEdge + 1] - x[bestEdge];
+        double edgeZ = z[bestEdge + 1] - z[bestEdge];
+        double edgeLength = Math.hypot(edgeX, edgeZ);
+        double normalX;
+        double normalZ;
+        if (edgeLength <= 1.0E-9D) {
+            normalX = 1.0D;
+            normalZ = 0.0D;
+        } else {
+            normalX = -edgeZ / edgeLength;
+            normalZ = edgeX / edgeLength;
+        }
+        double centerX = x[bestEdge] + edgeX * bestT;
+        double centerZ = z[bestEdge] + edgeZ * bestT;
         return new RiverSample(kind, exact, distance, halfWidth,
                 Math.max(0.0D, distance - halfWidth), surface, surface - depth, depth,
                 attributes.riverId(), attributes.nextDownId(), attributes.strahlerOrder(),
-                attributes.dischargeCms(), sourceId, exact ? 10.0D : 30.0D);
+                attributes.dischargeCms(), sourceId, exact ? 10.0D : 30.0D,
+                centerX, centerZ, normalX, normalZ);
     }
 
     CenterPoint nearestCenter(double blockX, double blockZ) {
