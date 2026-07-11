@@ -46,9 +46,13 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.BooleanValue SURFACE_POLISH_FILL_OPEN_OCEAN_WATER;
     public static final ModConfigSpec.BooleanValue SURFACE_POLISH_BUILD_OPEN_OCEAN_SHORES;
     public static final ModConfigSpec.BooleanValue SURFACE_POLISH_EXACT_COAST_SAMPLES;
+    public static final ModConfigSpec.BooleanValue SURFACE_POLISH_FILL_COAST_DEPRESSION_WATER;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_COAST_WATER_MAX_DISTANCE_BLOCKS;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_OCEAN_CARVE_ABOVE_SEA_BLOCKS;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_OCEAN_MAX_FILL_BLOCKS;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_SHORE_SAND_DEPTH_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_TERRAIN_CAP_DEPTH_BLOCKS;
+    public static final ModConfigSpec.BooleanValue SURFACE_POLISH_REPLACE_SURFACE_ORES;
     public static final ModConfigSpec.BooleanValue PROFILER_ENABLED;
     public static final ModConfigSpec.BooleanValue PROFILER_LOG_PERIODICALLY;
     public static final ModConfigSpec.IntValue PROFILER_LOG_INTERVAL_TICKS;
@@ -234,12 +238,20 @@ public final class AtlasWorldgenConfig {
                 .define("buildOpenOceanShores", true);
         SURFACE_POLISH_EXACT_COAST_SAMPLES = builder.comment("Use exact coast-radius water samples during surface polish. This is slower than cached biome samples but runs only once per polished column and gives beaches/stony shores.")
                 .define("exactCoastSamples", true);
+        SURFACE_POLISH_FILL_COAST_DEPRESSION_WATER = builder.comment("Fill coast columns that are below sea level and directly near confirmed open ocean. This is conservative; exact ocean columns are always handled by fillOpenOceanWater.")
+                .define("fillCoastDepressionWater", true);
+        SURFACE_POLISH_COAST_WATER_MAX_DISTANCE_BLOCKS = builder.comment("Maximum distance to confirmed open ocean for coast depression water fill. Set to 0 to fill only exact ocean columns.")
+                .defineInRange("coastWaterMaxDistanceBlocks", 32, 0, 2048);
         SURFACE_POLISH_OCEAN_CARVE_ABOVE_SEA_BLOCKS = builder.comment("In confirmed open-ocean columns, remove accidental terrain above sea level by at most this many blocks before filling water. Prevents vanilla spikes/islands caused by coarse bathymetry. 0 disables carving.")
-                .defineInRange("oceanCarveAboveSeaBlocks", 24, 0, 256);
-        SURFACE_POLISH_OCEAN_MAX_FILL_BLOCKS = builder.comment("Safety cap for vertical water fill per ocean column. Prevents filling extreme wrong columns if mapping or bathymetry is bad.")
+                .defineInRange("oceanCarveAboveSeaBlocks", 0, 0, 256);
+        SURFACE_POLISH_OCEAN_MAX_FILL_BLOCKS = builder.comment("Safety cap for vertical water fill per ocean/coast column. Prevents filling extreme wrong columns if mapping or bathymetry is bad.")
                 .defineInRange("oceanMaxFillBlocks", 512, 1, 4096);
         SURFACE_POLISH_SHORE_SAND_DEPTH_BLOCKS = builder.comment("How many top blocks in low-slope shore/ocean-bottom columns are converted to sand. The top block and this many blocks below become sand.")
                 .defineInRange("shoreSandDepthBlocks", 3, 1, 16);
+        SURFACE_POLISH_TERRAIN_CAP_DEPTH_BLOCKS = builder.comment("How many blocks below exposed land surface are repaired when atlas Y-shift exposes underground stone/deepslate/ores. Grass creates dirt below it; sand/gravel/stone remain homogeneous.")
+                .defineInRange("terrainCapDepthBlocks", 3, 1, 32);
+        SURFACE_POLISH_REPLACE_SURFACE_ORES = builder.comment("Replace exposed ore blocks in the surface repair pass. This prevents ore/deepslate patches on beaches and lowland surfaces created by shifted terrain.")
+                .define("replaceSurfaceOres", true);
         builder.pop();
 
         builder.push("profiler");

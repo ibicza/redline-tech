@@ -9,8 +9,11 @@ import com.ibicza.redlineatlasworldgen.landcover.LandcoverClass;
 import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
@@ -114,27 +117,34 @@ public final class AtlasSurfaceMaterialPolisher {
 
                 int blockX = pos.getMinBlockX() + localX;
                 int blockZ = pos.getMinBlockZ() + localZ;
-                int heightmapTopY = Math.min(maxY, chunk.getHeight(Heightmap.Types.WORLD_SURFACE, localX, localZ) - 1);
+                int heightmapTopY = Math.min(maxY, chunk.getHeight(Heightmap.Types.WORLD_SURFACE, localX, localZ));
                 AtlasOpenWaterGuide.OpenWaterSample water = waterForSurface(blockX, blockZ);
 
-                if (water.kind() == AtlasOpenWaterGuide.OpenWaterKind.OCEAN
-                        && AtlasWorldgenConfig.SURFACE_POLISH_FILL_OPEN_OCEAN_WATER.get()) {
+                if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_OPEN_OCEAN_WATER.get()
+                        && water.kind() == AtlasOpenWaterGuide.OpenWaterKind.OCEAN) {
                     changed |= finishOceanColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, maxY, seaY, water);
                     continue;
                 }
 
-                int solidY = findTopSolid(level, mutable, blockX, blockZ, heightmapTopY, Math.max(minY, heightmapTopY - scan));
-                if (solidY == Integer.MIN_VALUE) {
+                if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_OPEN_OCEAN_WATER.get()
+                        && AtlasWorldgenConfig.SURFACE_POLISH_FILL_COAST_DEPRESSION_WATER.get()
+                        && water.kind() == AtlasOpenWaterGuide.OpenWaterKind.COAST
+                        && water.distanceToOceanBlocks() <= AtlasWorldgenConfig.SURFACE_POLISH_COAST_WATER_MAX_DISTANCE_BLOCKS.get()) {
+                    changed |= finishCoastDepressionColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, seaY, water);
+                }
+
+                int terrainY = findTopTerrain(level, mutable, blockX, blockZ, heightmapTopY, Math.max(minY, heightmapTopY - scan));
+                if (terrainY == Integer.MIN_VALUE) {
                     continue;
                 }
 
-                BlockState replacement = replacementFor(level, blockX, solidY, blockZ, water);
+                BlockState replacement = replacementFor(level, blockX, terrainY, blockZ, water);
                 if (replacement == null) {
                     continue;
                 }
 
-                boolean shore = water.kind() == AtlasOpenWaterGuide.OpenWaterKind.COAST;
-                changed |= applySurfaceCap(level, mutable, blockX, solidY, blockZ, minY, replacement, shore);
+                boolean replaceSoft = shouldReplaceSoftSurface(replacement);
+                changed |= applySurfaceCap(level, mutable, blockX, terrainY, blockZ, minY, replacement, replaceSoft);
             }
         }
         if (changed) {
@@ -160,73 +170,87 @@ public final class AtlasSurfaceMaterialPolisher {
                                              AtlasOpenWaterGuide.OpenWaterSample water) {
         long started = AtlasWorldgenProfiler.start();
         try {
-            boolean changed = false;
-            int carveAbove = Math.max(0, AtlasWorldgenConfig.SURFACE_POLISH_OCEAN_CARVE_ABOVE_SEA_BLOCKS.get());
-            int scanFrom = Math.min(maxY, Math.max(heightmapTopY, seaY + carveAbove));
-            int solidY = findTopSolid(level, pos, x, z, scanFrom, minY);
-            if (solidY == Integer.MIN_VALUE) {
+            int scanFrom = Math.min(maxY, heightmapTopY);
+            int terrainY = findTopTerrain(level, pos, x, z, scanFrom, minY);
+            if (terrainY == Integer.MIN_VALUE) {
                 return false;
             }
 
-            if (solidY > seaY) {
-                if (solidY > seaY + carveAbove) {
-                    // Probably a real island/land override that the coarse GEBCO cell cannot represent.
-                    // Do not force-fill it as ocean.
-                    BlockState replacement = replacementFor(level, x, solidY, z, AtlasOpenWaterGuide.OpenWaterSample.none());
-                    return replacement != null && applySurfaceCap(level, pos, x, solidY, z, minY, replacement, false);
-                }
-                for (int y = solidY; y > seaY; y--) {
-                    pos.set(x, y, z);
-                    BlockState state = level.getBlockState(pos);
-                    if (!state.isAir() && !state.liquid()) {
-                        changed |= level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
-                    }
-                }
-                solidY = findTopSolid(level, pos, x, z, seaY, minY);
-                if (solidY == Integer.MIN_VALUE) {
-                    return changed;
-                }
+            // Важно: больше НЕ срезаем породу выше sea level.
+            // Если coarse GEBCO сказал ocean, но vanilla/land DEM дал сушу выше уровня моря,
+            // считаем это островом/береговым override и только чиним верхние 2-3 блока под его биом.
+            if (terrainY >= seaY) {
+                BlockState replacement = replacementFor(level, x, terrainY, z, AtlasOpenWaterGuide.OpenWaterSample.none());
+                return replacement != null && applySurfaceCap(level, pos, x, terrainY, z, minY, replacement, false);
             }
 
             BlockState bottomMaterial = oceanBottomMaterial(water);
-            changed |= applySurfaceCap(level, pos, x, solidY, z, minY, bottomMaterial, true);
-
-            int maxFill = Math.max(1, AtlasWorldgenConfig.SURFACE_POLISH_OCEAN_MAX_FILL_BLOCKS.get());
-            int fillFrom = solidY + 1;
-            int fillTo = Math.min(seaY, solidY + maxFill);
-            for (int y = fillFrom; y <= fillTo; y++) {
-                pos.set(x, y, z);
-                BlockState state = level.getBlockState(pos);
-                if (state.isAir() || state.liquid() || isReplaceableWaterColumnBlock(state)) {
-                    if (!state.is(Blocks.WATER)) {
-                        changed |= level.setBlock(pos, Blocks.WATER.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
-                    }
-                }
-            }
-            if (fillTo >= fillFrom) {
-                AtlasWorldgenProfiler.record("surfacePolish.waterColumns", 0L);
-            }
+            boolean changed = applySurfaceCap(level, pos, x, terrainY, z, minY, bottomMaterial, true);
+            changed |= fillWaterAbove(level, pos, x, z, terrainY, seaY);
             return changed;
         } finally {
             AtlasWorldgenProfiler.recordSince("surfacePolish.oceanColumn", started);
         }
     }
 
-    private static int findTopSolid(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z, int topY, int minY) {
+    private static boolean finishCoastDepressionColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
+                                                       int heightmapTopY, int minY, int seaY,
+                                                       AtlasOpenWaterGuide.OpenWaterSample water) {
+        long started = AtlasWorldgenProfiler.start();
+        try {
+            int terrainY = findTopTerrain(level, pos, x, z, heightmapTopY, minY);
+            if (terrainY == Integer.MIN_VALUE || terrainY >= seaY) {
+                return false;
+            }
+            BlockState bottomMaterial = oceanBottomMaterial(water);
+            boolean changed = applySurfaceCap(level, pos, x, terrainY, z, minY, bottomMaterial, true);
+            changed |= fillWaterAbove(level, pos, x, z, terrainY, seaY);
+            return changed;
+        } finally {
+            AtlasWorldgenProfiler.recordSince("surfacePolish.coastWaterColumn", started);
+        }
+    }
+
+    private static boolean fillWaterAbove(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z, int terrainY, int seaY) {
+        boolean changed = false;
+        int maxFill = Math.max(1, AtlasWorldgenConfig.SURFACE_POLISH_OCEAN_MAX_FILL_BLOCKS.get());
+        int fillFrom = terrainY + 1;
+        int fillTo = Math.min(seaY, terrainY + maxFill);
+        for (int y = fillFrom; y <= fillTo; y++) {
+            pos.set(x, y, z);
+            BlockState state = level.getBlockState(pos);
+            if (state.isAir() || state.liquid() || isReplaceableWaterColumnBlock(state)) {
+                if (!state.is(Blocks.WATER)) {
+                    changed |= level.setBlock(pos, Blocks.WATER.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                }
+            }
+        }
+        if (fillTo >= fillFrom) {
+            AtlasWorldgenProfiler.record("surfacePolish.waterColumns", 0L);
+        }
+        return changed;
+    }
+
+    private static int findTopTerrain(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z, int topY, int minY) {
         for (int y = topY; y >= minY; y--) {
             pos.set(x, y, z);
             BlockState state = level.getBlockState(pos);
-            if (state.isAir() || state.liquid()) {
+            if (state.isAir() || state.liquid() || isIgnoredSurfaceFeature(state)) {
                 continue;
             }
-            return y;
+            if (isTerrainSurfaceCandidate(state)) {
+                return y;
+            }
+            // Unknown solid feature, not terrain. Keep scanning so trees/structures do not block repair.
         }
         return Integer.MIN_VALUE;
     }
 
     private static boolean applySurfaceCap(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int topY, int z, int minY,
                                            BlockState replacement, boolean replaceSoftSurfaceToo) {
-        int depth = Math.max(1, replaceSoftSurfaceToo ? AtlasWorldgenConfig.SURFACE_POLISH_SHORE_SAND_DEPTH_BLOCKS.get() : 1);
+        int depth = Math.max(1, replaceSoftSurfaceToo
+                ? AtlasWorldgenConfig.SURFACE_POLISH_SHORE_SAND_DEPTH_BLOCKS.get()
+                : AtlasWorldgenConfig.SURFACE_POLISH_TERRAIN_CAP_DEPTH_BLOCKS.get());
         boolean changed = false;
         for (int dy = 0; dy < depth; dy++) {
             int y = topY - dy;
@@ -235,37 +259,62 @@ public final class AtlasSurfaceMaterialPolisher {
             }
             pos.set(x, y, z);
             BlockState current = level.getBlockState(pos);
-            if (current.isAir() || current.liquid()) {
+            if (current.isAir() || current.liquid() || isIgnoredSurfaceFeature(current)) {
                 continue;
             }
-            if (!isReplaceableSurfaceMaterial(current, replaceSoftSurfaceToo)) {
+            if (!isReplaceableTerrainMaterial(current, replaceSoftSurfaceToo)) {
                 break;
             }
-            if (!current.is(replacement.getBlock())) {
-                changed |= level.setBlock(pos, replacement, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+            BlockState layerReplacement = layerReplacement(replacement, dy);
+            if (!current.is(layerReplacement.getBlock())) {
+                changed |= level.setBlock(pos, layerReplacement, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
             }
         }
         return changed;
     }
 
+    private static BlockState layerReplacement(BlockState topReplacement, int depth) {
+        if (depth <= 0) {
+            return topReplacement;
+        }
+        if (topReplacement.is(Blocks.GRASS_BLOCK)) {
+            return Blocks.DIRT.defaultBlockState();
+        }
+        if (topReplacement.is(Blocks.SNOW_BLOCK)) {
+            return Blocks.SNOW_BLOCK.defaultBlockState();
+        }
+        return topReplacement;
+    }
+
     private static BlockState replacementFor(ServerLevel level, int blockX, int blockY, int blockZ,
                                              AtlasOpenWaterGuide.OpenWaterSample water) {
-        if (AtlasWorldgenConfig.SURFACE_POLISH_BUILD_OPEN_OCEAN_SHORES.get()
-                && water.kind() == AtlasOpenWaterGuide.OpenWaterKind.COAST) {
-            Optional<AtlasBiomeContext> context = AtlasBiomeResolver.context(blockX, blockY, blockZ, level.getSeed());
-            double slope = context.map(AtlasBiomeContext::slope).orElse(0.0D);
-            if (slope >= AtlasWorldgenConfig.OPEN_WATER_STONY_SHORE_SLOPE.get()) {
-                return Blocks.STONE.defaultBlockState();
-            }
+        ResourceKey<Biome> actualBiome = actualBiomeAt(level, blockX, blockY, blockZ).orElse(null);
+        boolean actualOcean = isAnyOceanBiome(actualBiome);
+
+        if (water.kind() == AtlasOpenWaterGuide.OpenWaterKind.OCEAN && blockY < AtlasWorldgenConfig.SEA_LEVEL_Y.get()) {
+            return oceanBottomMaterial(water);
+        }
+        if (actualOcean && blockY < AtlasWorldgenConfig.SEA_LEVEL_Y.get()) {
+            return oceanBottomMaterial(water);
+        }
+
+        if (isSandyBiome(actualBiome)) {
             return Blocks.SAND.defaultBlockState();
+        }
+        if (isSnowBiome(actualBiome)) {
+            return Blocks.SNOW_BLOCK.defaultBlockState();
+        }
+        if (isRockyBiome(actualBiome)) {
+            return null;
         }
 
         Optional<AtlasBiomeContext> context = AtlasBiomeResolver.context(blockX, blockY, blockZ, level.getSeed());
         if (context.isEmpty()) {
             return isNearSeaLevel(blockY) ? Blocks.GRASS_BLOCK.defaultBlockState() : null;
         }
+
         AtlasBiomeContext ctx = context.get();
-        if (ctx.water().kind() == WaterContext.WaterKind.OPEN_OCEAN) {
+        if (ctx.water().kind() == WaterContext.WaterKind.OPEN_OCEAN && blockY < AtlasWorldgenConfig.SEA_LEVEL_Y.get()) {
             return oceanBottomMaterial(water);
         }
         if (ctx.temperatureC() <= AtlasWorldgenConfig.BIOME_FREEZING_TEMPERATURE_C.get()
@@ -278,11 +327,53 @@ public final class AtlasSurfaceMaterialPolisher {
         if (ctx.landcover() == LandcoverClass.BARE_SPARSE || ctx.slope() >= AtlasWorldgenConfig.BIOME_CLIFF_SLOPE.get()) {
             return null;
         }
-        if (isNearSeaLevel(blockY) && ctx.slope() <= AtlasWorldgenConfig.OPEN_WATER_BEACH_MAX_SLOPE.get()
-                && water.distanceToOceanBlocks() <= AtlasWorldgenConfig.OPEN_WATER_COAST_RADIUS_BLOCKS.get()) {
-            return Blocks.SAND.defaultBlockState();
-        }
         return Blocks.GRASS_BLOCK.defaultBlockState();
+    }
+
+    private static Optional<ResourceKey<Biome>> actualBiomeAt(ServerLevel level, int blockX, int blockY, int blockZ) {
+        return level.getBiome(new BlockPos(blockX, blockY, blockZ)).unwrapKey();
+    }
+
+    private static boolean isAnyOceanBiome(ResourceKey<Biome> key) {
+        return key == Biomes.OCEAN
+                || key == Biomes.DEEP_OCEAN
+                || key == Biomes.COLD_OCEAN
+                || key == Biomes.DEEP_COLD_OCEAN
+                || key == Biomes.FROZEN_OCEAN
+                || key == Biomes.DEEP_FROZEN_OCEAN
+                || key == Biomes.LUKEWARM_OCEAN
+                || key == Biomes.DEEP_LUKEWARM_OCEAN
+                || key == Biomes.WARM_OCEAN;
+    }
+
+    private static boolean isSandyBiome(ResourceKey<Biome> key) {
+        return key == Biomes.BEACH
+                || key == Biomes.SNOWY_BEACH
+                || key == Biomes.DESERT
+                || key == Biomes.BADLANDS
+                || key == Biomes.ERODED_BADLANDS
+                || key == Biomes.WOODED_BADLANDS;
+    }
+
+    private static boolean isSnowBiome(ResourceKey<Biome> key) {
+        return key == Biomes.SNOWY_PLAINS
+                || key == Biomes.ICE_SPIKES
+                || key == Biomes.SNOWY_TAIGA
+                || key == Biomes.SNOWY_SLOPES
+                || key == Biomes.FROZEN_PEAKS
+                || key == Biomes.FROZEN_RIVER;
+    }
+
+    private static boolean isRockyBiome(ResourceKey<Biome> key) {
+        return key == Biomes.STONY_SHORE
+                || key == Biomes.STONY_PEAKS
+                || key == Biomes.JAGGED_PEAKS;
+    }
+
+    private static boolean shouldReplaceSoftSurface(BlockState replacement) {
+        return replacement.is(Blocks.SAND)
+                || replacement.is(Blocks.GRAVEL)
+                || replacement.is(Blocks.SNOW_BLOCK);
     }
 
     private static BlockState oceanBottomMaterial(AtlasOpenWaterGuide.OpenWaterSample water) {
@@ -293,16 +384,21 @@ public final class AtlasSurfaceMaterialPolisher {
     }
 
     private static boolean isNearSeaLevel(int blockY) {
-        return Math.abs(blockY - AtlasWorldgenConfig.SEA_LEVEL_Y.get()) <= 12;
+        return Math.abs(blockY - AtlasWorldgenConfig.SEA_LEVEL_Y.get()) <= 18;
     }
 
-    private static boolean isReplaceableSurfaceMaterial(BlockState state, boolean replaceSoftSurfaceToo) {
+    private static boolean isTerrainSurfaceCandidate(BlockState state) {
+        return isSurfaceStoneLike(state) || isSoftSurfaceMaterial(state);
+    }
+
+    private static boolean isReplaceableTerrainMaterial(BlockState state, boolean replaceSoftSurfaceToo) {
         if (isSurfaceStoneLike(state)) {
             return true;
         }
-        if (!replaceSoftSurfaceToo) {
-            return false;
-        }
+        return replaceSoftSurfaceToo && isSoftSurfaceMaterial(state);
+    }
+
+    private static boolean isSoftSurfaceMaterial(BlockState state) {
         return state.is(Blocks.DIRT)
                 || state.is(Blocks.GRASS_BLOCK)
                 || state.is(Blocks.COARSE_DIRT)
@@ -325,14 +421,52 @@ public final class AtlasSurfaceMaterialPolisher {
                 || state.is(Blocks.TALL_SEAGRASS);
     }
 
+    private static boolean isIgnoredSurfaceFeature(BlockState state) {
+        return state.is(BlockTags.LEAVES)
+                || state.is(BlockTags.LOGS)
+                || state.is(Blocks.SHORT_GRASS)
+                || state.is(Blocks.TALL_GRASS)
+                || state.is(Blocks.FERN)
+                || state.is(Blocks.LARGE_FERN)
+                || state.is(Blocks.SEAGRASS)
+                || state.is(Blocks.TALL_SEAGRASS)
+                || state.is(Blocks.SNOW);
+    }
+
     private static boolean isSurfaceStoneLike(BlockState state) {
-        return state.is(Blocks.STONE)
+        if (state.is(Blocks.STONE)
                 || state.is(Blocks.DEEPSLATE)
                 || state.is(Blocks.TUFF)
                 || state.is(Blocks.GRANITE)
                 || state.is(Blocks.DIORITE)
                 || state.is(Blocks.ANDESITE)
-                || state.is(Blocks.CALCITE);
+                || state.is(Blocks.CALCITE)
+                || state.is(Blocks.COBBLESTONE)
+                || state.is(Blocks.COBBLED_DEEPSLATE)
+                || state.is(Blocks.BASALT)
+                || state.is(Blocks.SMOOTH_BASALT)
+                || state.is(Blocks.BLACKSTONE)) {
+            return true;
+        }
+        if (!AtlasWorldgenConfig.SURFACE_POLISH_REPLACE_SURFACE_ORES.get()) {
+            return false;
+        }
+        return state.is(Blocks.COAL_ORE)
+                || state.is(Blocks.IRON_ORE)
+                || state.is(Blocks.COPPER_ORE)
+                || state.is(Blocks.GOLD_ORE)
+                || state.is(Blocks.REDSTONE_ORE)
+                || state.is(Blocks.EMERALD_ORE)
+                || state.is(Blocks.LAPIS_ORE)
+                || state.is(Blocks.DIAMOND_ORE)
+                || state.is(Blocks.DEEPSLATE_COAL_ORE)
+                || state.is(Blocks.DEEPSLATE_IRON_ORE)
+                || state.is(Blocks.DEEPSLATE_COPPER_ORE)
+                || state.is(Blocks.DEEPSLATE_GOLD_ORE)
+                || state.is(Blocks.DEEPSLATE_REDSTONE_ORE)
+                || state.is(Blocks.DEEPSLATE_EMERALD_ORE)
+                || state.is(Blocks.DEEPSLATE_LAPIS_ORE)
+                || state.is(Blocks.DEEPSLATE_DIAMOND_ORE);
     }
 
     private static long key(ResourceKey<Level> dimension, ChunkPos pos) {
