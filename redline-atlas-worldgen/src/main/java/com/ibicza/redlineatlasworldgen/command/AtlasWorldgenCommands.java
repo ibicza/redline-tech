@@ -10,6 +10,9 @@ import com.ibicza.redlineatlasworldgen.biome.AtlasBiomeContext;
 import com.ibicza.redlineatlasworldgen.biome.AtlasBiomeHolderLookup;
 import com.ibicza.redlineatlasworldgen.biome.AtlasBiomeResolver;
 import com.ibicza.redlineatlasworldgen.landcover.AtlasLandcoverIndex;
+import com.ibicza.redlineatlasworldgen.lake.AtlasLakeGuide;
+import com.ibicza.redlineatlasworldgen.lake.LakeSample;
+import com.ibicza.redlineatlasworldgen.lake.ManualLakeIndex;
 import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 import com.ibicza.redlineatlasworldgen.surface.AtlasSurfaceMaterialPolisher;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasNoiseGuide;
@@ -37,6 +40,11 @@ public final class AtlasWorldgenCommands {
                         .then(Commands.literal("sample").executes(AtlasWorldgenCommands::sampleHere))
                         .then(Commands.literal("landcover").executes(AtlasWorldgenCommands::landcoverHere))
                         .then(Commands.literal("water_sample").executes(AtlasWorldgenCommands::waterSampleHere))
+                        .then(Commands.literal("lake_sample").executes(AtlasWorldgenCommands::lakeSampleHere))
+                        .then(Commands.literal("nearest_lake").executes(context -> nearestLake(context, 2048))
+                                .then(Commands.argument("radiusBlocks", IntegerArgumentType.integer(16, 32768)).executes(context -> nearestLake(context, IntegerArgumentType.getInteger(context, "radiusBlocks")))))
+                        .then(Commands.literal("manual_lakes").executes(context -> listManualLakes(context, 8))
+                                .then(Commands.argument("limit", IntegerArgumentType.integer(1, 64)).executes(context -> listManualLakes(context, IntegerArgumentType.getInteger(context, "limit")))))
                         .then(Commands.literal("nearest_ocean").executes(context -> nearestOcean(context, 4096))
                                 .then(Commands.argument("radiusBlocks", IntegerArgumentType.integer(16, 32768)).executes(context -> nearestOcean(context, IntegerArgumentType.getInteger(context, "radiusBlocks")))))
                         .then(Commands.literal("profile").executes(context -> profile(context, 16))
@@ -60,11 +68,13 @@ public final class AtlasWorldgenCommands {
         AtlasTerrainStats stats = AtlasTerrainShaper.lastStats();
         AtlasHeightmapIndex index = AtlasHeightmapIndex.active();
         AtlasOceanBathymetryIndex oceanIndex = AtlasOceanBathymetryIndex.active();
+        ManualLakeIndex lakeIndex = ManualLakeIndex.active();
         context.getSource().sendSuccess(() -> Component.literal(
                 "RLA runtime=" + stats.runtimeEnabled()
                         + ", config=" + AtlasWorldgenConfig.ENABLED.get()
                         + ", tiles=" + index.tileCount()
                         + ", oceanTiles=" + oceanIndex.tileCount()
+                        + ", manualLakes=" + lakeIndex.lakeCount()
                         + ", queue=" + stats.queued()
                         + ", shapedChunks=" + stats.shapedChunks()
                         + ", shapedColumns=" + stats.shapedColumns()
@@ -75,21 +85,25 @@ public final class AtlasWorldgenCommands {
         ), false);
         context.getSource().sendSuccess(() -> Component.literal("RLA tileRoot=" + index.root()), false);
         context.getSource().sendSuccess(() -> Component.literal("RLA oceanTileRoot=" + oceanIndex.root()), false);
-        return index.tileCount() + oceanIndex.tileCount();
+        context.getSource().sendSuccess(() -> Component.literal("RLA manualLakeRoot=" + lakeIndex.root()), false);
+        return index.tileCount() + oceanIndex.tileCount() + lakeIndex.lakeCount();
     }
 
     private static int reload(CommandContext<CommandSourceStack> context) {
         AtlasHeightmapIndex index = AtlasHeightmapIndex.reload(context.getSource().getServer().getServerDirectory());
         AtlasLandcoverIndex landcoverIndex = AtlasLandcoverIndex.reload(context.getSource().getServer().getServerDirectory());
         AtlasOceanBathymetryIndex oceanIndex = AtlasOceanBathymetryIndex.reload(context.getSource().getServer().getServerDirectory());
+        ManualLakeIndex lakeIndex = AtlasLakeGuide.reload(context.getSource().getServer().getServerDirectory());
         AtlasNoiseGuide.clearCache();
         AtlasOpenWaterGuide.clearCache();
+        AtlasLakeGuide.clearCache();
         AtlasBiomeResolver.clearCache();
         AtlasBiomeHolderLookup.clearCache();
         context.getSource().sendSuccess(() -> Component.literal("RLA reloaded " + index.tileCount() + " height tile(s) from " + index.root()
                 + "; " + landcoverIndex.tileCount() + " landcover tile(s) from " + landcoverIndex.root()
-                + "; " + oceanIndex.tileCount() + " ocean bathymetry tile(s) from " + oceanIndex.root()), true);
-        return index.tileCount() + landcoverIndex.tileCount() + oceanIndex.tileCount();
+                + "; " + oceanIndex.tileCount() + " ocean bathymetry tile(s) from " + oceanIndex.root()
+                + "; " + lakeIndex.lakeCount() + " manual lake(s) from " + lakeIndex.root()), true);
+        return index.tileCount() + landcoverIndex.tileCount() + oceanIndex.tileCount() + lakeIndex.lakeCount();
     }
 
     private static int toggle(CommandContext<CommandSourceStack> context) {
@@ -267,11 +281,83 @@ public final class AtlasWorldgenCommands {
         return 1;
     }
 
+    private static int lakeSampleHere(CommandContext<CommandSourceStack> context) {
+        var pos = context.getSource().getPosition();
+        int blockX = (int) Math.floor(pos.x());
+        int blockZ = (int) Math.floor(pos.z());
+        GeoPoint geo = AtlasCoordinateMapper.toGeo(blockX, blockZ);
+        LakeSample sample = AtlasLakeGuide.sample(blockX, blockZ);
+        context.getSource().sendSuccess(() -> Component.literal("RLA lake_sample x=" + blockX + ", z=" + blockZ
+                + " -> lat=" + geo.latitude() + ", lon=" + geo.longitude()
+                + ", kind=" + sample.kind()
+                + ", exact=" + sample.exactWater()
+                + ", distanceLake=" + sample.distanceToLakeBlocks()
+                + ", distanceShore=" + sample.distanceToShoreBlocks()
+                + ", bottom=" + sample.bottomMeters() + "m"
+                + ", depth=" + sample.depthMeters() + "m"
+                + ", surface=" + sample.waterSurfaceMeters() + "m"
+                + ", lakeId=" + sample.lakeId()
+                + ", source=" + sample.sourceId()), false);
+        return sample.hasLakeData() ? 1 : 0;
+    }
+
+    private static int nearestLake(CommandContext<CommandSourceStack> context, int radiusBlocks) {
+        var pos = context.getSource().getPosition();
+        int originX = (int) Math.floor(pos.x());
+        int originZ = (int) Math.floor(pos.z());
+        int step = Math.max(8, AtlasWorldgenConfig.LAKE_WORLDCOVER_WATER_STEP_BLOCKS.get());
+        double bestDistanceSq = Double.POSITIVE_INFINITY;
+        int bestX = originX;
+        int bestZ = originZ;
+        LakeSample bestSample = LakeSample.none();
+
+        for (int dz = -radiusBlocks; dz <= radiusBlocks; dz += step) {
+            for (int dx = -radiusBlocks; dx <= radiusBlocks; dx += step) {
+                double distanceSq = dx * (double) dx + dz * (double) dz;
+                if (distanceSq > radiusBlocks * (double) radiusBlocks || distanceSq >= bestDistanceSq) {
+                    continue;
+                }
+                int x = originX + dx;
+                int z = originZ + dz;
+                LakeSample sample = AtlasLakeGuide.sample(x, z);
+                if (!AtlasLakeGuide.isLakeWater(sample.kind())) {
+                    continue;
+                }
+                bestDistanceSq = distanceSq;
+                bestX = x;
+                bestZ = z;
+                bestSample = sample;
+            }
+        }
+
+        if (!Double.isFinite(bestDistanceSq)) {
+            context.getSource().sendFailure(Component.literal("RLA nearest_lake: no inland lake/small waterbody within " + radiusBlocks + " blocks."));
+            return 0;
+        }
+
+        int finalBestX = bestX;
+        int finalBestZ = bestZ;
+        LakeSample finalBestSample = bestSample;
+        double distance = Math.sqrt(bestDistanceSq);
+        GeoPoint geo = AtlasCoordinateMapper.toGeo(finalBestX, finalBestZ);
+        int tpY = (int) Math.ceil(AtlasCoordinateMapper.metersToWorldY(finalBestSample.waterSurfaceMeters()) + 20);
+        context.getSource().sendSuccess(() -> Component.literal("RLA nearest_lake x=" + finalBestX + ", z=" + finalBestZ
+                + ", distance=" + distance
+                + " -> /tp @p " + finalBestX + " " + tpY + " " + finalBestZ
+                + ", lat=" + geo.latitude() + ", lon=" + geo.longitude()
+                + ", surface=" + finalBestSample.waterSurfaceMeters() + "m"
+                + ", depth=" + finalBestSample.depthMeters() + "m"
+                + ", lakeId=" + finalBestSample.lakeId()
+                + ", source=" + finalBestSample.sourceId()), false);
+        return 1;
+    }
+
     private static int profile(CommandContext<CommandSourceStack> context, int limit) {
         context.getSource().sendSuccess(() -> Component.literal("RLA profiler, surfacePolishQueue=" + AtlasSurfaceMaterialPolisher.queueSize()
                 + ", biomeColumnCache=" + AtlasBiomeResolver.cacheSize()
                 + ", waterCellCache=" + AtlasOpenWaterGuide.cacheSize()
-                + ", coastalFloodCache=" + AtlasOpenWaterGuide.coastalFloodCacheSize()), false);
+                + ", coastalFloodCache=" + AtlasOpenWaterGuide.coastalFloodCacheSize()
+                + ", lakeCache=" + AtlasLakeGuide.cacheSize()), false);
         for (String line : AtlasWorldgenProfiler.summaryLines(limit)) {
             context.getSource().sendSuccess(() -> Component.literal("  " + line), false);
         }
@@ -282,6 +368,15 @@ public final class AtlasWorldgenCommands {
         AtlasWorldgenProfiler.reset();
         context.getSource().sendSuccess(() -> Component.literal("RLA profiler reset."), true);
         return 1;
+    }
+
+    private static int listManualLakes(CommandContext<CommandSourceStack> context, int limit) {
+        ManualLakeIndex index = ManualLakeIndex.active();
+        context.getSource().sendSuccess(() -> Component.literal("RLA manual lakes: " + index.lakeCount() + ", root=" + index.root()), false);
+        for (String line : index.describeLakes(limit)) {
+            context.getSource().sendSuccess(() -> Component.literal("  " + line), false);
+        }
+        return index.lakeCount();
     }
 
     private static int listOceanTiles(CommandContext<CommandSourceStack> context, int limit) {

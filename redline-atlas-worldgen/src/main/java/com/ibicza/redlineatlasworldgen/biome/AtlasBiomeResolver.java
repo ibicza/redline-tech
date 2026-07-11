@@ -9,6 +9,9 @@ import com.ibicza.redlineatlasworldgen.heightmap.HeightSample;
 import com.ibicza.redlineatlasworldgen.landcover.AtlasLandcoverIndex;
 import com.ibicza.redlineatlasworldgen.landcover.LandcoverClass;
 import com.ibicza.redlineatlasworldgen.landcover.LandcoverSample;
+import com.ibicza.redlineatlasworldgen.lake.AtlasLakeGuide;
+import com.ibicza.redlineatlasworldgen.lake.LakeKind;
+import com.ibicza.redlineatlasworldgen.lake.LakeSample;
 import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.biome.Biome;
@@ -85,8 +88,9 @@ public final class AtlasBiomeResolver {
             return Optional.empty();
         }
 
+        LakeSample lake = AtlasLakeGuide.sampleForBiome(blockX, blockZ);
         AtlasOpenWaterGuide.OpenWaterSample openWater = AtlasOpenWaterGuide.sampleForBiome(blockX, blockZ);
-        WaterContext water = waterContext(openWater);
+        WaterContext water = lake.hasLakeData() ? waterContext(lake) : waterContext(openWater);
         LandcoverDecision landcover = landcoverDecision(blockX, blockZ, geo);
         double elevationMeters = height.get().meters();
         int surfaceY = AtlasCoordinateMapper.metersToWorldY(elevationMeters);
@@ -176,6 +180,19 @@ public final class AtlasBiomeResolver {
 
     private static ResourceKey<Biome> resolveOpenWater(AtlasBiomeContext ctx, ResourceKey<Biome> vanillaBiome) {
         if (!ctx.water().hasWaterData()) {
+            return null;
+        }
+
+        if (ctx.water().kind() == WaterContext.WaterKind.INLAND_LAKE || ctx.water().kind() == WaterContext.WaterKind.SMALL_WATERBODY) {
+            return configured(ctx.temperatureC() <= AtlasWorldgenConfig.BIOME_FREEZING_TEMPERATURE_C.get()
+                    ? AtlasWorldgenConfig.BIOME_FROZEN_LAKE_WATER.get()
+                    : AtlasWorldgenConfig.BIOME_LAKE_WATER.get(), vanillaBiome);
+        }
+
+        if (ctx.water().kind() == WaterContext.WaterKind.LAKE_SHORE) {
+            if (ctx.slope() <= AtlasWorldgenConfig.SURFACE_POLISH_BEACH_MAX_SLOPE.get()) {
+                return configured(AtlasWorldgenConfig.BIOME_LAKE_SHORE.get(), vanillaBiome);
+            }
             return null;
         }
 
@@ -529,6 +546,22 @@ public final class AtlasBiomeResolver {
 
     private static double clamp01(double value) {
         return Math.max(0.0D, Math.min(1.0D, value));
+    }
+
+
+    private static WaterContext waterContext(LakeSample sample) {
+        return switch (sample.kind()) {
+            case NONE -> WaterContext.NONE;
+            case MANUAL_LAKE -> new WaterContext(WaterContext.WaterKind.INLAND_LAKE, true, true,
+                    Double.POSITIVE_INFINITY, 0.0D, Double.POSITIVE_INFINITY, sample.depthMeters(), sample.bottomMeters(),
+                    sample.waterSurfaceMeters(), sample.sourceId(), sample.resolutionMeters());
+            case SMALL_WATERBODY -> new WaterContext(WaterContext.WaterKind.SMALL_WATERBODY, true, sample.exactWater(),
+                    Double.POSITIVE_INFINITY, 0.0D, Double.POSITIVE_INFINITY, sample.depthMeters(), sample.bottomMeters(),
+                    sample.waterSurfaceMeters(), sample.sourceId(), sample.resolutionMeters());
+            case LAKE_SHORE -> new WaterContext(WaterContext.WaterKind.LAKE_SHORE, true, false,
+                    Double.POSITIVE_INFINITY, sample.distanceToLakeBlocks(), Double.POSITIVE_INFINITY, 0.0D, sample.bottomMeters(),
+                    sample.waterSurfaceMeters(), sample.sourceId(), sample.resolutionMeters());
+        };
     }
 
     private static WaterContext waterContext(AtlasOpenWaterGuide.OpenWaterSample sample) {

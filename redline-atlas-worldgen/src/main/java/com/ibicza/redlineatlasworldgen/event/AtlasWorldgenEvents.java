@@ -6,6 +6,7 @@ import com.ibicza.redlineatlasworldgen.command.AtlasWorldgenCommands;
 import com.ibicza.redlineatlasworldgen.config.AtlasWorldgenConfig;
 import com.ibicza.redlineatlasworldgen.heightmap.AtlasHeightmapIndex;
 import com.ibicza.redlineatlasworldgen.landcover.AtlasLandcoverIndex;
+import com.ibicza.redlineatlasworldgen.lake.AtlasLakeGuide;
 import com.ibicza.redlineatlasworldgen.biome.AtlasBiomeHolderLookup;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasNoiseGuide;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasTerrainShaper;
@@ -27,6 +28,7 @@ public final class AtlasWorldgenEvents {
             AtlasHeightmapIndex.reload(level.getServer().getServerDirectory());
             AtlasLandcoverIndex.reload(level.getServer().getServerDirectory());
             AtlasOceanBathymetryIndex.reload(level.getServer().getServerDirectory());
+            AtlasLakeGuide.reload(level.getServer().getServerDirectory());
             AtlasNoiseGuide.clearCache();
             AtlasBiomeHolderLookup.clearCache();
         }

@@ -23,6 +23,24 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.BooleanValue FILL_WATER_BELOW_SEA_LEVEL;
     public static final ModConfigSpec.ConfigValue<String> LANDCOVER_TILE_ROOT;
     public static final ModConfigSpec.ConfigValue<String> OCEAN_BATHYMETRY_TILE_ROOT;
+
+    public static final ModConfigSpec.ConfigValue<String> MANUAL_LAKES_ROOT;
+    public static final ModConfigSpec.BooleanValue LAKE_GUIDE_ENABLED;
+    public static final ModConfigSpec.BooleanValue LAKE_USE_LANDCOVER_WATER;
+    public static final ModConfigSpec.BooleanValue LAKE_SHORE_IN_BIOME_GUIDE;
+    public static final ModConfigSpec.DoubleValue LAKE_MIN_SURFACE_METERS;
+    public static final ModConfigSpec.IntValue LAKE_CACHE_CELL_SIZE_BLOCKS;
+    public static final ModConfigSpec.IntValue LAKE_SAMPLE_CACHE_LIMIT;
+    public static final ModConfigSpec.IntValue LAKE_WORLDCOVER_WATER_RADIUS_BLOCKS;
+    public static final ModConfigSpec.IntValue LAKE_WORLDCOVER_WATER_STEP_BLOCKS;
+    public static final ModConfigSpec.DoubleValue LAKE_WORLDCOVER_MIN_WATER_FRACTION;
+    public static final ModConfigSpec.IntValue LAKE_MAX_SHORE_SEARCH_BLOCKS;
+    public static final ModConfigSpec.IntValue LAKE_SHORE_RADIUS_BLOCKS;
+    public static final ModConfigSpec.DoubleValue LAKE_SHORE_MAX_HEIGHT_DELTA_METERS;
+    public static final ModConfigSpec.DoubleValue LAKE_SYNTHETIC_MIN_DEPTH_METERS;
+    public static final ModConfigSpec.DoubleValue LAKE_SYNTHETIC_MAX_DEPTH_METERS;
+    public static final ModConfigSpec.IntValue LAKE_FULL_DEPTH_DISTANCE_BLOCKS;
+    public static final ModConfigSpec.DoubleValue LAKE_MANUAL_DEFAULT_SHORE_BLEND_METERS;
     public static final ModConfigSpec.BooleanValue OPEN_WATER_GUIDE_ENABLED;
     public static final ModConfigSpec.BooleanValue OPEN_WATER_USE_FOR_NOISE_GUIDE;
     public static final ModConfigSpec.DoubleValue OPEN_WATER_SEA_LEVEL_METERS;
@@ -66,6 +84,13 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.DoubleValue SURFACE_POLISH_OCEAN_SAND_DEPTH_METERS;
     public static final ModConfigSpec.DoubleValue SURFACE_POLISH_OCEAN_GRAVEL_DEPTH_METERS;
     public static final ModConfigSpec.BooleanValue SURFACE_POLISH_REPLACE_SURFACE_ORES;
+
+    public static final ModConfigSpec.BooleanValue SURFACE_POLISH_FILL_LAKE_WATER;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_MAX_FILL_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_CARVE_ABOVE_WATER_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_WATER_MASK_CARVE_ABOVE_WATER_BLOCKS;
+    public static final ModConfigSpec.DoubleValue SURFACE_POLISH_LAKE_SAND_DEPTH_METERS;
+    public static final ModConfigSpec.DoubleValue SURFACE_POLISH_LAKE_GRAVEL_DEPTH_METERS;
     public static final ModConfigSpec.BooleanValue PROFILER_ENABLED;
     public static final ModConfigSpec.BooleanValue PROFILER_LOG_PERIODICALLY;
     public static final ModConfigSpec.IntValue PROFILER_LOG_INTERVAL_TICKS;
@@ -78,6 +103,10 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.ConfigValue<String> BIOME_BEACH;
     public static final ModConfigSpec.ConfigValue<String> BIOME_STONY_SHORE;
     public static final ModConfigSpec.ConfigValue<String> BIOME_SNOWY_BEACH;
+
+    public static final ModConfigSpec.ConfigValue<String> BIOME_LAKE_WATER;
+    public static final ModConfigSpec.ConfigValue<String> BIOME_FROZEN_LAKE_WATER;
+    public static final ModConfigSpec.ConfigValue<String> BIOME_LAKE_SHORE;
     public static final ModConfigSpec.BooleanValue BIOME_GUIDE_ENABLED;
     public static final ModConfigSpec.DoubleValue BIOME_GUIDE_STRENGTH;
     public static final ModConfigSpec.IntValue BIOME_CELL_SIZE_BLOCKS;
@@ -199,6 +228,44 @@ public final class AtlasWorldgenConfig {
                 .define("tileRoot", "config/redline-atlas-worldgen/landcover");
         builder.pop();
 
+
+        builder.push("lake_water");
+        MANUAL_LAKES_ROOT = builder.comment("Manual local lake definitions. Put *.rlake.properties files here for quarries, reservoirs, or water bodies missing from source datasets.")
+                .define("manualLakeRoot", "config/redline-atlas-worldgen/manual_lakes");
+        LAKE_GUIDE_ENABLED = builder.comment("Enable inland lake/small waterbody guide. This is separate from open-ocean bathymetry and uses manual lakes plus ESA WorldCover water pixels.")
+                .define("enabled", true);
+        LAKE_USE_LANDCOVER_WATER = builder.comment("Use ESA WorldCover water class as a source for small inland water bodies when no HydroLAKES/GLOBathy data is present.")
+                .define("useWorldCoverWater", true);
+        LAKE_MIN_SURFACE_METERS = builder.comment("Minimum real-world water surface elevation for WorldCover-water to become an inland lake. Keeps ocean/coast water in the ocean layer.")
+                .defineInRange("minSurfaceMeters", 2.0D, -1000.0D, 9000.0D);
+        LAKE_CACHE_CELL_SIZE_BLOCKS = builder.comment("Cached lake classification cell size in blocks. 16 follows 10m WorldCover fairly tightly; 32 is faster and smoother.")
+                .defineInRange("cacheCellSizeBlocks", 16, 4, 512);
+        LAKE_SAMPLE_CACHE_LIMIT = builder.comment("Approximate maximum cached lake cells. Cache is cleared when this limit is exceeded.")
+                .defineInRange("sampleCacheLimit", 262144, 1024, 8388608);
+        LAKE_WORLDCOVER_WATER_RADIUS_BLOCKS = builder.comment("Radius for local WorldCover water majority. Used to avoid single-pixel noise creating lakes.")
+                .defineInRange("worldcoverWaterRadiusBlocks", 16, 0, 512);
+        LAKE_WORLDCOVER_WATER_STEP_BLOCKS = builder.comment("Step for local WorldCover water majority and shore search.")
+                .defineInRange("worldcoverWaterStepBlocks", 8, 1, 128);
+        LAKE_WORLDCOVER_MIN_WATER_FRACTION = builder.comment("Minimum water fraction in the local WorldCover window to accept a small waterbody when the exact center pixel is not water.")
+                .defineInRange("worldcoverMinWaterFraction", 0.30D, 0.0D, 1.0D);
+        LAKE_MAX_SHORE_SEARCH_BLOCKS = builder.comment("Maximum distance searched from a water pixel to find lake shore. Controls synthetic bowl depth.")
+                .defineInRange("maxShoreSearchBlocks", 160, 8, 2048);
+        LAKE_SHORE_RADIUS_BLOCKS = builder.comment("Land columns within this distance from inland water can become lake shore.")
+                .defineInRange("shoreRadiusBlocks", 48, 0, 1024);
+        LAKE_SHORE_IN_BIOME_GUIDE = builder.comment("When true, biome guide can classify near-lake land as lake shore. Disable if too expensive or too sandy.")
+                .define("shoreInBiomeGuide", true);
+        LAKE_SHORE_MAX_HEIGHT_DELTA_METERS = builder.comment("Maximum real height difference between land and nearby WorldCover-water for lake shore classification.")
+                .defineInRange("shoreMaxHeightDeltaMeters", 8.0D, 0.0D, 256.0D);
+        LAKE_SYNTHETIC_MIN_DEPTH_METERS = builder.comment("Minimum synthetic depth for small WorldCover/manual lakes without real bathymetry.")
+                .defineInRange("syntheticMinDepthMeters", 2.0D, 0.5D, 256.0D);
+        LAKE_SYNTHETIC_MAX_DEPTH_METERS = builder.comment("Maximum synthetic depth for small WorldCover/manual lakes without real bathymetry.")
+                .defineInRange("syntheticMaxDepthMeters", 16.0D, 1.0D, 512.0D);
+        LAKE_FULL_DEPTH_DISTANCE_BLOCKS = builder.comment("Distance from shore where synthetic lakes reach max depth.")
+                .defineInRange("fullDepthDistanceBlocks", 96, 1, 2048);
+        LAKE_MANUAL_DEFAULT_SHORE_BLEND_METERS = builder.comment("Default shore blend around manual circular lakes, in meters.")
+                .defineInRange("manualDefaultShoreBlendMeters", 45.0D, 0.0D, 1000.0D);
+        builder.pop();
+
         builder.push("ocean_bathymetry");
         OCEAN_BATHYMETRY_TILE_ROOT = builder.comment("Open ocean / ocean-connected sea bathymetry tile directory. Relative paths are resolved against the game directory. Put GEBCO data GeoTIFF tiles here. Bounds are inferred from filenames with n/s/w/e or bbox_west_south_east_north, or from .rbathy.properties sidecars.")
                 .define("tileRoot", "config/redline-atlas-worldgen/ocean_bathymetry");
@@ -291,6 +358,19 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("oceanGravelDepthMeters", 128.0D, 0.0D, 12000.0D);
         SURFACE_POLISH_REPLACE_SURFACE_ORES = builder.comment("Replace exposed ore blocks in the surface repair pass. This prevents ore/deepslate patches on beaches and lowland surfaces created by shifted terrain.")
                 .define("replaceSurfaceOres", true);
+
+        SURFACE_POLISH_FILL_LAKE_WATER = builder.comment("Fill inland lake / small waterbody columns with vanilla water up to their local lake water level.")
+                .define("fillLakeWater", true);
+        SURFACE_POLISH_LAKE_MAX_FILL_BLOCKS = builder.comment("Safety cap for vertical water fill per lake column.")
+                .defineInRange("lakeMaxFillBlocks", 256, 1, 4096);
+        SURFACE_POLISH_LAKE_CARVE_ABOVE_WATER_BLOCKS = builder.comment("For lake shore columns, remove at most this many blocks above local water level before filling. Keep small to avoid flattening shores.")
+                .defineInRange("lakeCarveAboveWaterBlocks", 2, 0, 64);
+        SURFACE_POLISH_LAKE_WATER_MASK_CARVE_ABOVE_WATER_BLOCKS = builder.comment("For exact WorldCover/manual lake water-mask columns, allow carving this many blocks above local water level before filling. This fixes lakes turning into tiny puddles when vanilla terrain remains above the mapped water surface.")
+                .defineInRange("lakeWaterMaskCarveAboveWaterBlocks", 96, 0, 512);
+        SURFACE_POLISH_LAKE_SAND_DEPTH_METERS = builder.comment("Lake bed depth threshold for sand. Shallow lake bed up to this depth becomes sand.")
+                .defineInRange("lakeSandDepthMeters", 4.0D, 0.0D, 256.0D);
+        SURFACE_POLISH_LAKE_GRAVEL_DEPTH_METERS = builder.comment("Lake bed depth threshold for gravel. Depths above lakeSandDepthMeters and up to this become gravel; deeper bottoms use clay/mud-like material.")
+                .defineInRange("lakeGravelDepthMeters", 14.0D, 0.0D, 512.0D);
         builder.pop();
 
         builder.push("profiler");
@@ -414,6 +494,13 @@ public final class AtlasWorldgenConfig {
                 .define("stonyShoreBiome", "minecraft:stony_shore");
         BIOME_SNOWY_BEACH = builder.comment("Biome for low-slope freezing open-ocean coast.")
                 .define("snowyBeachBiome", "minecraft:snowy_beach");
+
+        BIOME_LAKE_WATER = builder.comment("Biome returned for inland lake/small waterbody columns. Vanilla has no lake biome, so river is the least-bad default.")
+                .define("lakeWaterBiome", "minecraft:river");
+        BIOME_FROZEN_LAKE_WATER = builder.comment("Biome returned for freezing inland lake/small waterbody columns.")
+                .define("frozenLakeWaterBiome", "minecraft:frozen_river");
+        BIOME_LAKE_SHORE = builder.comment("Biome returned for low near-lake shore land. Beach gives sand, but surface polish is still controlled separately.")
+                .define("lakeShoreBiome", "minecraft:beach");
         builder.pop();
 
         builder.push("debug");

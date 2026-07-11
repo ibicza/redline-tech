@@ -5,6 +5,7 @@ import com.ibicza.redlineatlasworldgen.heightmap.AtlasCoordinateMapper;
 import com.ibicza.redlineatlasworldgen.heightmap.AtlasHeightmapIndex;
 import com.ibicza.redlineatlasworldgen.heightmap.GeoPoint;
 import com.ibicza.redlineatlasworldgen.heightmap.HeightSample;
+import com.ibicza.redlineatlasworldgen.lake.AtlasLakeGuide;
 import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 
 import java.util.ArrayDeque;
@@ -86,6 +87,10 @@ public final class AtlasOpenWaterGuide {
     public static Optional<HeightSample> compositeHeightSample(int blockX, int blockZ) {
         long started = AtlasWorldgenProfiler.start();
         try {
+            Optional<HeightSample> lake = AtlasLakeGuide.compositeHeightSample(blockX, blockZ);
+            if (lake.isPresent()) {
+                return lake;
+            }
             GeoPoint geo = AtlasCoordinateMapper.toGeo(blockX, blockZ);
             Optional<HeightSample> land = AtlasHeightmapIndex.active().sample(geo.latitude(), geo.longitude());
             Optional<OceanBathymetrySample> ocean = AtlasOceanBathymetryIndex.active().sample(geo.latitude(), geo.longitude());

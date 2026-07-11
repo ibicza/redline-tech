@@ -14,6 +14,9 @@ public record WaterContext(WaterKind kind, boolean hasWaterData, boolean exactWa
         OPEN_OCEAN,
         OPEN_OCEAN_FLOOD,
         OPEN_OCEAN_COAST,
+        INLAND_LAKE,
+        SMALL_WATERBODY,
+        LAKE_SHORE,
         GEBCO_LAND_OR_CLOSED_WATER
     }
 }

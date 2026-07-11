@@ -5,7 +5,11 @@ import com.ibicza.redlineatlasworldgen.biome.AtlasBiomeContext;
 import com.ibicza.redlineatlasworldgen.biome.AtlasBiomeResolver;
 import com.ibicza.redlineatlasworldgen.biome.WaterContext;
 import com.ibicza.redlineatlasworldgen.config.AtlasWorldgenConfig;
+import com.ibicza.redlineatlasworldgen.heightmap.AtlasCoordinateMapper;
 import com.ibicza.redlineatlasworldgen.landcover.LandcoverClass;
+import com.ibicza.redlineatlasworldgen.lake.AtlasLakeGuide;
+import com.ibicza.redlineatlasworldgen.lake.LakeKind;
+import com.ibicza.redlineatlasworldgen.lake.LakeSample;
 import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
@@ -119,6 +123,13 @@ public final class AtlasSurfaceMaterialPolisher {
                 int blockZ = pos.getMinBlockZ() + localZ;
                 int heightmapTopY = Math.min(maxY, chunk.getHeight(Heightmap.Types.WORLD_SURFACE, localX, localZ));
                 AtlasOpenWaterGuide.OpenWaterSample water = waterForSurface(blockX, blockZ);
+                LakeSample lake = lakeForSurface(blockX, blockZ);
+
+                if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_LAKE_WATER.get()
+                        && AtlasLakeGuide.isLakeWater(lake.kind())) {
+                    changed |= finishLakeColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, maxY, lake);
+                    continue;
+                }
 
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_OPEN_OCEAN_WATER.get()
                         && isFillableOceanKind(water.kind())) {
@@ -138,7 +149,7 @@ public final class AtlasSurfaceMaterialPolisher {
                     continue;
                 }
 
-                BlockState replacement = replacementFor(level, blockX, terrainY, blockZ, water);
+                BlockState replacement = replacementFor(level, blockX, terrainY, blockZ, water, lake);
                 if (replacement == null) {
                     continue;
                 }
@@ -165,6 +176,76 @@ public final class AtlasSurfaceMaterialPolisher {
         return AtlasOpenWaterGuide.sample(blockX, blockZ);
     }
 
+    private static LakeSample lakeForSurface(int blockX, int blockZ) {
+        LakeSample cached = AtlasLakeGuide.sampleForBiome(blockX, blockZ);
+        if (!AtlasWorldgenConfig.SURFACE_POLISH_EXACT_COAST_SAMPLES.get()) {
+            return cached;
+        }
+        // Surface/water finish runs once per column, so spend the exact sample here.
+        // The cached biome cell is intentionally coarse and may miss/overexpand 10m WorldCover shapes.
+        LakeSample exact = AtlasLakeGuide.sample(blockX, blockZ);
+        return exact.hasLakeData() ? exact : cached;
+    }
+
+    private static boolean finishLakeColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
+                                            int heightmapTopY, int minY, int maxY, LakeSample lake) {
+        long started = AtlasWorldgenProfiler.start();
+        try {
+            int terrainY = findTopTerrain(level, pos, x, z, Math.min(maxY, heightmapTopY), minY);
+            if (terrainY == Integer.MIN_VALUE) {
+                return false;
+            }
+
+            int waterY = AtlasCoordinateMapper.metersToWorldY(lake.waterSurfaceMeters());
+            int bottomY = Math.min(waterY - 1, AtlasCoordinateMapper.metersToWorldY(lake.bottomMeters()));
+            int maxFill = Math.max(1, AtlasWorldgenConfig.SURFACE_POLISH_LAKE_MAX_FILL_BLOCKS.get());
+            bottomY = Math.max(minY, Math.max(bottomY, waterY - maxFill));
+            int carveAbove = lakeCarveAboveWaterBlocks(lake);
+            if (terrainY > waterY + carveAbove) {
+                BlockState replacement = lakeShoreMaterial(level, x, terrainY, z, lake);
+                return replacement != null && applySurfaceCap(level, pos, x, terrainY, z, minY, replacement, shouldReplaceSoftSurface(replacement));
+            }
+
+            BlockState bottomMaterial = lakeBottomMaterial(lake);
+            boolean changed = false;
+            for (int y = waterY + 1; y <= terrainY; y++) {
+                pos.set(x, y, z);
+                BlockState state = level.getBlockState(pos);
+                if (!state.isAir() && (isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state) || isIgnoredSurfaceFeature(state))) {
+                    changed |= level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                }
+            }
+
+            for (int y = bottomY; y <= waterY; y++) {
+                pos.set(x, y, z);
+                BlockState state = level.getBlockState(pos);
+                if (y == bottomY) {
+                    if (isReplaceableTerrainMaterial(state, true) || state.isAir() || state.liquid()) {
+                        if (!state.is(bottomMaterial.getBlock())) {
+                            changed |= level.setBlock(pos, bottomMaterial, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                        }
+                    }
+                } else if (state.isAir() || state.liquid() || isReplaceableWaterColumnBlock(state) || isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state)) {
+                    if (!state.is(Blocks.WATER)) {
+                        changed |= level.setBlock(pos, Blocks.WATER.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                    }
+                }
+            }
+            return changed;
+        } finally {
+            AtlasWorldgenProfiler.recordSince("surfacePolish.lakeColumn", started);
+        }
+    }
+
+
+    private static int lakeCarveAboveWaterBlocks(LakeSample lake) {
+        int shoreCarve = Math.max(0, AtlasWorldgenConfig.SURFACE_POLISH_LAKE_CARVE_ABOVE_WATER_BLOCKS.get());
+        if (AtlasLakeGuide.isLakeWater(lake.kind()) && lake.exactWater()) {
+            return Math.max(shoreCarve, Math.max(0, AtlasWorldgenConfig.SURFACE_POLISH_LAKE_WATER_MASK_CARVE_ABOVE_WATER_BLOCKS.get()));
+        }
+        return shoreCarve;
+    }
+
     private static boolean finishOceanColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
                                              int heightmapTopY, int minY, int maxY, int seaY,
                                              AtlasOpenWaterGuide.OpenWaterSample water) {
@@ -183,7 +264,7 @@ public final class AtlasSurfaceMaterialPolisher {
             // Exact GEBCO ocean can still be wrong at coarse coast edges. Do not carve large land masses here.
             // If terrain is above sea level, treat it as a small island/shore override and only repair surface cap.
             if (terrainY >= seaY) {
-                BlockState replacement = replacementFor(level, x, terrainY, z, water);
+                BlockState replacement = replacementFor(level, x, terrainY, z, water, LakeSample.none());
                 return replacement != null && applySurfaceCap(level, pos, x, terrainY, z, minY, replacement, shouldReplaceSoftSurface(replacement));
             }
 
@@ -205,7 +286,7 @@ public final class AtlasSurfaceMaterialPolisher {
             if (terrainY > seaY + carveAbove) {
                 // Connected low-water mask says this is likely coarse-coast ocean, but actual vanilla terrain is too high.
                 // Keep it as shore/land and only repair the surface material.
-                BlockState replacement = replacementFor(level, x, terrainY, z, water);
+                BlockState replacement = replacementFor(level, x, terrainY, z, water, LakeSample.none());
                 return replacement != null && applySurfaceCap(level, pos, x, terrainY, z, minY, replacement, shouldReplaceSoftSurface(replacement));
             }
 
@@ -338,9 +419,19 @@ public final class AtlasSurfaceMaterialPolisher {
     }
 
     private static BlockState replacementFor(ServerLevel level, int blockX, int blockY, int blockZ,
-                                             AtlasOpenWaterGuide.OpenWaterSample water) {
+                                             AtlasOpenWaterGuide.OpenWaterSample water, LakeSample lake) {
         ResourceKey<Biome> actualBiome = actualBiomeAt(level, blockX, blockY, blockZ).orElse(null);
         boolean actualOcean = isAnyOceanBiome(actualBiome);
+
+        if (lake.kind() == LakeKind.LAKE_SHORE) {
+            BlockState shore = lakeShoreMaterial(level, blockX, blockY, blockZ, lake);
+            if (shore != null) {
+                return shore;
+            }
+        }
+        if (AtlasLakeGuide.isLakeWater(lake.kind()) && blockY <= AtlasCoordinateMapper.metersToWorldY(lake.waterSurfaceMeters())) {
+            return lakeBottomMaterial(lake);
+        }
 
         if (isFillableOceanKind(water.kind()) && blockY < AtlasWorldgenConfig.SEA_LEVEL_Y.get()) {
             return oceanBottomMaterial(water);
@@ -469,6 +560,35 @@ public final class AtlasSurfaceMaterialPolisher {
         }
 
         return Blocks.SAND.defaultBlockState();
+    }
+
+    private static BlockState lakeShoreMaterial(ServerLevel level, int blockX, int blockY, int blockZ, LakeSample lake) {
+        if (!AtlasWorldgenConfig.SURFACE_POLISH_BUILD_OPEN_OCEAN_SHORES.get()) {
+            return null;
+        }
+        if (lake.kind() != LakeKind.LAKE_SHORE && !AtlasLakeGuide.isLakeWater(lake.kind())) {
+            return null;
+        }
+        int waterY = Double.isFinite(lake.waterSurfaceMeters()) ? AtlasCoordinateMapper.metersToWorldY(lake.waterSurfaceMeters()) : AtlasWorldgenConfig.SEA_LEVEL_Y.get();
+        if (blockY > waterY + AtlasWorldgenConfig.SURFACE_POLISH_BEACH_MAX_HEIGHT_ABOVE_SEA_BLOCKS.get()) {
+            return null;
+        }
+        Optional<AtlasBiomeContext> context = AtlasBiomeResolver.context(blockX, blockY, blockZ, level.getSeed());
+        if (context.isPresent() && context.get().slope() > AtlasWorldgenConfig.SURFACE_POLISH_BEACH_MAX_SLOPE.get()) {
+            return null;
+        }
+        return Blocks.SAND.defaultBlockState();
+    }
+
+    private static BlockState lakeBottomMaterial(LakeSample lake) {
+        double depth = Math.max(0.0D, lake.depthMeters());
+        if (depth <= AtlasWorldgenConfig.SURFACE_POLISH_LAKE_SAND_DEPTH_METERS.get()) {
+            return Blocks.SAND.defaultBlockState();
+        }
+        if (depth <= AtlasWorldgenConfig.SURFACE_POLISH_LAKE_GRAVEL_DEPTH_METERS.get()) {
+            return Blocks.GRAVEL.defaultBlockState();
+        }
+        return Blocks.CLAY.defaultBlockState();
     }
 
     private static BlockState oceanBottomMaterial(AtlasOpenWaterGuide.OpenWaterSample water) {
