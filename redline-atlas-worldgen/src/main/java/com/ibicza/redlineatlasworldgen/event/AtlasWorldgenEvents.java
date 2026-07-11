@@ -12,6 +12,7 @@ import com.ibicza.redlineatlasworldgen.terrain.AtlasNoiseGuide;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasTerrainShaper;
 import com.ibicza.redlineatlasworldgen.surface.AtlasSurfaceMaterialPolisher;
 import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
+import com.ibicza.redlineatlasworldgen.river.AtlasRiverIndex;
 import net.minecraft.server.level.ServerLevel;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -29,6 +30,7 @@ public final class AtlasWorldgenEvents {
             AtlasLandcoverIndex.reload(level.getServer().getServerDirectory());
             AtlasOceanBathymetryIndex.reload(level.getServer().getServerDirectory());
             AtlasLakeGuide.reload(level.getServer().getServerDirectory());
+            AtlasRiverIndex.reload(level.getServer().getServerDirectory());
             AtlasNoiseGuide.clearCache();
             AtlasBiomeHolderLookup.clearCache();
         }

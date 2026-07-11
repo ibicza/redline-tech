@@ -37,3 +37,9 @@ It expands the Overworld dimension type to `min_y=-2032`, `height=4064`, `logica
 ## M25 chunk priority module
 
 This archive includes `redline-chunk-priority`, a small standalone optimization module that preloads vanilla X/Z chunks in a movement/look aware order. It is intentionally separate from `redline-tech` gameplay code.
+
+## Atlas worldgen
+
+- [M26 heightmap MVP](docs/worldgen/M26-atlas-worldgen-heightmap-mvp.md)
+- [M28 WorldCover biome guide](docs/worldgen/M28-atlas-landcover-biomes.md)
+- [M31 HydroRIVERS generation, downloads and test coordinates](docs/worldgen/M31-atlas-rivers.md)

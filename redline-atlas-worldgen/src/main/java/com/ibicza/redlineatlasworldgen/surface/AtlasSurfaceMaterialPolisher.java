@@ -11,6 +11,9 @@ import com.ibicza.redlineatlasworldgen.lake.AtlasLakeGuide;
 import com.ibicza.redlineatlasworldgen.lake.LakeKind;
 import com.ibicza.redlineatlasworldgen.lake.LakeSample;
 import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
+import com.ibicza.redlineatlasworldgen.river.AtlasRiverIndex;
+import com.ibicza.redlineatlasworldgen.river.RiverKind;
+import com.ibicza.redlineatlasworldgen.river.RiverSample;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.biome.Biome;
@@ -124,10 +127,23 @@ public final class AtlasSurfaceMaterialPolisher {
                 int heightmapTopY = Math.min(maxY, chunk.getHeight(Heightmap.Types.WORLD_SURFACE, localX, localZ));
                 AtlasOpenWaterGuide.OpenWaterSample water = waterForSurface(blockX, blockZ);
                 LakeSample lake = lakeForSurface(blockX, blockZ);
+                RiverSample river = AtlasRiverIndex.active().sample(blockX, blockZ);
 
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_LAKE_WATER.get()
                         && AtlasLakeGuide.isLakeWater(lake.kind())) {
                     changed |= finishLakeColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, maxY, lake);
+                    continue;
+                }
+
+                if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_RIVER_WATER.get()
+                        && river.kind() == RiverKind.CHANNEL) {
+                    changed |= finishRiverColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, maxY, river);
+                    continue;
+                }
+
+                if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_RIVER_WATER.get()
+                        && river.kind() == RiverKind.BANK) {
+                    changed |= finishRiverBankColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, maxY, river);
                     continue;
                 }
 
@@ -191,6 +207,130 @@ public final class AtlasSurfaceMaterialPolisher {
         // The cached biome cell is intentionally coarse and may miss/overexpand 10m WorldCover shapes.
         LakeSample exact = AtlasLakeGuide.sample(blockX, blockZ);
         return exact.hasLakeData() ? exact : cached;
+    }
+
+    private static boolean finishRiverColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
+                                             int heightmapTopY, int minY, int maxY, RiverSample river) {
+        long started = AtlasWorldgenProfiler.start();
+        try {
+            int terrainY = findTopTerrain(level, pos, x, z, Math.min(maxY, heightmapTopY), minY);
+            if (terrainY == Integer.MIN_VALUE) {
+                return false;
+            }
+            int waterY = AtlasCoordinateMapper.metersToWorldY(river.waterSurfaceMeters());
+            int maximumDepth = Math.max(1, (int) Math.round(river.depthMeters()
+                    / AtlasWorldgenConfig.VERTICAL_METERS_PER_BLOCK.get()));
+            double normalized = Math.min(1.0D, river.distanceToCenterBlocks() / Math.max(0.5D, river.halfWidthBlocks()));
+            double edge = normalized <= 0.55D ? 1.0D : 1.0D - smoothstep((normalized - 0.55D) / 0.45D);
+            int depthBlocks = Math.max(1, (int) Math.round(maximumDepth * edge));
+            int bottomY = Math.max(minY, waterY - depthBlocks);
+            int carveCap = AtlasWorldgenConfig.SURFACE_POLISH_RIVER_MAX_CARVE_ABOVE_WATER_BLOCKS.get();
+            int clearTop = Math.min(maxY, Math.min(Math.max(heightmapTopY, terrainY), waterY + carveCap));
+            boolean changed = false;
+
+            for (int y = bottomY + 1; y <= clearTop; y++) {
+                pos.set(x, y, z);
+                BlockState state = level.getBlockState(pos);
+                if (!state.isAir() && (state.liquid() || isReplaceableTerrainMaterial(state, true)
+                        || isIgnoredSurfaceFeature(state))) {
+                    changed |= level.setBlock(pos, Blocks.AIR.defaultBlockState(),
+                            Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                }
+            }
+
+            BlockState bed = riverBottomMaterial(river, depthBlocks);
+            int bedLayers = Math.min(3, Math.max(1, depthBlocks));
+            for (int y = bottomY; y >= Math.max(minY, bottomY - bedLayers + 1); y--) {
+                pos.set(x, y, z);
+                BlockState current = level.getBlockState(pos);
+                if (isReplaceableTerrainMaterial(current, true) || current.isAir() || current.liquid()) {
+                    changed |= level.setBlock(pos, bed,
+                            Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                }
+            }
+
+            int maxFill = AtlasWorldgenConfig.SURFACE_POLISH_RIVER_MAX_FILL_BLOCKS.get();
+            int fillStart = Math.max(bottomY + 1, waterY - maxFill + 1);
+            for (int y = fillStart; y <= waterY; y++) {
+                pos.set(x, y, z);
+                BlockState current = level.getBlockState(pos);
+                if (current.isAir() || current.liquid() || isReplaceableTerrainMaterial(current, true)
+                        || isIgnoredSurfaceFeature(current)) {
+                    changed |= level.setBlock(pos, Blocks.WATER.defaultBlockState(),
+                            Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                }
+            }
+            return changed;
+        } finally {
+            AtlasWorldgenProfiler.recordSince("surfacePolish.river", started);
+        }
+    }
+
+    private static boolean finishRiverBankColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
+                                                 int heightmapTopY, int minY, int maxY, RiverSample river) {
+        int terrainY = findTopTerrain(level, pos, x, z, Math.min(maxY, heightmapTopY), minY);
+        if (terrainY == Integer.MIN_VALUE) {
+            return false;
+        }
+        int waterY = AtlasCoordinateMapper.metersToWorldY(river.waterSurfaceMeters());
+        int bankWidth = Math.max(1, AtlasWorldgenConfig.RIVER_BANK_WIDTH_BLOCKS.get());
+        double progress = Math.min(1.0D, river.distanceToBankBlocks() / bankWidth);
+        int targetY = Math.min(maxY, waterY + (int) Math.round(progress * 2.0D));
+        int carve = AtlasWorldgenConfig.SURFACE_POLISH_RIVER_BANK_SMOOTH_CARVE_BLOCKS.get();
+        int raise = AtlasWorldgenConfig.SURFACE_POLISH_RIVER_BANK_MAX_RAISE_BLOCKS.get();
+        boolean changed = false;
+
+        if (terrainY > targetY && terrainY - targetY <= carve) {
+            for (int y = terrainY; y > targetY; y--) {
+                pos.set(x, y, z);
+                BlockState state = level.getBlockState(pos);
+                if (isReplaceableTerrainMaterial(state, true) || isIgnoredSurfaceFeature(state)) {
+                    changed |= level.setBlock(pos, Blocks.AIR.defaultBlockState(),
+                            Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                }
+            }
+            terrainY = targetY;
+        } else if (terrainY < targetY && targetY - terrainY <= raise) {
+            BlockState fill = riverBankMaterial(river, progress);
+            for (int y = terrainY + 1; y <= targetY; y++) {
+                pos.set(x, y, z);
+                BlockState state = level.getBlockState(pos);
+                if (state.isAir() || state.liquid() || isIgnoredSurfaceFeature(state)) {
+                    changed |= level.setBlock(pos, fill,
+                            Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                }
+            }
+            terrainY = targetY;
+        }
+
+        BlockState cap = riverBankMaterial(river, progress);
+        changed |= applySurfaceCap(level, pos, x, terrainY, z, minY, cap, true);
+        return changed;
+    }
+
+    private static BlockState riverBottomMaterial(RiverSample river, int depthBlocks) {
+        double depthMeters = depthBlocks * AtlasWorldgenConfig.VERTICAL_METERS_PER_BLOCK.get();
+        if (depthMeters <= AtlasWorldgenConfig.SURFACE_POLISH_RIVER_SAND_DEPTH_METERS.get()
+                && river.dischargeCms() < 100.0D) {
+            return Blocks.SAND.defaultBlockState();
+        }
+        if (depthMeters <= AtlasWorldgenConfig.SURFACE_POLISH_RIVER_GRAVEL_DEPTH_METERS.get()
+                || river.strahlerOrder() >= 5) {
+            return Blocks.GRAVEL.defaultBlockState();
+        }
+        return Blocks.CLAY.defaultBlockState();
+    }
+
+    private static BlockState riverBankMaterial(RiverSample river, double progress) {
+        if (progress < 0.45D) {
+            return river.dischargeCms() >= 250.0D ? Blocks.SAND.defaultBlockState() : Blocks.GRAVEL.defaultBlockState();
+        }
+        return Blocks.GRASS_BLOCK.defaultBlockState();
+    }
+
+    private static double smoothstep(double value) {
+        double t = Math.max(0.0D, Math.min(1.0D, value));
+        return t * t * (3.0D - 2.0D * t);
     }
 
     private static boolean finishLakeColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,

@@ -13,6 +13,9 @@ import com.ibicza.redlineatlasworldgen.lake.AtlasLakeGuide;
 import com.ibicza.redlineatlasworldgen.lake.LakeKind;
 import com.ibicza.redlineatlasworldgen.lake.LakeSample;
 import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
+import com.ibicza.redlineatlasworldgen.river.AtlasRiverIndex;
+import com.ibicza.redlineatlasworldgen.river.RiverKind;
+import com.ibicza.redlineatlasworldgen.river.RiverSample;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Biomes;
@@ -89,8 +92,11 @@ public final class AtlasBiomeResolver {
         }
 
         LakeSample lake = AtlasLakeGuide.sampleForBiome(blockX, blockZ);
+        RiverSample river = AtlasRiverIndex.active().sampleForBiome(blockX, blockZ);
         AtlasOpenWaterGuide.OpenWaterSample openWater = AtlasOpenWaterGuide.sampleForBiome(blockX, blockZ);
-        WaterContext water = lake.hasLakeData() ? waterContext(lake) : waterContext(openWater);
+        WaterContext water = lake.hasLakeData() ? waterContext(lake)
+                : river.hasRiverData() ? waterContext(river)
+                : waterContext(openWater);
         LandcoverDecision landcover = landcoverDecision(blockX, blockZ, geo);
         double elevationMeters = height.get().meters();
         int surfaceY = AtlasCoordinateMapper.metersToWorldY(elevationMeters);
@@ -194,6 +200,12 @@ public final class AtlasBiomeResolver {
                 return configured(AtlasWorldgenConfig.BIOME_LAKE_SHORE.get(), vanillaBiome);
             }
             return null;
+        }
+
+        if (ctx.water().kind() == WaterContext.WaterKind.RIVER) {
+            return configured(ctx.temperatureC() <= AtlasWorldgenConfig.BIOME_FREEZING_TEMPERATURE_C.get()
+                    ? AtlasWorldgenConfig.BIOME_FROZEN_RIVER.get()
+                    : AtlasWorldgenConfig.BIOME_RIVER.get(), vanillaBiome);
         }
 
         if (ctx.water().kind() == WaterContext.WaterKind.OPEN_OCEAN || ctx.water().kind() == WaterContext.WaterKind.OPEN_OCEAN_FLOOD) {
@@ -580,6 +592,22 @@ public final class AtlasBiomeResolver {
                     Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, sample.depthMeters(),
                     sample.bottomMeters(), sample.waterSurfaceMeters(), sample.sourceId(), sample.resolutionMeters());
         };
+    }
+
+    private static WaterContext waterContext(RiverSample sample) {
+        if (sample.kind() == RiverKind.CHANNEL) {
+            return new WaterContext(WaterContext.WaterKind.RIVER, true, sample.exactWater(),
+                    Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, sample.distanceToCenterBlocks(),
+                    sample.depthMeters(), sample.bottomMeters(), sample.waterSurfaceMeters(),
+                    sample.sourceId(), sample.resolutionMeters());
+        }
+        if (sample.kind() == RiverKind.BANK) {
+            return new WaterContext(WaterContext.WaterKind.RIVER_BANK, true, false,
+                    Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, sample.distanceToCenterBlocks(),
+                    0.0D, sample.bottomMeters(), sample.waterSurfaceMeters(),
+                    sample.sourceId(), sample.resolutionMeters());
+        }
+        return WaterContext.NONE;
     }
 
     private record LandcoverDecision(LandcoverClass landcover, int rawCode, String source, int sampleCount) {

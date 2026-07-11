@@ -18,6 +18,21 @@ public final class AtlasCoordinateMapper {
         return (int) Math.round(meters / verticalScale) + AtlasWorldgenConfig.SEA_LEVEL_Y.get();
     }
 
+    public static double toWorldX(double longitude) {
+        double delta = wrapLongitude(longitude - AtlasWorldgenConfig.ORIGIN_LONGITUDE.get());
+        return delta / AtlasWorldgenConfig.DEGREES_PER_BLOCK_LONGITUDE.get();
+    }
+
+    public static double toWorldZ(double latitude) {
+        return (AtlasWorldgenConfig.ORIGIN_LATITUDE.get() - latitude)
+                / AtlasWorldgenConfig.DEGREES_PER_BLOCK_LATITUDE.get();
+    }
+
+    public static double worldYToMeters(int worldY) {
+        return (worldY - AtlasWorldgenConfig.SEA_LEVEL_Y.get())
+                * AtlasWorldgenConfig.VERTICAL_METERS_PER_BLOCK.get();
+    }
+
     private static double wrapLongitude(double longitude) {
         double result = longitude;
         while (result < -180.0D) {

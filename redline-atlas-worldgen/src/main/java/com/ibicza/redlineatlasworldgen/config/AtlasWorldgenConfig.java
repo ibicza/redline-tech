@@ -61,6 +61,34 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue LAKE_SYNTHETIC_MAX_DEPTH_BLOCKS;
     public static final ModConfigSpec.IntValue LAKE_FULL_DEPTH_DISTANCE_BLOCKS;
     public static final ModConfigSpec.DoubleValue LAKE_MANUAL_DEFAULT_SHORE_BLEND_METERS;
+    public static final ModConfigSpec.ConfigValue<String> RIVER_ROOT;
+    public static final ModConfigSpec.BooleanValue RIVER_GUIDE_ENABLED;
+    public static final ModConfigSpec.ConfigValue<String> RIVER_SOURCE_BOUNDS;
+    public static final ModConfigSpec.IntValue RIVER_MIN_STRAHLER_ORDER;
+    public static final ModConfigSpec.IntValue RIVER_MAX_SEGMENTS;
+    public static final ModConfigSpec.IntValue RIVER_INDEX_CELL_SIZE_BLOCKS;
+    public static final ModConfigSpec.IntValue RIVER_BIOME_CACHE_CELL_SIZE_BLOCKS;
+    public static final ModConfigSpec.IntValue RIVER_SAMPLE_CACHE_LIMIT;
+    public static final ModConfigSpec.BooleanValue RIVER_WRITE_COOKED_CACHE;
+    public static final ModConfigSpec.BooleanValue RIVER_PREFER_COOKED_CACHE;
+    public static final ModConfigSpec.BooleanValue RIVER_REFINE_ENABLED;
+    public static final ModConfigSpec.IntValue RIVER_REFINE_RADIUS_BLOCKS;
+    public static final ModConfigSpec.IntValue RIVER_REFINE_STEP_BLOCKS;
+    public static final ModConfigSpec.IntValue RIVER_REFINE_POINT_SPACING_BLOCKS;
+    public static final ModConfigSpec.DoubleValue RIVER_VALLEY_HEIGHT_WEIGHT;
+    public static final ModConfigSpec.DoubleValue RIVER_SOURCE_DISTANCE_WEIGHT;
+    public static final ModConfigSpec.DoubleValue RIVER_UPHILL_WEIGHT;
+    public static final ModConfigSpec.DoubleValue RIVER_WORLDCOVER_WATER_BONUS;
+    public static final ModConfigSpec.IntValue RIVER_MIN_WIDTH_BLOCKS;
+    public static final ModConfigSpec.IntValue RIVER_MAX_WIDTH_BLOCKS;
+    public static final ModConfigSpec.DoubleValue RIVER_WIDTH_DISCHARGE_FACTOR;
+    public static final ModConfigSpec.IntValue RIVER_WIDTH_SCAN_STEP_BLOCKS;
+    public static final ModConfigSpec.IntValue RIVER_MIN_DEPTH_BLOCKS;
+    public static final ModConfigSpec.IntValue RIVER_MAX_DEPTH_BLOCKS;
+    public static final ModConfigSpec.DoubleValue RIVER_DEPTH_WIDTH_FACTOR;
+    public static final ModConfigSpec.IntValue RIVER_BANK_WIDTH_BLOCKS;
+    public static final ModConfigSpec.BooleanValue RIVER_PROFILE_SNAP_TO_BLOCK;
+    public static final ModConfigSpec.BooleanValue RIVER_FLOW_PHYSICS_ENABLED;
     public static final ModConfigSpec.BooleanValue OPEN_WATER_GUIDE_ENABLED;
     public static final ModConfigSpec.BooleanValue OPEN_WATER_USE_FOR_NOISE_GUIDE;
     public static final ModConfigSpec.DoubleValue OPEN_WATER_SEA_LEVEL_METERS;
@@ -118,6 +146,13 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_BANK_MAX_RAISE_BLOCKS;
     public static final ModConfigSpec.DoubleValue SURFACE_POLISH_LAKE_SAND_DEPTH_METERS;
     public static final ModConfigSpec.DoubleValue SURFACE_POLISH_LAKE_GRAVEL_DEPTH_METERS;
+    public static final ModConfigSpec.BooleanValue SURFACE_POLISH_FILL_RIVER_WATER;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_RIVER_MAX_CARVE_ABOVE_WATER_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_RIVER_MAX_FILL_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_RIVER_BANK_SMOOTH_CARVE_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_RIVER_BANK_MAX_RAISE_BLOCKS;
+    public static final ModConfigSpec.DoubleValue SURFACE_POLISH_RIVER_SAND_DEPTH_METERS;
+    public static final ModConfigSpec.DoubleValue SURFACE_POLISH_RIVER_GRAVEL_DEPTH_METERS;
     public static final ModConfigSpec.BooleanValue PROFILER_ENABLED;
     public static final ModConfigSpec.BooleanValue PROFILER_LOG_PERIODICALLY;
     public static final ModConfigSpec.IntValue PROFILER_LOG_INTERVAL_TICKS;
@@ -134,6 +169,8 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.ConfigValue<String> BIOME_LAKE_WATER;
     public static final ModConfigSpec.ConfigValue<String> BIOME_FROZEN_LAKE_WATER;
     public static final ModConfigSpec.ConfigValue<String> BIOME_LAKE_SHORE;
+    public static final ModConfigSpec.ConfigValue<String> BIOME_RIVER;
+    public static final ModConfigSpec.ConfigValue<String> BIOME_FROZEN_RIVER;
     public static final ModConfigSpec.BooleanValue BIOME_GUIDE_ENABLED;
     public static final ModConfigSpec.DoubleValue BIOME_GUIDE_STRENGTH;
     public static final ModConfigSpec.IntValue BIOME_CELL_SIZE_BLOCKS;
@@ -333,6 +370,65 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("manualDefaultShoreBlendMeters", 45.0D, 0.0D, 1000.0D);
         builder.pop();
 
+        builder.push("river_water");
+        RIVER_ROOT = builder.comment("HydroRIVERS source directory. For regional testing put matching .shp and .dbf files here. Global runtime packs should use cooked river tiles later, not the raw global shapefile.")
+                .define("tileRoot", "config/redline-atlas-worldgen/rivers");
+        RIVER_GUIDE_ENABLED = builder.comment("Enable HydroRIVERS-guided channels, banks, river biomes and surface-water finishing.")
+                .define("enabled", true);
+        RIVER_SOURCE_BOUNDS = builder.comment("Optional south,north,west,east filter applied while reading a regional/continental HydroRIVERS shapefile. The default keeps the first Alps test small. Empty means no filter and is unsafe for the global shapefile.")
+                .define("sourceBounds", "44.0,47.0,5.0,9.0");
+        RIVER_MIN_STRAHLER_ORDER = builder.comment("Minimum HydroRIVERS ORD_STRA loaded. 1 keeps every mapped stream; 3 is a practical detailed test preset.")
+                .defineInRange("minStrahlerOrder", 3, 1, 10);
+        RIVER_MAX_SEGMENTS = builder.comment("Hard safety cap for loaded polyline parts after bounds/order filtering. Prevents accidentally loading the full global raw shapefile into the game JVM.")
+                .defineInRange("maxSegments", 200000, 1, 5000000);
+        RIVER_INDEX_CELL_SIZE_BLOCKS = builder.comment("XZ cell size of the river spatial index. It must remain comfortably larger than common river widths.")
+                .defineInRange("indexCellSizeBlocks", 256, 32, 4096);
+        RIVER_BIOME_CACHE_CELL_SIZE_BLOCKS = builder.comment("Coarse river sample cell used only by biome selection. Exact surface carving always samples per block.")
+                .defineInRange("biomeCacheCellSizeBlocks", 16, 1, 256);
+        RIVER_SAMPLE_CACHE_LIMIT = builder.comment("Approximate maximum cached coarse river samples.")
+                .defineInRange("sampleCacheLimit", 262144, 1024, 8388608);
+        RIVER_WRITE_COOKED_CACHE = builder.comment("After regional SHP+DBF conversion/refinement, write a compressed region-cache.rriver runtime tile. The raw GIS files may then be removed from a distributed atlas pack.")
+                .define("writeCookedCache", true);
+        RIVER_PREFER_COOKED_CACHE = builder.comment("Load a valid .rriver cache instead of repeating expensive SHP parsing and GLO-30/WorldCover refinement on every server start.")
+                .define("preferCookedCache", true);
+        RIVER_REFINE_ENABLED = builder.comment("Move HydroRIVERS' approximately 500m centerline onto the local GLO-30 valley/WorldCover water corridor during reload.")
+                .define("refineEnabled", true);
+        RIVER_REFINE_RADIUS_BLOCKS = builder.comment("Maximum perpendicular search radius used to fit a source line to the local valley. At 6m/block, 160 blocks is about 960m.")
+                .defineInRange("refineRadiusBlocks", 160, 0, 1024);
+        RIVER_REFINE_STEP_BLOCKS = builder.comment("Candidate spacing across the valley during line refinement. Smaller follows GLO-30 more closely but reloads more slowly.")
+                .defineInRange("refineStepBlocks", 8, 1, 128);
+        RIVER_REFINE_POINT_SPACING_BLOCKS = builder.comment("Maximum spacing along a source polyline before it is densified and fitted. This recovers broad meanders missing from the 15 arc-second source line.")
+                .defineInRange("refinePointSpacingBlocks", 48, 4, 512);
+        RIVER_VALLEY_HEIGHT_WEIGHT = builder.comment("Cost per real meter above the lowest candidate in the fitting cross-section.")
+                .defineInRange("valleyHeightWeight", 3.0D, 0.0D, 1000.0D);
+        RIVER_SOURCE_DISTANCE_WEIGHT = builder.comment("Cost per block moved away from the HydroRIVERS source line.")
+                .defineInRange("sourceDistanceWeight", 0.12D, 0.0D, 1000.0D);
+        RIVER_UPHILL_WEIGHT = builder.comment("Additional cost per real meter a downstream fitted point rises above the preceding point.")
+                .defineInRange("uphillWeight", 8.0D, 0.0D, 1000.0D);
+        RIVER_WORLDCOVER_WATER_BONUS = builder.comment("Negative fitting cost for candidates whose ESA WorldCover class is permanent water.")
+                .defineInRange("worldcoverWaterBonus", 180.0D, 0.0D, 100000.0D);
+        RIVER_MIN_WIDTH_BLOCKS = builder.comment("Minimum full gameplay channel width. Real sub-pixel streams are widened to remain visible and usable.")
+                .defineInRange("minWidthBlocks", 3, 1, 128);
+        RIVER_MAX_WIDTH_BLOCKS = builder.comment("Maximum full channel width reconstructed from discharge/WorldCover. Wide deltas should be supplied as prepared water masks later.")
+                .defineInRange("maxWidthBlocks", 384, 4, 4096);
+        RIVER_WIDTH_DISCHARGE_FACTOR = builder.comment("Fallback real width is factor * sqrt(DIS_AV_CMS), then converted through horizontalMetersPerBlock.")
+                .defineInRange("widthDischargeFactor", 5.0D, 0.1D, 100.0D);
+        RIVER_WIDTH_SCAN_STEP_BLOCKS = builder.comment("Perpendicular step used to measure visible WorldCover water width around a fitted centerline.")
+                .defineInRange("widthScanStepBlocks", 1, 1, 32);
+        RIVER_MIN_DEPTH_BLOCKS = builder.comment("Minimum carved river depth in Minecraft blocks.")
+                .defineInRange("minDepthBlocks", 2, 1, 64);
+        RIVER_MAX_DEPTH_BLOCKS = builder.comment("Maximum synthetic river depth in Minecraft blocks.")
+                .defineInRange("maxDepthBlocks", 18, 1, 256);
+        RIVER_DEPTH_WIDTH_FACTOR = builder.comment("Synthetic depth in blocks as a fraction of full channel width in blocks.")
+                .defineInRange("depthWidthFactor", 0.22D, 0.01D, 2.0D);
+        RIVER_BANK_WIDTH_BLOCKS = builder.comment("Additional land blend/containment width outside each side of the water channel.")
+                .defineInRange("bankWidthBlocks", 6, 0, 128);
+        RIVER_PROFILE_SNAP_TO_BLOCK = builder.comment("Fit a monotonic downstream profile and snap it down to block levels, producing stable pools separated by deterministic rapids/steps.")
+                .define("snapProfileToBlock", true);
+        RIVER_FLOW_PHYSICS_ENABLED = builder.comment("Enable the atlas-dimension water support guard: water resting on water may spread sideways over water/solid support, but not outward over unsupported air.")
+                .define("flowPhysicsEnabled", true);
+        builder.pop();
+
         builder.push("ocean_bathymetry");
         OCEAN_BATHYMETRY_TILE_ROOT = builder.comment("Open ocean / ocean-connected sea bathymetry tile directory. Relative paths are resolved against the game directory. Put GEBCO data GeoTIFF tiles here. Bounds are inferred from filenames with n/s/w/e or bbox_west_south_east_north, or from .rbathy.properties sidecars.")
                 .define("tileRoot", "config/redline-atlas-worldgen/ocean_bathymetry");
@@ -452,6 +548,20 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("lakeSandDepthMeters", 4.0D, 0.0D, 256.0D);
         SURFACE_POLISH_LAKE_GRAVEL_DEPTH_METERS = builder.comment("Lake bed depth threshold for gravel. Depths above lakeSandDepthMeters and up to this become gravel; deeper bottoms use clay/mud-like material.")
                 .defineInRange("lakeGravelDepthMeters", 14.0D, 0.0D, 512.0D);
+        SURFACE_POLISH_FILL_RIVER_WATER = builder.comment("Carve HydroRIVERS channels after normal generation and fill every channel column directly with full vanilla water source blocks.")
+                .define("fillRiverWater", true);
+        SURFACE_POLISH_RIVER_MAX_CARVE_ABOVE_WATER_BLOCKS = builder.comment("Safety cap for removing generated terrain above the fitted river surface inside an authoritative channel column.")
+                .defineInRange("riverMaxCarveAboveWaterBlocks", 96, 0, 1024);
+        SURFACE_POLISH_RIVER_MAX_FILL_BLOCKS = builder.comment("Safety cap for vertical river water fill per column.")
+                .defineInRange("riverMaxFillBlocks", 64, 1, 1024);
+        SURFACE_POLISH_RIVER_BANK_SMOOTH_CARVE_BLOCKS = builder.comment("Maximum bank lowering toward the local water level. Mountain rivers keep cliffs beyond this small smoothing amount.")
+                .defineInRange("riverBankSmoothCarveBlocks", 4, 0, 64);
+        SURFACE_POLISH_RIVER_BANK_MAX_RAISE_BLOCKS = builder.comment("Maximum bank raising used to contain a channel whose fitted water surface is above local generated terrain.")
+                .defineInRange("riverBankMaxRaiseBlocks", 12, 0, 128);
+        SURFACE_POLISH_RIVER_SAND_DEPTH_METERS = builder.comment("River-bed depth threshold for sand. Very shallow/slow edges use sand.")
+                .defineInRange("riverSandDepthMeters", 3.0D, 0.0D, 128.0D);
+        SURFACE_POLISH_RIVER_GRAVEL_DEPTH_METERS = builder.comment("River-bed depth threshold for gravel. Deeper channels use clay below this threshold.")
+                .defineInRange("riverGravelDepthMeters", 18.0D, 0.0D, 512.0D);
         builder.pop();
 
         builder.push("profiler");
@@ -582,6 +692,10 @@ public final class AtlasWorldgenConfig {
                 .define("frozenLakeWaterBiome", "minecraft:frozen_river");
         BIOME_LAKE_SHORE = builder.comment("Biome returned for low near-lake shore land. Beach gives sand, but surface polish is still controlled separately.")
                 .define("lakeShoreBiome", "minecraft:beach");
+        BIOME_RIVER = builder.comment("Biome returned inside a fitted non-frozen river channel.")
+                .define("riverBiome", "minecraft:river");
+        BIOME_FROZEN_RIVER = builder.comment("Biome returned inside a fitted river channel below the freezing temperature threshold.")
+                .define("frozenRiverBiome", "minecraft:frozen_river");
         builder.pop();
 
         builder.push("debug");
