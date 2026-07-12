@@ -36,7 +36,11 @@ public final class AtlasLakeGuide {
     }
 
     public static LakeSample sample(int blockX, int blockZ) {
-        return computeSample(blockX, blockZ, true);
+        return computeSample(blockX, blockZ, true, false);
+    }
+
+    public static LakeSample sampleForSurface(int blockX, int blockZ) {
+        return computeSample(blockX, blockZ, true, true);
     }
 
     public static LakeSample sampleForBiome(int blockX, int blockZ) {
@@ -63,7 +67,7 @@ public final class AtlasLakeGuide {
             }
             int sampleX = cellX * cell + cell / 2;
             int sampleZ = cellZ * cell + cell / 2;
-            LakeSample computed = computeSample(sampleX, sampleZ, false);
+            LakeSample computed = computeSample(sampleX, sampleZ, false, true);
             LakeSample existing = SAMPLE_CACHE.putIfAbsent(key, computed);
             return existing == null ? computed : existing;
         } finally {
@@ -96,7 +100,7 @@ public final class AtlasLakeGuide {
         return kind == LakeKind.MANUAL_LAKE || kind == LakeKind.SMALL_WATERBODY;
     }
 
-    private static LakeSample computeSample(int blockX, int blockZ, boolean exact) {
+    private static LakeSample computeSample(int blockX, int blockZ, boolean exact, boolean includeTerrainShoulder) {
         long started = AtlasWorldgenProfiler.start();
         try {
             if (!AtlasWorldgenConfig.LAKE_GUIDE_ENABLED.get()) {
@@ -163,7 +167,7 @@ public final class AtlasLakeGuide {
                     AtlasWorldgenConfig.LAKE_WORLDCOVER_SHORE_RADIUS_BLOCKS.get());
             if ((exact || AtlasWorldgenConfig.LAKE_SHORE_IN_BIOME_GUIDE.get())
                     && stats.fraction() >= AtlasWorldgenConfig.LAKE_WORLDCOVER_MIN_WATER_FRACTION.get()) {
-                NearWater near = findNearWorldcoverWater(blockX, blockZ, shoreRadius, step, rawSurfaceMeters);
+                NearWater near = findNearWorldcoverWater(blockX, blockZ, shoreRadius, step, true);
                 if (near.found()) {
                     return new LakeSample(LakeKind.LAKE_SHORE, true, false, near.distanceBlocks(), 0.0D, 0.0D, Double.NaN, near.waterSurfaceMeters(),
                             "worldcover_lake_shore", 10.0D, near.sourceId());
@@ -171,10 +175,25 @@ public final class AtlasLakeGuide {
             }
 
             if (exact || AtlasWorldgenConfig.LAKE_SHORE_IN_BIOME_GUIDE.get()) {
-                NearWater near = findNearWorldcoverWater(blockX, blockZ, shoreRadius, step, rawSurfaceMeters);
+                NearWater near = findNearWorldcoverWater(blockX, blockZ, shoreRadius, step, true);
                 if (near.found()) {
                     return new LakeSample(LakeKind.LAKE_SHORE, true, false, near.distanceBlocks(), 0.0D, 0.0D, Double.NaN, near.waterSurfaceMeters(),
                             "worldcover_lake_shore", 10.0D, near.sourceId());
+                }
+            }
+            if (includeTerrainShoulder) {
+                int configuredShoulderRadius = Math.max(0,
+                        AtlasWorldgenConfig.LAKE_TERRAIN_SHOULDER_RADIUS_BLOCKS.get());
+                int hintPadding = !exact && configuredShoulderRadius > shoreRadius
+                        ? Math.max(4, AtlasWorldgenConfig.LAKE_CACHE_CELL_SIZE_BLOCKS.get()) : 0;
+                int shoulderRadius = Math.max(shoreRadius, configuredShoulderRadius + hintPadding);
+                if (shoulderRadius > shoreRadius) {
+                    NearWater near = findNearWorldcoverWater(blockX, blockZ, shoulderRadius, step, exact);
+                    if (near.found() && near.distanceBlocks() > shoreRadius) {
+                        return new LakeSample(LakeKind.LAKE_TERRAIN_SHOULDER, false, false,
+                                near.distanceBlocks(), 0.0D, 0.0D, Double.NaN, near.waterSurfaceMeters(),
+                                "worldcover_lake_terrain_shoulder", 10.0D, near.sourceId());
+                    }
                 }
             }
 
@@ -496,7 +515,7 @@ public final class AtlasLakeGuide {
         return maxRadius;
     }
 
-    private static NearWater findNearWorldcoverWater(int blockX, int blockZ, int radius, int step, double landSurfaceMeters) {
+    private static NearWater findNearWorldcoverWater(int blockX, int blockZ, int radius, int step, boolean resolveSurface) {
         if (radius <= 0) {
             return NearWater.none();
         }
@@ -524,6 +543,15 @@ public final class AtlasLakeGuide {
                 if (waterHeight.isEmpty()) {
                     continue;
                 }
+                if (!resolveSurface) {
+                    if (waterHeight.get().meters() < AtlasWorldgenConfig.LAKE_MIN_SURFACE_METERS.get()) {
+                        continue;
+                    }
+                    bestDistanceSq = distanceSq;
+                    bestSurface = Double.NaN;
+                    bestSource = landcover.get().sourceId();
+                    continue;
+                }
                 double stableSurface = estimateWorldcoverWaterSurface(sx, sz, waterHeight.get().meters());
                 if (stableSurface < AtlasWorldgenConfig.LAKE_MIN_SURFACE_METERS.get()) {
                     continue;
@@ -532,7 +560,6 @@ public final class AtlasLakeGuide {
                 if (fit.found() && fit.waterSamples() < AtlasWorldgenConfig.LAKE_WORLDCOVER_MIN_COMPONENT_SAMPLES.get()) {
                     continue;
                 }
-                double waterDistanceToShore = estimateDistanceToShore(sx, sz, Math.max(step, 8), Math.max(radius, AtlasWorldgenConfig.LAKE_MAX_SHORE_SEARCH_BLOCKS.get()));
                 // For surface polishing we need the whole non-water boundary around the water mask,
                 // even when DEM says that boundary is a high quarry wall/field. High terrain will be
                 // left intact by the shore polisher, while low generated terrain is raised into a bank.

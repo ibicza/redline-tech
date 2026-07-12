@@ -233,6 +233,14 @@ public final class AtlasSurfaceMaterialPolisher {
                 }
 
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_LAKE_WATER.get()
+                        && lake.kind() == LakeKind.LAKE_TERRAIN_SHOULDER
+                        && isLakeTerrainShoulderLand(water)) {
+                    changed |= finishLakeTerrainShoulderColumn(level, mutable, blockX, blockZ, heightmapTopY,
+                            minY, maxY, water, lake);
+                    continue;
+                }
+
+                if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_LAKE_WATER.get()
                         && lake.kind() == LakeKind.LAKE_SHORE) {
                     changed |= finishLakeShoreColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, maxY, lake);
                     continue;
@@ -285,12 +293,19 @@ public final class AtlasSurfaceMaterialPolisher {
     private static LakeSample lakeForSurface(int blockX, int blockZ) {
         LakeSample cached = AtlasLakeGuide.sampleForBiome(blockX, blockZ);
         if (!AtlasWorldgenConfig.SURFACE_POLISH_EXACT_COAST_SAMPLES.get()) {
-            return cached;
+            return cached.kind() == LakeKind.LAKE_TERRAIN_SHOULDER ? LakeSample.none() : cached;
         }
         // Surface/water finish runs once per column, so spend the exact sample here.
         // The cached biome cell is intentionally coarse and may miss/overexpand 10m WorldCover shapes.
         LakeSample exact = AtlasLakeGuide.sample(blockX, blockZ);
-        return exact.hasLakeData() ? exact : cached;
+        if (exact.hasTerrainContext()) {
+            return exact;
+        }
+        if (cached.kind() == LakeKind.LAKE_TERRAIN_SHOULDER) {
+            LakeSample shoulder = AtlasLakeGuide.sampleForSurface(blockX, blockZ);
+            return shoulder.hasTerrainContext() ? shoulder : exact;
+        }
+        return cached;
     }
 
     private static boolean finishRiverColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
@@ -313,7 +328,7 @@ public final class AtlasSurfaceMaterialPolisher {
             // the ground out from under trees and plants. Clear the complete river column before
             // carving/filling; otherwise logs, leaves, flowers and grass remain suspended above
             // the new channel even though findTopTerrain intentionally ignores them.
-            boolean changed = clearRiverVegetationColumn(level, pos, x, z, waterY + 1, existingColumnTopY);
+            boolean changed = clearSurfaceVegetationColumn(level, pos, x, z, waterY + 1, existingColumnTopY);
 
             // The channel mask is authoritative. Remove all old liquid above the new surface and
             // carve replaceable terrain all the way down to the mirrored bowl. Limiting this to
@@ -364,7 +379,7 @@ public final class AtlasSurfaceMaterialPolisher {
         double progress = Math.min(1.0D, lateralBand / (double) bankWidth);
         int targetY = Math.min(maxY, section.bankTopY());
         int existingColumnTopY = Math.min(maxY, Math.max(heightmapTopY, terrainY));
-        boolean changed = clearRiverVegetationColumn(level, pos, x, z, targetY + 1, existingColumnTopY);
+        boolean changed = clearSurfaceVegetationColumn(level, pos, x, z, targetY + 1, existingColumnTopY);
         changed |= clearRiverLiquidColumn(level, pos, x, z, targetY + 1, existingColumnTopY);
 
         // The bank target depends only on the section and |distance from center|. Thus opposite
@@ -471,7 +486,7 @@ public final class AtlasSurfaceMaterialPolisher {
             }
 
             int existingColumnTopY = Math.min(maxY, Math.max(heightmapTopY, terrainY));
-            boolean changed = clearRiverVegetationColumn(level, pos, x, z, targetY + 1, existingColumnTopY);
+            boolean changed = clearSurfaceVegetationColumn(level, pos, x, z, targetY + 1, existingColumnTopY);
             for (int y = terrainY + 1; y <= targetY; y++) {
                 pos.set(x, y, z);
                 BlockState replacement = layerReplacement(cap, targetY - y);
@@ -645,7 +660,7 @@ public final class AtlasSurfaceMaterialPolisher {
         return cap;
     }
 
-    private static boolean clearRiverVegetationColumn(ServerLevel level, BlockPos.MutableBlockPos pos,
+    private static boolean clearSurfaceVegetationColumn(ServerLevel level, BlockPos.MutableBlockPos pos,
                                                        int x, int z, int fromY, int toY) {
         if (fromY > toY) {
             return false;
@@ -747,6 +762,76 @@ public final class AtlasSurfaceMaterialPolisher {
     }
 
 
+    private static boolean finishLakeTerrainShoulderColumn(ServerLevel level, BlockPos.MutableBlockPos pos,
+                                                           int x, int z, int heightmapTopY, int minY, int maxY,
+                                                           AtlasOpenWaterGuide.OpenWaterSample water, LakeSample lake) {
+        long started = AtlasWorldgenProfiler.start();
+        try {
+            int maxRaise = Math.max(0,
+                    AtlasWorldgenConfig.SURFACE_POLISH_LAKE_TERRAIN_SHOULDER_MAX_RAISE_BLOCKS.get());
+            if (maxRaise == 0 || !Double.isFinite(lake.distanceToLakeBlocks())) {
+                return false;
+            }
+
+            int terrainY = findTopTerrain(level, pos, x, z, Math.min(maxY, heightmapTopY), minY);
+            if (terrainY == Integer.MIN_VALUE) {
+                return false;
+            }
+
+            int waterY = AtlasCoordinateMapper.metersToWorldY(lake.waterSurfaceMeters());
+            int bankRadius = Math.min(AtlasWorldgenConfig.LAKE_SHORE_RADIUS_BLOCKS.get(),
+                    AtlasWorldgenConfig.LAKE_WORLDCOVER_SHORE_RADIUS_BLOCKS.get());
+            double shoulderDistance = Math.max(0.0D, lake.distanceToLakeBlocks() - Math.max(0, bankRadius));
+            double maxSlope = Math.max(0.0D,
+                    AtlasWorldgenConfig.SURFACE_POLISH_LAKE_TERRAIN_SHOULDER_MAX_SLOPE.get());
+            int bankTopY = waterY
+                    + Math.max(0, AtlasWorldgenConfig.SURFACE_POLISH_LAKE_SHORE_TARGET_HEIGHT_BLOCKS.get());
+            int envelopeY = bankTopY - (int) Math.floor(shoulderDistance * maxSlope);
+            int targetY = Math.min(maxY, Math.min(envelopeY, terrainY + maxRaise));
+            if (targetY <= terrainY) {
+                return false;
+            }
+
+            for (int y = terrainY + 1; y <= targetY; y++) {
+                pos.set(x, y, z);
+                BlockState state = level.getBlockState(pos);
+                if (state.liquid() || (!state.isAir() && !isReplaceableTerrainMaterial(state, true)
+                        && !isIgnoredSurfaceFeature(state))) {
+                    return false;
+                }
+            }
+
+            pos.set(x, terrainY, z);
+            BlockState existingCap = level.getBlockState(pos);
+            BlockState cap = replacementFor(level, x, targetY, z, water, lake);
+            if (cap == null) {
+                cap = existingCap;
+            }
+
+            int existingColumnTopY = Math.min(maxY, Math.max(heightmapTopY, terrainY));
+            boolean changed = clearSurfaceVegetationColumn(level, pos, x, z, targetY + 1, existingColumnTopY);
+            for (int y = terrainY + 1; y <= targetY; y++) {
+                pos.set(x, y, z);
+                BlockState replacement = lakeRaisedTerrainLayer(cap, targetY - y);
+                changed |= level.setBlock(pos, replacement,
+                        Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+            }
+            return changed;
+        } finally {
+            AtlasWorldgenProfiler.recordSince("surfacePolish.lakeTerrainShoulder", started);
+        }
+    }
+
+    private static boolean isLakeTerrainShoulderLand(AtlasOpenWaterGuide.OpenWaterSample water) {
+        return water.kind() == AtlasOpenWaterGuide.OpenWaterKind.NONE
+                || water.kind() == AtlasOpenWaterGuide.OpenWaterKind.NON_OCEAN_OR_LAND_GEBCO;
+    }
+
+    private static BlockState lakeRaisedTerrainLayer(BlockState cap, int depth) {
+        int surfaceDepth = Math.max(1, AtlasWorldgenConfig.SURFACE_POLISH_SHORE_SAND_DEPTH_BLOCKS.get());
+        return depth < surfaceDepth ? layerReplacement(cap, depth) : bankFoundationMaterial(cap);
+    }
+
     private static boolean finishLakeShoreColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
                                                  int heightmapTopY, int minY, int maxY, LakeSample lake) {
         long started = AtlasWorldgenProfiler.start();
@@ -783,6 +868,10 @@ public final class AtlasSurfaceMaterialPolisher {
                 terrainY = targetY;
             }
 
+            if (terrainY == targetY) {
+                changed |= clearSurfaceVegetationColumn(level, pos, x, z, targetY + 1, Math.min(maxY, heightmapTopY));
+            }
+
             BlockState replacement = lakeShoreMaterial(level, x, terrainY, z, lake);
             if (replacement != null) {
                 changed |= applySurfaceCap(level, pos, x, terrainY, z, minY, replacement, shouldReplaceSoftSurface(replacement));
@@ -802,19 +891,31 @@ public final class AtlasSurfaceMaterialPolisher {
         if (raise <= 0 || raise > Math.max(0, AtlasWorldgenConfig.SURFACE_POLISH_LAKE_BANK_MAX_RAISE_BLOCKS.get())) {
             return false;
         }
+
+        pos.set(x, terrainY, z);
+        BlockState existingCap = level.getBlockState(pos);
         BlockState topMaterial = lakeShoreMaterial(level, x, targetY, z, lake);
         if (topMaterial == null) {
-            topMaterial = Blocks.SAND.defaultBlockState();
+            topMaterial = existingCap;
         }
+
+        for (int y = terrainY + 1; y <= targetY; y++) {
+            pos.set(x, y, z);
+            BlockState current = level.getBlockState(pos);
+            if (!current.isAir() && !current.liquid() && !isReplaceableTerrainMaterial(current, true)
+                    && !isIgnoredSurfaceFeature(current)) {
+                return false;
+            }
+        }
+
         boolean changed = false;
         for (int y = terrainY + 1; y <= targetY; y++) {
             pos.set(x, y, z);
             BlockState current = level.getBlockState(pos);
-            if (current.isAir() || current.liquid() || isTerrainSurfaceCandidate(current) || isSoftSurfaceMaterial(current) || isIgnoredSurfaceFeature(current)) {
-                BlockState material = layerReplacement(topMaterial, targetY - y);
-                if (!current.is(material.getBlock())) {
-                    changed |= level.setBlock(pos, material, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
-                }
+            BlockState material = lakeRaisedTerrainLayer(topMaterial, targetY - y);
+            if (!current.is(material.getBlock())) {
+                changed |= level.setBlock(pos, material,
+                        Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
             }
         }
         return changed;

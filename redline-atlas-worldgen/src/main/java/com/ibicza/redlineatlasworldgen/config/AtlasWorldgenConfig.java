@@ -55,6 +55,7 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue LAKE_MAX_SHORE_SEARCH_BLOCKS;
     public static final ModConfigSpec.IntValue LAKE_SHORE_RADIUS_BLOCKS;
     public static final ModConfigSpec.IntValue LAKE_WORLDCOVER_SHORE_RADIUS_BLOCKS;
+    public static final ModConfigSpec.IntValue LAKE_TERRAIN_SHOULDER_RADIUS_BLOCKS;
     public static final ModConfigSpec.DoubleValue LAKE_SHORE_MAX_HEIGHT_DELTA_METERS;
     public static final ModConfigSpec.DoubleValue LAKE_SYNTHETIC_MIN_DEPTH_METERS;
     public static final ModConfigSpec.DoubleValue LAKE_SYNTHETIC_MAX_DEPTH_METERS;
@@ -148,6 +149,8 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_LEAK_MAX_DROPOFF_BLOCKS;
     public static final ModConfigSpec.BooleanValue SURFACE_POLISH_LAKE_BUILD_CONTAINMENT_BANKS;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_BANK_MAX_RAISE_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_LAKE_TERRAIN_SHOULDER_MAX_RAISE_BLOCKS;
+    public static final ModConfigSpec.DoubleValue SURFACE_POLISH_LAKE_TERRAIN_SHOULDER_MAX_SLOPE;
     public static final ModConfigSpec.DoubleValue SURFACE_POLISH_LAKE_SAND_DEPTH_METERS;
     public static final ModConfigSpec.DoubleValue SURFACE_POLISH_LAKE_GRAVEL_DEPTH_METERS;
     public static final ModConfigSpec.BooleanValue SURFACE_POLISH_FILL_RIVER_WATER;
@@ -368,6 +371,8 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("shoreRadiusBlocks", 48, 0, 1024);
         LAKE_WORLDCOVER_SHORE_RADIUS_BLOCKS = builder.comment("Residual WorldCover-only pond shore radius after rivers have claimed their masks. Keep this tight to avoid wide random sand patches near river rasters.")
                 .defineInRange("worldcoverShoreRadiusBlocks", 8, 0, 256);
+        LAKE_TERRAIN_SHOULDER_RADIUS_BLOCKS = builder.comment("Surface-polish-only radius around residual WorldCover lakes where low dry terrain may be raised toward the contained sandy shore. This context does not affect biome or water classification.")
+                .defineInRange("terrainShoulderRadiusBlocks", 32, 0, 256);
         LAKE_SHORE_IN_BIOME_GUIDE = builder.comment("When true, biome guide can classify near-lake land as lake shore. Disable if too expensive or too sandy.")
                 .define("shoreInBiomeGuide", true);
         LAKE_SHORE_MAX_HEIGHT_DELTA_METERS = builder.comment("Maximum real height difference between land and nearby WorldCover-water for lake shore classification.")
@@ -566,6 +571,10 @@ public final class AtlasWorldgenConfig {
                 .define("lakeBuildContainmentBanks", true);
         SURFACE_POLISH_LAKE_BANK_MAX_RAISE_BLOCKS = builder.comment("Maximum number of blocks a near-lake shore column may be raised to contain the fitted water level. Larger values repair mismatched generated terrain; too large can create artificial embankments far from bad data.")
                 .defineInRange("lakeBankMaxRaiseBlocks", 24, 0, 256);
+        SURFACE_POLISH_LAKE_TERRAIN_SHOULDER_MAX_RAISE_BLOCKS = builder.comment("Maximum number of blocks dry terrain may be raised in the outer lake shoulder. The inner lake shore keeps its separate containment cap.")
+                .defineInRange("lakeTerrainShoulderMaxRaiseBlocks", 12, 0, 128);
+        SURFACE_POLISH_LAKE_TERRAIN_SHOULDER_MAX_SLOPE = builder.comment("Maximum downward envelope slope, in vertical blocks per horizontal block, from the contained sandy lake shore across its dry terrain shoulder.")
+                .defineInRange("lakeTerrainShoulderMaxSlope", 0.5D, 0.0D, 8.0D);
         SURFACE_POLISH_LAKE_SAND_DEPTH_METERS = builder.comment("Lake bed depth threshold for sand. Shallow lake bed up to this depth becomes sand.")
                 .defineInRange("lakeSandDepthMeters", 4.0D, 0.0D, 256.0D);
         SURFACE_POLISH_LAKE_GRAVEL_DEPTH_METERS = builder.comment("Lake bed depth threshold for gravel. Depths above lakeSandDepthMeters and up to this become gravel; deeper bottoms use clay/mud-like material.")

@@ -564,7 +564,7 @@ public final class AtlasBiomeResolver {
 
     private static WaterContext waterContext(LakeSample sample) {
         return switch (sample.kind()) {
-            case NONE -> WaterContext.NONE;
+            case NONE, LAKE_TERRAIN_SHOULDER -> WaterContext.NONE;
             case MANUAL_LAKE -> new WaterContext(WaterContext.WaterKind.INLAND_LAKE, true, true,
                     Double.POSITIVE_INFINITY, 0.0D, Double.POSITIVE_INFINITY, sample.depthMeters(), sample.bottomMeters(),
                     sample.waterSurfaceMeters(), sample.sourceId(), sample.resolutionMeters());
