@@ -47,7 +47,7 @@ final class RiverSegmentBuilder {
             WidthResult measured = widthAt(fitted, i, raw.attributes());
             width[i] = measured.widthBlocks();
             worldcover[i] = measured.worldcoverWater();
-            candidateSurface[i] = bankLimitedSurface(fitted, i, width[i]);
+            candidateSurface[i] = bankAnchoredWaterSurface(fitted, i, width[i], verticalMeters);
             int depthBlocks = clamp((int) Math.round(width[i] * AtlasWorldgenConfig.RIVER_DEPTH_WIDTH_FACTOR.get()),
                     AtlasWorldgenConfig.RIVER_MIN_DEPTH_BLOCKS.get(), AtlasWorldgenConfig.RIVER_MAX_DEPTH_BLOCKS.get());
             depth[i] = depthBlocks * verticalMeters;
@@ -66,14 +66,17 @@ final class RiverSegmentBuilder {
         return new RiverSegment(raw.sourceId(), raw.attributes(), x, z, width, water, depth, worldcover);
     }
 
-    private double bankLimitedSurface(List<FittedPoint> points, int index, double widthBlocks) {
+    private double bankAnchoredWaterSurface(List<FittedPoint> points, int index, double widthBlocks,
+                                                  double verticalMetersPerBlock) {
         FittedPoint center = points.get(index);
         OptionalDouble support = bankSupportHeight(points, index, widthBlocks);
         if (support.isEmpty()) {
             return center.heightMeters();
         }
-        // Never lift a river to match its banks. The lower bank only acts as an upper bound.
-        return Math.min(center.heightMeters(), support.getAsDouble());
+        // The cooked profile is the water surface, not the valley floor. Anchor it to the
+        // lower cross-section bank and keep it exactly N blocks below the symmetric rim.
+        double clearance = AtlasWorldgenConfig.RIVER_WATER_BELOW_BANK_BLOCKS.get() * verticalMetersPerBlock;
+        return support.getAsDouble() - clearance;
     }
 
     private OptionalDouble bankSupportHeight(List<FittedPoint> points, int index, double widthBlocks) {
@@ -112,10 +115,10 @@ final class RiverSegmentBuilder {
             return OptionalDouble.empty();
         }
         java.util.Arrays.sort(values, 0, count);
-        // Lower-third instead of an absolute minimum: one bad DSM pit cannot sink a whole river,
-        // while a genuinely low bank still clamps the fitted water surface.
-        int index = Math.min(count - 1, count / 3);
-        return OptionalDouble.of(values[index]);
+        // The lower bank is a hard ceiling for river water. A percentile can still select a
+        // higher probe and cook a surface above the visible rim; use the minimum valid support
+        // sample and let the downstream lower-only profile smooth the result.
+        return OptionalDouble.of(values[0]);
     }
 
     private static double[] supportProbeDistances(double widthBlocks) {

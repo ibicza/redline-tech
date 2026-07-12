@@ -56,6 +56,8 @@ final class RiverSegment {
         double bestDistanceSq = Double.POSITIVE_INFINITY;
         int bestEdge = -1;
         double bestT = 0.0D;
+        double bestAlongBlocks = 0.0D;
+        double accumulatedBlocks = 0.0D;
         for (int i = 0; i < x.length - 1; i++) {
             double dx = x[i + 1] - x[i];
             double dz = z[i + 1] - z[i];
@@ -71,7 +73,9 @@ final class RiverSegment {
                 bestDistanceSq = distanceSq;
                 bestEdge = i;
                 bestT = t;
+                bestAlongBlocks = accumulatedBlocks + Math.sqrt(lengthSq) * t;
             }
+            accumulatedBlocks += Math.sqrt(lengthSq);
         }
         if (bestEdge < 0) {
             return RiverSample.none();
@@ -112,7 +116,7 @@ final class RiverSegment {
                 Math.max(0.0D, distance - halfWidth), surface, surface - depth, depth,
                 attributes.riverId(), attributes.nextDownId(), attributes.strahlerOrder(),
                 attributes.dischargeCms(), sourceId, exact ? 10.0D : 30.0D,
-                centerX, centerZ, normalX, normalZ);
+                centerX, centerZ, normalX, normalZ, bestAlongBlocks);
     }
 
     CenterPoint nearestCenter(double blockX, double blockZ) {

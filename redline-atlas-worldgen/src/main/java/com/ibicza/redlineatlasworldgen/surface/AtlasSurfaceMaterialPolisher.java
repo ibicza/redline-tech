@@ -112,7 +112,7 @@ public final class AtlasSurfaceMaterialPolisher {
         int visited = 0;
         boolean changed = false;
         BlockPos.MutableBlockPos mutable = new BlockPos.MutableBlockPos();
-        Map<RiverSupportKey, Integer> riverSupportCache = new HashMap<>();
+        Map<RiverSupportKey, RiverSectionProfile> riverSectionCache = new HashMap<>();
 
         for (int localZ = 0; localZ < 16; localZ++) {
             for (int localX = 0; localX < 16; localX++) {
@@ -141,14 +141,14 @@ public final class AtlasSurfaceMaterialPolisher {
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_RIVER_WATER.get()
                         && river.kind() == RiverKind.CHANNEL) {
                     changed |= finishRiverColumn(level, mutable, blockX, blockZ, heightmapTopY,
-                            minY, maxY, river, riverSupportCache);
+                            minY, maxY, river, riverSectionCache);
                     continue;
                 }
 
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_RIVER_WATER.get()
                         && river.kind() == RiverKind.BANK) {
                     changed |= finishRiverBankColumn(level, mutable, blockX, blockZ, heightmapTopY,
-                            minY, maxY, river, riverSupportCache);
+                            minY, maxY, river, riverSectionCache);
                     continue;
                 }
 
@@ -216,25 +216,26 @@ public final class AtlasSurfaceMaterialPolisher {
 
     private static boolean finishRiverColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
                                              int heightmapTopY, int minY, int maxY, RiverSample river,
-                                             Map<RiverSupportKey, Integer> supportCache) {
+                                             Map<RiverSupportKey, RiverSectionProfile> sectionCache) {
         long started = AtlasWorldgenProfiler.start();
         try {
             int terrainY = findTopTerrain(level, pos, x, z, Math.min(maxY, heightmapTopY), minY);
             if (terrainY == Integer.MIN_VALUE) {
                 return false;
             }
-            int waterY = effectiveRiverWaterY(level, pos, river, minY, maxY, supportCache);
-            int maximumDepth = Math.max(1, (int) Math.round(river.depthMeters()
-                    / AtlasWorldgenConfig.VERTICAL_METERS_PER_BLOCK.get()));
-            double normalized = Math.min(1.0D, river.distanceToCenterBlocks() / Math.max(0.5D, river.halfWidthBlocks()));
-            double edge = normalized <= 0.55D ? 1.0D : 1.0D - smoothstep((normalized - 0.55D) / 0.45D);
-            int depthBlocks = Math.max(1, (int) Math.round(maximumDepth * edge));
-            int bottomY = Math.max(minY, waterY - depthBlocks);
-            int carveCap = AtlasWorldgenConfig.SURFACE_POLISH_RIVER_MAX_CARVE_ABOVE_WATER_BLOCKS.get();
-            int clearTop = Math.min(maxY, Math.min(Math.max(heightmapTopY, terrainY), waterY + carveCap));
-            boolean changed = false;
 
-            for (int y = bottomY + 1; y <= clearTop; y++) {
+            RiverSectionProfile section = riverSectionProfile(level, pos, river, minY, maxY, sectionCache);
+            int waterY = section.waterY();
+            int maximumDepth = riverMaximumDepthBlocks(river);
+            int depthBlocks = symmetricRiverDepthBlocks(river, maximumDepth);
+            int bottomY = Math.max(minY, waterY - depthBlocks);
+            int existingColumnTopY = Math.min(maxY, Math.max(heightmapTopY, terrainY));
+
+            // The channel mask is authoritative. Remove all old liquid above the new surface and
+            // carve replaceable terrain all the way down to the mirrored bowl. Limiting this to
+            // waterY + N left roofs/bridges of sand over deeply lowered sections.
+            boolean changed = clearRiverLiquidColumn(level, pos, x, z, waterY + 1, existingColumnTopY);
+            for (int y = bottomY + 1; y <= existingColumnTopY; y++) {
                 pos.set(x, y, z);
                 BlockState state = level.getBlockState(pos);
                 if (!state.isAir() && (state.liquid() || isReplaceableTerrainMaterial(state, true)
@@ -255,6 +256,8 @@ public final class AtlasSurfaceMaterialPolisher {
                 }
             }
 
+            // Fill after the bed and side profile exist. Every placed block is a source block and
+            // the complete cross-section shares one section waterY.
             int maxFill = AtlasWorldgenConfig.SURFACE_POLISH_RIVER_MAX_FILL_BLOCKS.get();
             int fillStart = Math.max(bottomY + 1, waterY - maxFill + 1);
             for (int y = fillStart; y <= waterY; y++) {
@@ -274,43 +277,176 @@ public final class AtlasSurfaceMaterialPolisher {
 
     private static boolean finishRiverBankColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
                                                  int heightmapTopY, int minY, int maxY, RiverSample river,
-                                                 Map<RiverSupportKey, Integer> supportCache) {
+                                                 Map<RiverSupportKey, RiverSectionProfile> sectionCache) {
         int terrainY = findTopTerrain(level, pos, x, z, Math.min(maxY, heightmapTopY), minY);
         if (terrainY == Integer.MIN_VALUE) {
             return false;
         }
-        int waterY = effectiveRiverWaterY(level, pos, river, minY, maxY, supportCache);
-        int bankWidth = Math.max(1, AtlasWorldgenConfig.RIVER_BANK_WIDTH_BLOCKS.get());
-        double progress = Math.min(1.0D, river.distanceToBankBlocks() / bankWidth);
-        int targetY = Math.min(maxY, waterY + (int) Math.round(progress * 2.0D));
-        int carve = AtlasWorldgenConfig.SURFACE_POLISH_RIVER_BANK_SMOOTH_CARVE_BLOCKS.get();
-        boolean changed = false;
 
-        if (terrainY > targetY && terrainY - targetY <= carve) {
+        RiverSectionProfile section = riverSectionProfile(level, pos, river, minY, maxY, sectionCache);
+        int bankWidth = Math.max(1, AtlasWorldgenConfig.RIVER_BANK_WIDTH_BLOCKS.get());
+        int lateralBand = Math.max(0, (int) Math.floor(river.distanceToBankBlocks() + 0.5D));
+        double progress = Math.min(1.0D, lateralBand / (double) bankWidth);
+        int targetY = Math.min(maxY, section.bankTopY() + (int) Math.round(2.0D * smoothstep(progress)));
+        int existingColumnTopY = Math.min(maxY, Math.max(heightmapTopY, terrainY));
+        boolean changed = clearRiverLiquidColumn(level, pos, x, z, targetY + 1, existingColumnTopY);
+
+        // The bank target depends only on the section and |distance from center|. Thus opposite
+        // columns get exactly the same Y even when their original terrain heights differ.
+        if (terrainY > targetY) {
             for (int y = terrainY; y > targetY; y--) {
                 pos.set(x, y, z);
                 BlockState state = level.getBlockState(pos);
                 if (isReplaceableTerrainMaterial(state, true) || isIgnoredSurfaceFeature(state)) {
                     changed |= level.setBlock(pos, Blocks.AIR.defaultBlockState(),
                             Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                } else if (!state.isAir() && !state.liquid()) {
+                    break;
                 }
             }
-            terrainY = targetY;
+            terrainY = findTopTerrain(level, pos, x, z, targetY, minY);
         }
 
         BlockState cap = riverBankMaterial(river, progress);
-        changed |= applySurfaceCap(level, pos, x, terrainY, z, minY, cap, true);
+        int maximumDepth = riverMaximumDepthBlocks(river);
+        int sealBottomY = Math.max(minY, section.waterY() - maximumDepth);
+        boolean edgeColumn = lateralBand <= 1;
+        int fillBottom = edgeColumn ? sealBottomY : Math.max(minY, targetY - 3);
+
+        // A one/two-column mirrored rim seals the whole water column. This prevents source water
+        // from falling through caves or flowing below a missing bank while avoiding tall dams in
+        // the outer blend zone.
+        for (int y = fillBottom; y <= targetY; y++) {
+            pos.set(x, y, z);
+            BlockState current = level.getBlockState(pos);
+            if (current.isAir() || current.liquid() || isReplaceableTerrainMaterial(current, true)
+                    || isIgnoredSurfaceFeature(current)) {
+                BlockState replacement = y == targetY ? cap : bankFoundationMaterial(cap);
+                changed |= level.setBlock(pos, replacement,
+                        Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+            }
+        }
+        changed |= applySurfaceCap(level, pos, x, targetY, z, minY, cap, true);
+
+        // Old builds allowed channel source blocks to spread over solid ledges outside the atlas
+        // mask. Repair those waterfall curtains from the outer bank edge, but remove only flowing
+        // water: legitimate source water belonging to lakes/oceans is left untouched.
+        if (progress >= 0.75D) {
+            changed |= clearFlowingRiverOverflow(level, pos, x, z, minY, maxY, river);
+        }
         return changed;
     }
 
-    private static int effectiveRiverWaterY(ServerLevel level, BlockPos.MutableBlockPos pos,
-                                            RiverSample river, int minY, int maxY,
-                                            Map<RiverSupportKey, Integer> supportCache) {
-        int fittedWaterY = AtlasCoordinateMapper.metersToWorldY(river.waterSurfaceMeters());
+    private static boolean clearFlowingRiverOverflow(ServerLevel level, BlockPos.MutableBlockPos pos,
+                                                      int x, int z, int minY, int maxY, RiverSample river) {
+        int cleanup = AtlasWorldgenConfig.SURFACE_POLISH_RIVER_OVERFLOW_CLEANUP_BLOCKS.get();
+        if (cleanup <= 0 || !Double.isFinite(river.centerXBlocks()) || !Double.isFinite(river.centerZBlocks())) {
+            return false;
+        }
+        double normalLength = Math.hypot(river.normalX(), river.normalZ());
+        if (normalLength <= 1.0E-9D) {
+            return false;
+        }
+        double normalX = river.normalX() / normalLength;
+        double normalZ = river.normalZ() / normalLength;
+        double side = ((x + 0.5D) - river.centerXBlocks()) * normalX
+                + ((z + 0.5D) - river.centerZBlocks()) * normalZ;
+        double outwardX = side >= 0.0D ? normalX : -normalX;
+        double outwardZ = side >= 0.0D ? normalZ : -normalZ;
+
+        boolean changed = false;
+        long previousKey = Long.MIN_VALUE;
+        for (int step = 1; step <= cleanup; step++) {
+            int sampleX = (int) Math.round(x + outwardX * step);
+            int sampleZ = (int) Math.round(z + outwardZ * step);
+            long key = ((long) sampleX << 32) ^ (sampleZ & 0xffffffffL);
+            if (key == previousKey) {
+                continue;
+            }
+            previousKey = key;
+
+            RiverSample targetRiver = AtlasRiverIndex.active().sample(sampleX, sampleZ);
+            if (targetRiver.kind() == RiverKind.CHANNEL) {
+                continue;
+            }
+            LevelChunk targetChunk = level.getChunkSource().getChunkNow(Math.floorDiv(sampleX, 16), Math.floorDiv(sampleZ, 16));
+            if (targetChunk == null) {
+                continue;
+            }
+            int localX = Math.floorMod(sampleX, 16);
+            int localZ = Math.floorMod(sampleZ, 16);
+            int topY = Math.min(maxY, targetChunk.getHeight(Heightmap.Types.WORLD_SURFACE, localX, localZ));
+            int terrainY = findTopTerrain(level, pos, sampleX, sampleZ, topY, minY);
+            if (terrainY == Integer.MIN_VALUE) {
+                continue;
+            }
+            for (int y = terrainY + 1; y <= topY; y++) {
+                pos.set(sampleX, y, sampleZ);
+                BlockState state = level.getBlockState(pos);
+                if (state.liquid() && !state.getFluidState().isSource()) {
+                    changed |= level.setBlock(pos, Blocks.AIR.defaultBlockState(),
+                            Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                }
+            }
+        }
+        return changed;
+    }
+
+    private static int riverMaximumDepthBlocks(RiverSample river) {
+        return Math.max(1, (int) Math.round(river.depthMeters()
+                / AtlasWorldgenConfig.VERTICAL_METERS_PER_BLOCK.get()));
+    }
+
+    private static int symmetricRiverDepthBlocks(RiverSample river, int maximumDepth) {
+        int halfWidthBand = Math.max(1, (int) Math.ceil(river.halfWidthBlocks()));
+        int lateralBand = Math.min(halfWidthBand,
+                Math.max(0, (int) Math.floor(river.distanceToCenterBlocks() + 0.5D)));
+        double normalized = lateralBand / (double) halfWidthBand;
+        double bowl = 1.0D - smoothstep(normalized);
+        return 1 + (int) Math.round(Math.max(0, maximumDepth - 1) * bowl);
+    }
+
+    private static BlockState bankFoundationMaterial(BlockState cap) {
+        if (cap.is(Blocks.SAND)) {
+            return Blocks.SANDSTONE.defaultBlockState();
+        }
+        if (cap.is(Blocks.GRASS_BLOCK)) {
+            return Blocks.DIRT.defaultBlockState();
+        }
+        return cap;
+    }
+
+    private static boolean clearRiverLiquidColumn(ServerLevel level, BlockPos.MutableBlockPos pos,
+                                                  int x, int z, int fromY, int toY) {
+        if (fromY > toY) {
+            return false;
+        }
+        boolean changed = false;
+        for (int y = fromY; y <= toY; y++) {
+            pos.set(x, y, z);
+            BlockState state = level.getBlockState(pos);
+            if (state.liquid()) {
+                changed |= level.setBlock(pos, Blocks.AIR.defaultBlockState(),
+                        Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+            }
+        }
+        return changed;
+    }
+
+    private static RiverSectionProfile riverSectionProfile(ServerLevel level, BlockPos.MutableBlockPos pos,
+                                                            RiverSample river, int minY, int maxY,
+                                                            Map<RiverSupportKey, RiverSectionProfile> sectionCache) {
         RiverSupportKey key = RiverSupportKey.of(river);
-        int supportY = supportCache.computeIfAbsent(key,
-                ignored -> riverSupportY(level, pos, river, minY, maxY));
-        return supportY == Integer.MIN_VALUE ? fittedWaterY : Math.min(fittedWaterY, supportY);
+        return sectionCache.computeIfAbsent(key, ignored -> {
+            int fittedWaterY = AtlasCoordinateMapper.metersToWorldY(river.waterSurfaceMeters());
+            int supportY = riverSupportY(level, pos, river, minY, maxY);
+            int clearance = AtlasWorldgenConfig.RIVER_WATER_BELOW_BANK_BLOCKS.get();
+            int waterY = supportY == Integer.MIN_VALUE
+                    ? fittedWaterY
+                    : Math.min(fittedWaterY, supportY - clearance);
+            waterY = Math.max(minY + 1, Math.min(maxY - clearance, waterY));
+            return new RiverSectionProfile(waterY, waterY + clearance);
+        });
     }
 
     private static int riverSupportY(ServerLevel level, BlockPos.MutableBlockPos pos,
@@ -336,16 +472,14 @@ public final class AtlasSurfaceMaterialPolisher {
                                     double normalX, double normalZ, int minY, int maxY) {
         double halfWidth = Math.max(0.5D, river.halfWidthBlocks());
         double bankWidth = Math.max(2.0D, AtlasWorldgenConfig.RIVER_BANK_WIDTH_BLOCKS.get());
-        double step = Math.max(2.0D, AtlasWorldgenConfig.RIVER_REFINE_STEP_BLOCKS.get());
         double[] distances = {
-                halfWidth + 1.0D,
-                halfWidth + Math.max(2.0D, bankWidth * 0.33D),
-                halfWidth + Math.max(3.0D, bankWidth * 0.66D),
-                halfWidth + bankWidth,
-                halfWidth + bankWidth + step
+                halfWidth + 0.75D,
+                halfWidth + 1.5D,
+                halfWidth + Math.max(2.5D, bankWidth * 0.50D),
+                halfWidth + bankWidth
         };
-        int[] supports = new int[distances.length];
-        int count = 0;
+        int minimum = Integer.MAX_VALUE;
+        boolean found = false;
         long previousKey = Long.MIN_VALUE;
         for (double distance : distances) {
             int sampleX = (int) Math.round(river.centerXBlocks() + normalX * distance);
@@ -357,14 +491,11 @@ public final class AtlasSurfaceMaterialPolisher {
             previousKey = key;
             int support = loadedTerrainTop(level, pos, sampleX, sampleZ, minY, maxY);
             if (support != Integer.MIN_VALUE) {
-                supports[count++] = support;
+                minimum = Math.min(minimum, support);
+                found = true;
             }
         }
-        if (count == 0) {
-            return Integer.MIN_VALUE;
-        }
-        java.util.Arrays.sort(supports, 0, count);
-        return supports[Math.min(count - 1, count / 3)];
+        return found ? minimum : Integer.MIN_VALUE;
     }
 
     private static int loadedTerrainTop(ServerLevel level, BlockPos.MutableBlockPos pos,
@@ -379,13 +510,17 @@ public final class AtlasSurfaceMaterialPolisher {
         return findTopTerrain(level, pos, x, z, heightmapTopY, minY);
     }
 
-    private record RiverSupportKey(long riverId, int sectionX, int sectionZ) {
+    private record RiverSectionProfile(int waterY, int bankTopY) {
+    }
+
+    private record RiverSupportKey(long riverId, int sectionIndex) {
         private static RiverSupportKey of(RiverSample river) {
-            // Four-block sections keep one coherent water clamp across a channel cross-section,
-            // while still allowing the river to descend along its course.
-            return new RiverSupportKey(river.riverId(),
-                    Math.floorDiv((int) Math.floor(river.centerXBlocks()), 4),
-                    Math.floorDiv((int) Math.floor(river.centerZBlocks()), 4));
+            // Quantising distance along the centerline (rather than world X/Z) gives both mirrored
+            // sides the exact same section even for diagonal and curved rivers.
+            int section = Double.isFinite(river.alongRiverBlocks())
+                    ? (int) Math.floor(river.alongRiverBlocks() + 0.5D)
+                    : 0;
+            return new RiverSupportKey(river.riverId(), section);
         }
     }
 

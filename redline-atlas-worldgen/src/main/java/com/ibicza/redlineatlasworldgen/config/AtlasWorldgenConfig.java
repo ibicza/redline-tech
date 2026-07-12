@@ -87,6 +87,7 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue RIVER_MAX_DEPTH_BLOCKS;
     public static final ModConfigSpec.DoubleValue RIVER_DEPTH_WIDTH_FACTOR;
     public static final ModConfigSpec.IntValue RIVER_BANK_WIDTH_BLOCKS;
+    public static final ModConfigSpec.IntValue RIVER_WATER_BELOW_BANK_BLOCKS;
     public static final ModConfigSpec.BooleanValue RIVER_PROFILE_SNAP_TO_BLOCK;
     public static final ModConfigSpec.BooleanValue RIVER_FLOW_PHYSICS_ENABLED;
     public static final ModConfigSpec.BooleanValue OPEN_WATER_GUIDE_ENABLED;
@@ -151,6 +152,7 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue SURFACE_POLISH_RIVER_MAX_FILL_BLOCKS;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_RIVER_BANK_SMOOTH_CARVE_BLOCKS;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_RIVER_BANK_MAX_RAISE_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_RIVER_OVERFLOW_CLEANUP_BLOCKS;
     public static final ModConfigSpec.DoubleValue SURFACE_POLISH_RIVER_SAND_DEPTH_METERS;
     public static final ModConfigSpec.DoubleValue SURFACE_POLISH_RIVER_GRAVEL_DEPTH_METERS;
     public static final ModConfigSpec.BooleanValue PROFILER_ENABLED;
@@ -423,6 +425,8 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("depthWidthFactor", 0.22D, 0.01D, 2.0D);
         RIVER_BANK_WIDTH_BLOCKS = builder.comment("Additional land blend/containment width outside each side of the water channel.")
                 .defineInRange("bankWidthBlocks", 6, 0, 128);
+        RIVER_WATER_BELOW_BANK_BLOCKS = builder.comment("Vertical distance from the symmetric channel rim to the river water surface. Allowed values are strictly 0 (same Y) or 1 (one block below); default 1.")
+                .defineInRange("waterBelowBankBlocks", 1, 0, 1);
         RIVER_PROFILE_SNAP_TO_BLOCK = builder.comment("Fit a monotonic downstream profile and snap it down to block levels, producing stable pools separated by deterministic rapids/steps.")
                 .define("snapProfileToBlock", true);
         RIVER_FLOW_PHYSICS_ENABLED = builder.comment("Enable the atlas-dimension water support guard: water resting on water may spread sideways over water/solid support, but not outward over unsupported air.")
@@ -558,6 +562,8 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("riverBankSmoothCarveBlocks", 4, 0, 64);
         SURFACE_POLISH_RIVER_BANK_MAX_RAISE_BLOCKS = builder.comment("Legacy compatibility value. River banks are no longer raised: M31.1 lowers the fitted/runtime river surface to the lower surrounding bank instead.")
                 .defineInRange("riverBankMaxRaiseBlocks", 12, 0, 128);
+        SURFACE_POLISH_RIVER_OVERFLOW_CLEANUP_BLOCKS = builder.comment("Distance outside the fitted river bank where stale non-source flowing water from older builds is removed during surface polish. New atlas river source blocks cannot spread horizontally, so this is primarily a migration/repair pass.")
+                .defineInRange("riverOverflowCleanupBlocks", 16, 0, 128);
         SURFACE_POLISH_RIVER_SAND_DEPTH_METERS = builder.comment("River-bed depth threshold for sand. Very shallow/slow edges use sand.")
                 .defineInRange("riverSandDepthMeters", 3.0D, 0.0D, 128.0D);
         SURFACE_POLISH_RIVER_GRAVEL_DEPTH_METERS = builder.comment("River-bed depth threshold for gravel. Deeper channels use clay below this threshold.")

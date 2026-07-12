@@ -2,6 +2,8 @@ package com.ibicza.redlineatlasworldgen.mixin;
 
 import com.ibicza.redlineatlasworldgen.config.AtlasWorldgenConfig;
 import com.ibicza.redlineatlasworldgen.river.AtlasRiverIndex;
+import com.ibicza.redlineatlasworldgen.river.RiverKind;
+import com.ibicza.redlineatlasworldgen.river.RiverSample;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
@@ -26,10 +28,25 @@ public abstract class FlowingFluidMixin {
                                                                 CallbackInfoReturnable<Map<Direction, FluidState>> cir) {
         if (!AtlasWorldgenConfig.RIVER_FLOW_PHYSICS_ENABLED.get()
                 || !((Object) this instanceof WaterFluid)
-                || (AtlasWorldgenConfig.OVERWORLD_ONLY.get() && level.dimension() != Level.OVERWORLD)
-                || !AtlasRiverIndex.active().sample(pos.getX(), pos.getZ()).hasRiverData()) {
+                || (AtlasWorldgenConfig.OVERWORLD_ONLY.get() && level.dimension() != Level.OVERWORLD)) {
             return;
         }
+
+        RiverSample river = AtlasRiverIndex.active().sample(pos.getX(), pos.getZ());
+        if (!river.hasRiverData()) {
+            return;
+        }
+
+        // Atlas river columns are already filled explicitly with source blocks after their bed and
+        // mirrored banks are built. Vanilla horizontal spreading is therefore both unnecessary and
+        // harmful: a source block can otherwise walk onto a high solid ledge outside the channel,
+        // then pour down as a many-block waterfall wall far above the fitted gravel rim. Keep the
+        // authoritative channel water exactly inside its rasterised cross-section.
+        if (river.kind() == RiverKind.CHANNEL) {
+            cir.setReturnValue(Map.of());
+            return;
+        }
+
         if (!level.getFluidState(pos.below()).is(FluidTags.WATER)) {
             return;
         }
