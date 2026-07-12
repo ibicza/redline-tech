@@ -46,6 +46,10 @@ neoForge {
     runs {
         client {
             client()
+
+            jvmArgument '-Xms4G'
+            jvmArgument '-Xmx16G'
+
             systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
         }
 
@@ -138,7 +142,7 @@ publishing {
     }
     repositories {
         maven {
-            url = uri("file://${project.projectDir}/repo")
+            url = file("repo").toURI()
         }
     }
 }
