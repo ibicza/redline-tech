@@ -452,7 +452,7 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("waterBelowBankBlocks", 1, 0, 1);
         RIVER_PROFILE_SNAP_TO_BLOCK = builder.comment("Fit a monotonic downstream profile and snap it down to block levels, producing stable pools separated by deterministic rapids/steps.")
                 .define("snapProfileToBlock", true);
-        RIVER_FLOW_PHYSICS_ENABLED = builder.comment("Enable the atlas-dimension water support guard: water resting on water may spread sideways over water/solid support, but not outward over unsupported air.")
+        RIVER_FLOW_PHYSICS_ENABLED = builder.comment("Enable atlas river containment and the overworld water support guard: water resting on water may spread sideways over water/solid support, but not outward over unsupported air.")
                 .define("flowPhysicsEnabled", true);
         builder.pop();
 

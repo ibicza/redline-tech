@@ -24,8 +24,8 @@ import java.util.Map;
 @Mixin(FlowingFluid.class)
 public abstract class FlowingFluidMixin {
     @Inject(method = "getSpread", at = @At("RETURN"), cancellable = true)
-    private void redlineAtlasWorldgen$keepRiverSurfaceSupported(ServerLevel level, BlockPos pos, BlockState state,
-                                                                CallbackInfoReturnable<Map<Direction, FluidState>> cir) {
+    private void redlineAtlasWorldgen$controlSupportedWaterSpread(ServerLevel level, BlockPos pos, BlockState state,
+                                                                  CallbackInfoReturnable<Map<Direction, FluidState>> cir) {
         if (!AtlasWorldgenConfig.RIVER_FLOW_PHYSICS_ENABLED.get()
                 || !((Object) this instanceof WaterFluid)
                 || (AtlasWorldgenConfig.OVERWORLD_ONLY.get() && level.dimension() != Level.OVERWORLD)) {
@@ -33,16 +33,12 @@ public abstract class FlowingFluidMixin {
         }
 
         RiverSample river = AtlasRiverIndex.active().sample(pos.getX(), pos.getZ());
-        if (!river.hasRiverData()) {
-            return;
-        }
-
         // Atlas river columns are already filled explicitly with source blocks after their bed and
         // mirrored banks are built. Vanilla horizontal spreading is therefore both unnecessary and
         // harmful: a source block can otherwise walk onto a high solid ledge outside the channel,
         // then pour down as a many-block waterfall wall far above the fitted gravel rim. Keep the
         // authoritative channel water exactly inside its rasterised cross-section.
-        if (river.kind() == RiverKind.CHANNEL) {
+        if (river.hasRiverData() && river.kind() == RiverKind.CHANNEL) {
             cir.setReturnValue(Map.of());
             return;
         }

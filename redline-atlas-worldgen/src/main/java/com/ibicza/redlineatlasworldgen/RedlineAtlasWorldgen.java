@@ -1,6 +1,7 @@
 package com.ibicza.redlineatlasworldgen;
 
 import com.ibicza.redlineatlasworldgen.config.AtlasWorldgenConfig;
+import com.ibicza.redlineatlasworldgen.gametest.WaterSurfaceFlowGameTests;
 import com.mojang.logging.LogUtils;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
@@ -15,6 +16,7 @@ public final class RedlineAtlasWorldgen {
 
     public RedlineAtlasWorldgen(IEventBus modEventBus, ModContainer modContainer) {
         modContainer.registerConfig(ModConfig.Type.SERVER, AtlasWorldgenConfig.SPEC, MOD_ID + "-server.toml");
+        WaterSurfaceFlowGameTests.register(modEventBus);
         LOGGER.info("Loading Redline Atlas Worldgen");
     }
 }
