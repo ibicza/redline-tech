@@ -4,6 +4,7 @@
   "package": "com.ibicza.redlineatlasworldgen.mixin",
   "compatibilityLevel": "JAVA_25",
   "mixins": [
+    "BeardifierMixin",
     "ChunkStatusTasksMixin",
     "FlowingFluidMixin",
     "NoiseChunkMixin",

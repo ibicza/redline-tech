@@ -26,6 +26,7 @@ import java.util.concurrent.ConcurrentMap;
 public final class AtlasNoiseContext {
     private static final ConcurrentMap<Long, ChunkInfo> GENERATING_CHUNKS = new ConcurrentHashMap<>();
     private static final ThreadLocal<Deque<ChunkInfo>> STRUCTURE_QUERY_CONTEXT = new ThreadLocal<>();
+    private static final ThreadLocal<Integer> BEARDIFIER_QUERY_DEPTH = new ThreadLocal<>();
 
     public static void register(ChunkPos pos, ResourceKey<Level> dimension) {
         register(pos, dimension, 0L, null);
@@ -99,6 +100,35 @@ public final class AtlasNoiseContext {
 
     public static boolean shouldGuideStructures(ResourceKey<Level> dimension) {
         return AtlasWorldgenConfig.STRUCTURE_HEIGHT_GUIDE_ENABLED.get() && shouldGuideNoise(dimension);
+    }
+
+    /**
+     * Marks evaluation of vanilla structure terrain adaptation (the Beardifier density term).
+     *
+     * <p>The atlas guide shifts the Y coordinate seen by normal terrain density functions. Once
+     * structure starts themselves are placed at atlas-correct world Y, Beardifier bounding boxes
+     * and jigsaw junctions are already expressed in that same world-space coordinate system. They
+     * must therefore read the original world Y rather than the atlas-shifted density-space Y, or
+     * their terrain support is displaced a second time and becomes a floating island above/below
+     * the actual structure.</p>
+     */
+    public static void beginBeardifierQuery() {
+        Integer depth = BEARDIFIER_QUERY_DEPTH.get();
+        BEARDIFIER_QUERY_DEPTH.set(depth == null ? 1 : depth + 1);
+    }
+
+    public static void endBeardifierQuery() {
+        Integer current = BEARDIFIER_QUERY_DEPTH.get();
+        if (current == null || current <= 1) {
+            BEARDIFIER_QUERY_DEPTH.remove();
+        } else {
+            BEARDIFIER_QUERY_DEPTH.set(current - 1);
+        }
+    }
+
+    public static boolean isBeardifierQuery() {
+        Integer depth = BEARDIFIER_QUERY_DEPTH.get();
+        return depth != null && depth > 0;
     }
 
     public static OptionalLong seedFor(ChunkPos pos) {

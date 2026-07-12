@@ -48,6 +48,13 @@ public abstract class NoiseChunkMixin implements AtlasNoiseChunkBridge {
 
     @Inject(method = "blockY", at = @At("RETURN"), cancellable = true)
     private void redlineAtlasWorldgen$shiftDensityY(CallbackInfoReturnable<Integer> cir) {
+        // Structure pieces/junctions stored by vanilla are already at atlas-correct world Y after
+        // the structure-height guide. Beardifier must compare against that unshifted world Y;
+        // applying the density shift again moves its support terrain into a floating island.
+        if (AtlasNoiseContext.isBeardifierQuery()
+                && AtlasNoiseContext.shouldGuideStructures(this.redlineAtlasWorldgen$atlasDimension)) {
+            return;
+        }
         if (!AtlasNoiseContext.shouldGuide(this.redlineAtlasWorldgen$atlasDimension)) {
             return;
         }
