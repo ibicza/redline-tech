@@ -301,10 +301,16 @@ public final class AtlasSurfaceMaterialPolisher {
             int bottomY = Math.max(minY, waterY - depthBlocks);
             int existingColumnTopY = Math.min(maxY, Math.max(heightmapTopY, terrainY));
 
+            // Features are generated after terrain/surface shaping, so a later river pass can cut
+            // the ground out from under trees and plants. Clear the complete river column before
+            // carving/filling; otherwise logs, leaves, flowers and grass remain suspended above
+            // the new channel even though findTopTerrain intentionally ignores them.
+            boolean changed = clearRiverVegetationColumn(level, pos, x, z, waterY + 1, existingColumnTopY);
+
             // The channel mask is authoritative. Remove all old liquid above the new surface and
             // carve replaceable terrain all the way down to the mirrored bowl. Limiting this to
             // waterY + N left roofs/bridges of sand over deeply lowered sections.
-            boolean changed = clearRiverLiquidColumn(level, pos, x, z, waterY + 1, existingColumnTopY);
+            changed |= clearRiverLiquidColumn(level, pos, x, z, waterY + 1, existingColumnTopY);
             for (int y = bottomY + 1; y <= existingColumnTopY; y++) {
                 pos.set(x, y, z);
                 BlockState state = level.getBlockState(pos);
@@ -316,15 +322,7 @@ public final class AtlasSurfaceMaterialPolisher {
             }
 
             BlockState bed = riverBottomMaterial(river, depthBlocks);
-            int bedLayers = Math.min(3, Math.max(1, depthBlocks));
-            for (int y = bottomY; y >= Math.max(minY, bottomY - bedLayers + 1); y--) {
-                pos.set(x, y, z);
-                BlockState current = level.getBlockState(pos);
-                if (isReplaceableTerrainMaterial(current, true) || current.isAir() || current.liquid()) {
-                    changed |= level.setBlock(pos, bed,
-                            Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
-                }
-            }
+            changed |= buildRiverBed(level, pos, x, z, bottomY, minY, depthBlocks, bed);
 
             // Fill after the bed and side profile exist. Every placed block is a source block and
             // the complete cross-section shares one section waterY.
@@ -358,7 +356,8 @@ public final class AtlasSurfaceMaterialPolisher {
         double progress = Math.min(1.0D, lateralBand / (double) bankWidth);
         int targetY = Math.min(maxY, section.bankTopY() + (int) Math.round(2.0D * smoothstep(progress)));
         int existingColumnTopY = Math.min(maxY, Math.max(heightmapTopY, terrainY));
-        boolean changed = clearRiverLiquidColumn(level, pos, x, z, targetY + 1, existingColumnTopY);
+        boolean changed = clearRiverVegetationColumn(level, pos, x, z, targetY + 1, existingColumnTopY);
+        changed |= clearRiverLiquidColumn(level, pos, x, z, targetY + 1, existingColumnTopY);
 
         // The bank target depends only on the section and |distance from center|. Thus opposite
         // columns get exactly the same Y even when their original terrain heights differ.
@@ -380,7 +379,13 @@ public final class AtlasSurfaceMaterialPolisher {
         int maximumDepth = riverMaximumDepthBlocks(river);
         int sealBottomY = Math.max(minY, section.waterY() - maximumDepth);
         boolean edgeColumn = lateralBand <= 1;
+        int looseFoundationDepth = isLooseRiverMaterial(cap)
+                ? riverLooseFoundationDepthBlocks(x, z)
+                : 0;
         int fillBottom = edgeColumn ? sealBottomY : Math.max(minY, targetY - 3);
+        if (looseFoundationDepth > 0) {
+            fillBottom = Math.min(fillBottom, Math.max(minY, targetY - looseFoundationDepth));
+        }
 
         // A one/two-column mirrored rim seals the whole water column. This prevents source water
         // from falling through caves or flowing below a missing bank while avoiding tall dams in
@@ -390,12 +395,18 @@ public final class AtlasSurfaceMaterialPolisher {
             BlockState current = level.getBlockState(pos);
             if (current.isAir() || current.liquid() || isReplaceableTerrainMaterial(current, true)
                     || isIgnoredSurfaceFeature(current)) {
-                BlockState replacement = y == targetY ? cap : bankFoundationMaterial(cap);
+                BlockState replacement;
+                if (y == targetY) {
+                    replacement = cap;
+                } else if (looseFoundationDepth > 0 && y >= targetY - looseFoundationDepth) {
+                    replacement = Blocks.CLAY.defaultBlockState();
+                } else {
+                    replacement = bankFoundationMaterial(cap);
+                }
                 changed |= level.setBlock(pos, replacement,
                         Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
             }
         }
-        changed |= applySurfaceCap(level, pos, x, targetY, z, minY, cap, true);
 
         // Old builds allowed channel source blocks to spread over solid ledges outside the atlas
         // mask. Repair those waterfall curtains from the outer bank edge, but remove only flowing
@@ -475,14 +486,105 @@ public final class AtlasSurfaceMaterialPolisher {
         return 1 + (int) Math.round(Math.max(0, maximumDepth - 1) * bowl);
     }
 
+    private static boolean buildRiverBed(ServerLevel level, BlockPos.MutableBlockPos pos,
+                                         int x, int z, int bottomY, int minY,
+                                         int depthBlocks, BlockState bed) {
+        boolean changed = false;
+
+        if (isLooseRiverMaterial(bed)) {
+            // Falling blocks must never be placed first. Build a deterministic 2-4 block clay
+            // footing from the bottom up, then place the visible sand/gravel cap last. Even if a
+            // cave opens directly below the footing, clay remains stable and the riverbed cannot
+            // collapse into items or leave holes in the water column.
+            int foundationDepth = riverLooseFoundationDepthBlocks(x, z);
+            int foundationBottomY = Math.max(minY, bottomY - foundationDepth);
+            for (int y = foundationBottomY; y < bottomY; y++) {
+                pos.set(x, y, z);
+                BlockState current = level.getBlockState(pos);
+                if (current.isAir() || current.liquid() || isReplaceableTerrainMaterial(current, true)
+                        || isIgnoredSurfaceFeature(current)) {
+                    changed |= level.setBlock(pos, Blocks.CLAY.defaultBlockState(),
+                            Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                }
+            }
+
+            pos.set(x, bottomY, z);
+            BlockState current = level.getBlockState(pos);
+            if (current.isAir() || current.liquid() || isReplaceableTerrainMaterial(current, true)
+                    || isIgnoredSurfaceFeature(current)) {
+                changed |= level.setBlock(pos, bed,
+                        Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+            }
+            return changed;
+        }
+
+        int bedLayers = Math.min(3, Math.max(1, depthBlocks));
+        for (int y = bottomY; y >= Math.max(minY, bottomY - bedLayers + 1); y--) {
+            pos.set(x, y, z);
+            BlockState current = level.getBlockState(pos);
+            if (isReplaceableTerrainMaterial(current, true) || current.isAir() || current.liquid()
+                    || isIgnoredSurfaceFeature(current)) {
+                changed |= level.setBlock(pos, bed,
+                        Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+            }
+        }
+        return changed;
+    }
+
+    private static int riverLooseFoundationDepthBlocks(int x, int z) {
+        int configuredMin = AtlasWorldgenConfig.SURFACE_POLISH_RIVER_LOOSE_FOUNDATION_MIN_BLOCKS.get();
+        int configuredMax = AtlasWorldgenConfig.SURFACE_POLISH_RIVER_LOOSE_FOUNDATION_MAX_BLOCKS.get();
+        int min = Math.max(1, Math.min(configuredMin, configuredMax));
+        int max = Math.max(min, Math.max(configuredMin, configuredMax));
+        int range = max - min + 1;
+        if (range <= 1) {
+            return min;
+        }
+
+        long mixed = (long) x * 0x9E3779B97F4A7C15L ^ (long) z * 0xC2B2AE3D27D4EB4FL;
+        mixed ^= mixed >>> 33;
+        mixed *= 0xFF51AFD7ED558CCDL;
+        mixed ^= mixed >>> 33;
+        return min + (int) Math.floorMod(mixed, (long) range);
+    }
+
+    private static boolean isLooseRiverMaterial(BlockState state) {
+        return state.is(Blocks.SAND)
+                || state.is(Blocks.RED_SAND)
+                || state.is(Blocks.GRAVEL);
+    }
+
     private static BlockState bankFoundationMaterial(BlockState cap) {
         if (cap.is(Blocks.SAND)) {
             return Blocks.SANDSTONE.defaultBlockState();
+        }
+        if (cap.is(Blocks.RED_SAND)) {
+            return Blocks.RED_SANDSTONE.defaultBlockState();
+        }
+        if (cap.is(Blocks.GRAVEL)) {
+            return Blocks.STONE.defaultBlockState();
         }
         if (cap.is(Blocks.GRASS_BLOCK)) {
             return Blocks.DIRT.defaultBlockState();
         }
         return cap;
+    }
+
+    private static boolean clearRiverVegetationColumn(ServerLevel level, BlockPos.MutableBlockPos pos,
+                                                       int x, int z, int fromY, int toY) {
+        if (fromY > toY) {
+            return false;
+        }
+        boolean changed = false;
+        for (int y = fromY; y <= toY; y++) {
+            pos.set(x, y, z);
+            BlockState state = level.getBlockState(pos);
+            if (!state.isAir() && !state.liquid() && isIgnoredSurfaceFeature(state)) {
+                changed |= level.setBlock(pos, Blocks.AIR.defaultBlockState(),
+                        Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+            }
+        }
+        return changed;
     }
 
     private static boolean clearRiverLiquidColumn(ServerLevel level, BlockPos.MutableBlockPos pos,

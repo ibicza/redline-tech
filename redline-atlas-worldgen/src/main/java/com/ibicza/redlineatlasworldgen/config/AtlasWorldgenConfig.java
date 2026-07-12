@@ -155,6 +155,8 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue SURFACE_POLISH_RIVER_BANK_SMOOTH_CARVE_BLOCKS;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_RIVER_BANK_MAX_RAISE_BLOCKS;
     public static final ModConfigSpec.IntValue SURFACE_POLISH_RIVER_OVERFLOW_CLEANUP_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_RIVER_LOOSE_FOUNDATION_MIN_BLOCKS;
+    public static final ModConfigSpec.IntValue SURFACE_POLISH_RIVER_LOOSE_FOUNDATION_MAX_BLOCKS;
     public static final ModConfigSpec.DoubleValue SURFACE_POLISH_RIVER_SAND_DEPTH_METERS;
     public static final ModConfigSpec.DoubleValue SURFACE_POLISH_RIVER_GRAVEL_DEPTH_METERS;
     public static final ModConfigSpec.BooleanValue PROFILER_ENABLED;
@@ -570,6 +572,10 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("riverBankMaxRaiseBlocks", 12, 0, 128);
         SURFACE_POLISH_RIVER_OVERFLOW_CLEANUP_BLOCKS = builder.comment("Distance outside the fitted river bank where stale non-source flowing water from older builds is removed during surface polish. New atlas river source blocks cannot spread horizontally, so this is primarily a migration/repair pass.")
                 .defineInRange("riverOverflowCleanupBlocks", 16, 0, 128);
+        SURFACE_POLISH_RIVER_LOOSE_FOUNDATION_MIN_BLOCKS = builder.comment("Minimum clay support thickness placed directly below river sand/gravel. The support is created before the falling cap so riverbeds and banks cannot collapse into caves.")
+                .defineInRange("riverLooseFoundationMinBlocks", 2, 1, 32);
+        SURFACE_POLISH_RIVER_LOOSE_FOUNDATION_MAX_BLOCKS = builder.comment("Maximum deterministic clay support thickness placed below river sand/gravel. Values are selected per column between min and max so the foundation does not form a perfectly uniform artificial sheet.")
+                .defineInRange("riverLooseFoundationMaxBlocks", 4, 1, 32);
         SURFACE_POLISH_RIVER_SAND_DEPTH_METERS = builder.comment("River-bed depth threshold for sand. Very shallow/slow edges use sand.")
                 .defineInRange("riverSandDepthMeters", 3.0D, 0.0D, 128.0D);
         SURFACE_POLISH_RIVER_GRAVEL_DEPTH_METERS = builder.comment("River-bed depth threshold for gravel. Deeper channels use clay below this threshold.")
