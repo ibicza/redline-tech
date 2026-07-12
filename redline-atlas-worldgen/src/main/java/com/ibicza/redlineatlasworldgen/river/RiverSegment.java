@@ -13,10 +13,10 @@ final class RiverSegment {
     private final double[] waterMeters;
     private final double[] depthMeters;
     private final boolean[] worldcoverWater;
-    private final double minX;
-    private final double maxX;
-    private final double minZ;
-    private final double maxZ;
+    private double minX;
+    private double maxX;
+    private double minZ;
+    private double maxZ;
 
     RiverSegment(String sourceId, HydroRiverAttributes attributes, double[] x, double[] z,
                  double[] widthBlocks, double[] waterMeters, double[] depthMeters,
@@ -35,6 +35,10 @@ final class RiverSegment {
         this.depthMeters = depthMeters;
         this.worldcoverWater = worldcoverWater;
 
+        recomputeBounds();
+    }
+
+    private void recomputeBounds() {
         double localMinX = Double.POSITIVE_INFINITY;
         double localMaxX = Double.NEGATIVE_INFINITY;
         double localMinZ = Double.POSITIVE_INFINITY;
@@ -46,10 +50,10 @@ final class RiverSegment {
             localMinZ = Math.min(localMinZ, z[i] - expansion);
             localMaxZ = Math.max(localMaxZ, z[i] + expansion);
         }
-        minX = localMinX;
-        maxX = localMaxX;
-        minZ = localMinZ;
-        maxZ = localMaxZ;
+        this.minX = localMinX;
+        this.maxX = localMaxX;
+        this.minZ = localMinZ;
+        this.maxZ = localMaxZ;
     }
 
     RiverSample sample(double blockX, double blockZ) {
@@ -224,8 +228,56 @@ final class RiverSegment {
 
     void lowerEndTo(double meters) {
         waterMeters[waterMeters.length - 1] = Math.min(waterMeters[waterMeters.length - 1], meters);
+        enforceLowerOnlyApproach();
+        enforceNonIncreasing();
+    }
+
+    void lowerApproachTo(double meters) {
+        lowerEndTo(meters);
+    }
+
+    void snapEndTo(double targetX, double targetZ) {
+        x[x.length - 1] = targetX;
+        z[z.length - 1] = targetZ;
+        recomputeBounds();
+    }
+
+    void flareEndTo(RiverSegment downstream) {
+        int last = widthBlocks.length - 1;
+        widthBlocks[last] = Math.max(widthBlocks[last], downstream.widthBlocks[0]);
+        depthMeters[last] = Math.max(depthMeters[last], downstream.depthMeters[0]);
+        worldcoverWater[last] |= downstream.worldcoverWater[0];
+        recomputeBounds();
+    }
+
+    double startX() {
+        return x[0];
+    }
+
+    double startZ() {
+        return z[0];
+    }
+
+    double endX() {
+        return x[x.length - 1];
+    }
+
+    double endZ() {
+        return z[z.length - 1];
+    }
+
+    double startDistanceSq(RiverSegment other) {
+        return square(startX() - other.startX()) + square(startZ() - other.startZ());
+    }
+
+    private void enforceLowerOnlyApproach() {
+        double verticalMeters = Math.max(0.001D, AtlasWorldgenConfig.VERTICAL_METERS_PER_BLOCK.get());
+        final double horizontalBlocksPerDropBlock = 8.0D;
         for (int i = waterMeters.length - 2; i >= 0; i--) {
-            waterMeters[i] = Math.max(waterMeters[i], waterMeters[i + 1]);
+            double distance = Math.max(1.0D, Math.hypot(x[i + 1] - x[i], z[i + 1] - z[i]));
+            double allowedRiseMeters = Math.max(verticalMeters,
+                    distance / horizontalBlocksPerDropBlock * verticalMeters);
+            waterMeters[i] = Math.min(waterMeters[i], waterMeters[i + 1] + allowedRiseMeters);
         }
     }
 

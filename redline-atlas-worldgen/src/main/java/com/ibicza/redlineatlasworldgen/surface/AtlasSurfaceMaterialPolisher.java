@@ -30,9 +30,7 @@ import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.Heightmap;
 
 import java.util.ArrayDeque;
-import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -41,14 +39,74 @@ public final class AtlasSurfaceMaterialPolisher {
     private static final Set<Long> QUEUED_KEYS = new HashSet<>();
 
     public static void enqueue(ServerLevel level, ChunkPos pos, boolean newChunk) {
-        enqueue(level, pos, newChunk, false);
+        enqueue(level, pos, newChunk, false, 0);
     }
 
     public static void enqueueForced(ServerLevel level, ChunkPos pos) {
-        enqueue(level, pos, false, true);
+        enqueue(level, pos, false, true, 0);
     }
 
-    private static void enqueue(ServerLevel level, ChunkPos pos, boolean newChunk, boolean force) {
+    public static void enqueueRiverBoundaryNeighbors(ServerLevel level, ChunkPos pos, boolean newChunk) {
+        if (!newChunk || !AtlasWorldgenConfig.SURFACE_POLISH_ENABLED.get()) {
+            return;
+        }
+        if (AtlasWorldgenConfig.OVERWORLD_ONLY.get() && level.dimension() != Level.OVERWORLD) {
+            return;
+        }
+        enqueueRiverBoundaryNeighbor(level, pos, -1, 0);
+        enqueueRiverBoundaryNeighbor(level, pos, 1, 0);
+        enqueueRiverBoundaryNeighbor(level, pos, 0, -1);
+        enqueueRiverBoundaryNeighbor(level, pos, 0, 1);
+    }
+
+    private static void enqueueRiverBoundaryNeighbor(ServerLevel level, ChunkPos pos, int dx, int dz) {
+        ChunkPos neighbor = new ChunkPos(pos.x() + dx, pos.z() + dz);
+        if (level.getChunkSource().getChunkNow(neighbor.x(), neighbor.z()) == null) {
+            return;
+        }
+        if (sharedBoundaryHasRiver(pos, dx, dz)) {
+            enqueue(level, neighbor, false, true, 0);
+        }
+    }
+
+    private static boolean sharedBoundaryHasRiver(ChunkPos pos, int dx, int dz) {
+        int minX = pos.getMinBlockX();
+        int minZ = pos.getMinBlockZ();
+        for (int i = 0; i < 16; i++) {
+            int x;
+            int z;
+            int neighborX;
+            int neighborZ;
+            if (dx < 0) {
+                x = minX;
+                z = minZ + i;
+                neighborX = x - 1;
+                neighborZ = z;
+            } else if (dx > 0) {
+                x = minX + 15;
+                z = minZ + i;
+                neighborX = x + 1;
+                neighborZ = z;
+            } else if (dz < 0) {
+                x = minX + i;
+                z = minZ;
+                neighborX = x;
+                neighborZ = z - 1;
+            } else {
+                x = minX + i;
+                z = minZ + 15;
+                neighborX = x;
+                neighborZ = z + 1;
+            }
+            if (AtlasRiverIndex.active().sample(x, z).kind() == RiverKind.CHANNEL
+                    || AtlasRiverIndex.active().sample(neighborX, neighborZ).kind() == RiverKind.CHANNEL) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void enqueue(ServerLevel level, ChunkPos pos, boolean newChunk, boolean force, int nextColumn) {
         if (!AtlasWorldgenConfig.SURFACE_POLISH_ENABLED.get()) {
             return;
         }
@@ -61,7 +119,16 @@ public final class AtlasSurfaceMaterialPolisher {
         long key = key(level.dimension(), pos);
         synchronized (QUEUE) {
             if (QUEUED_KEYS.add(key)) {
-                QUEUE.addLast(new QueuedSurfaceChunk(level.dimension(), pos));
+                QUEUE.addLast(new QueuedSurfaceChunk(level.dimension(), pos, Math.max(0, Math.min(256, nextColumn))));
+            }
+        }
+    }
+
+    private static void enqueueContinuation(ResourceKey<Level> dimension, ChunkPos pos, int nextColumn) {
+        long key = key(dimension, pos);
+        synchronized (QUEUE) {
+            if (QUEUED_KEYS.add(key)) {
+                QUEUE.addFirst(new QueuedSurfaceChunk(dimension, pos, Math.max(0, Math.min(256, nextColumn))));
             }
         }
     }
@@ -90,7 +157,11 @@ public final class AtlasSurfaceMaterialPolisher {
             if (chunk == null) {
                 continue;
             }
-            columnsBudget -= polishChunk(level, chunk, columnsBudget);
+            PolishResult result = polishChunk(level, chunk, columnsBudget, queued.nextColumn());
+            columnsBudget -= result.visitedColumns();
+            if (!result.complete()) {
+                enqueueContinuation(queued.dimension(), queued.pos(), result.nextColumn());
+            }
             chunksBudget--;
         }
         AtlasWorldgenProfiler.recordSince("surfacePolish.tick", started);
@@ -102,7 +173,7 @@ public final class AtlasSurfaceMaterialPolisher {
         }
     }
 
-    private static int polishChunk(ServerLevel level, LevelChunk chunk, int maxColumns) {
+    private static PolishResult polishChunk(ServerLevel level, LevelChunk chunk, int maxColumns, int startColumn) {
         long started = AtlasWorldgenProfiler.start();
         ChunkPos pos = chunk.getPos();
         int minY = level.getMinY();
@@ -112,21 +183,22 @@ public final class AtlasSurfaceMaterialPolisher {
         int visited = 0;
         boolean changed = false;
         BlockPos.MutableBlockPos mutable = new BlockPos.MutableBlockPos();
-        Map<RiverSupportKey, RiverSectionProfile> riverSectionCache = new HashMap<>();
 
-        for (int localZ = 0; localZ < 16; localZ++) {
-            for (int localX = 0; localX < 16; localX++) {
-                if (visited >= maxColumns) {
-                    if (changed) {
-                        chunk.markUnsaved();
-                    }
-                    AtlasWorldgenProfiler.recordSince("surfacePolish.chunk", started);
-                    return visited;
+        int start = Math.max(0, Math.min(256, startColumn));
+        for (int column = start; column < 256; column++) {
+            if (visited >= maxColumns) {
+                if (changed) {
+                    chunk.markUnsaved();
                 }
-                visited++;
+                AtlasWorldgenProfiler.recordSince("surfacePolish.chunk", started);
+                return new PolishResult(visited, column, false);
+            }
+            visited++;
 
-                int blockX = pos.getMinBlockX() + localX;
-                int blockZ = pos.getMinBlockZ() + localZ;
+            int localX = column & 15;
+            int localZ = column >>> 4;
+            int blockX = pos.getMinBlockX() + localX;
+            int blockZ = pos.getMinBlockZ() + localZ;
                 int heightmapTopY = Math.min(maxY, chunk.getHeight(Heightmap.Types.WORLD_SURFACE, localX, localZ));
                 AtlasOpenWaterGuide.OpenWaterSample water = waterForSurface(blockX, blockZ);
                 LakeSample lake = lakeForSurface(blockX, blockZ);
@@ -141,14 +213,14 @@ public final class AtlasSurfaceMaterialPolisher {
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_RIVER_WATER.get()
                         && river.kind() == RiverKind.CHANNEL) {
                     changed |= finishRiverColumn(level, mutable, blockX, blockZ, heightmapTopY,
-                            minY, maxY, river, riverSectionCache);
+                            minY, maxY, river);
                     continue;
                 }
 
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_RIVER_WATER.get()
                         && river.kind() == RiverKind.BANK) {
                     changed |= finishRiverBankColumn(level, mutable, blockX, blockZ, heightmapTopY,
-                            minY, maxY, river, riverSectionCache);
+                            minY, maxY, river);
                     continue;
                 }
 
@@ -183,13 +255,12 @@ public final class AtlasSurfaceMaterialPolisher {
 
                 boolean replaceSoft = shouldReplaceSoftSurface(replacement);
                 changed |= applySurfaceCap(level, mutable, blockX, terrainY, blockZ, minY, replacement, replaceSoft);
-            }
         }
         if (changed) {
             chunk.markUnsaved();
         }
         AtlasWorldgenProfiler.recordSince("surfacePolish.chunk", started);
-        return visited;
+        return new PolishResult(visited, 256, true);
     }
 
     private static AtlasOpenWaterGuide.OpenWaterSample waterForSurface(int blockX, int blockZ) {
@@ -215,8 +286,7 @@ public final class AtlasSurfaceMaterialPolisher {
     }
 
     private static boolean finishRiverColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
-                                             int heightmapTopY, int minY, int maxY, RiverSample river,
-                                             Map<RiverSupportKey, RiverSectionProfile> sectionCache) {
+                                             int heightmapTopY, int minY, int maxY, RiverSample river) {
         long started = AtlasWorldgenProfiler.start();
         try {
             int terrainY = findTopTerrain(level, pos, x, z, Math.min(maxY, heightmapTopY), minY);
@@ -224,7 +294,7 @@ public final class AtlasSurfaceMaterialPolisher {
                 return false;
             }
 
-            RiverSectionProfile section = riverSectionProfile(level, pos, river, minY, maxY, sectionCache);
+            RiverSectionProfile section = riverSectionProfile(river, minY, maxY);
             int waterY = section.waterY();
             int maximumDepth = riverMaximumDepthBlocks(river);
             int depthBlocks = symmetricRiverDepthBlocks(river, maximumDepth);
@@ -276,14 +346,13 @@ public final class AtlasSurfaceMaterialPolisher {
     }
 
     private static boolean finishRiverBankColumn(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z,
-                                                 int heightmapTopY, int minY, int maxY, RiverSample river,
-                                                 Map<RiverSupportKey, RiverSectionProfile> sectionCache) {
+                                                 int heightmapTopY, int minY, int maxY, RiverSample river) {
         int terrainY = findTopTerrain(level, pos, x, z, Math.min(maxY, heightmapTopY), minY);
         if (terrainY == Integer.MIN_VALUE) {
             return false;
         }
 
-        RiverSectionProfile section = riverSectionProfile(level, pos, river, minY, maxY, sectionCache);
+        RiverSectionProfile section = riverSectionProfile(river, minY, maxY);
         int bankWidth = Math.max(1, AtlasWorldgenConfig.RIVER_BANK_WIDTH_BLOCKS.get());
         int lateralBand = Math.max(0, (int) Math.floor(river.distanceToBankBlocks() + 0.5D));
         double progress = Math.min(1.0D, lateralBand / (double) bankWidth);
@@ -433,95 +502,14 @@ public final class AtlasSurfaceMaterialPolisher {
         return changed;
     }
 
-    private static RiverSectionProfile riverSectionProfile(ServerLevel level, BlockPos.MutableBlockPos pos,
-                                                            RiverSample river, int minY, int maxY,
-                                                            Map<RiverSupportKey, RiverSectionProfile> sectionCache) {
-        RiverSupportKey key = RiverSupportKey.of(river);
-        return sectionCache.computeIfAbsent(key, ignored -> {
-            int fittedWaterY = AtlasCoordinateMapper.metersToWorldY(river.waterSurfaceMeters());
-            int supportY = riverSupportY(level, pos, river, minY, maxY);
-            int clearance = AtlasWorldgenConfig.RIVER_WATER_BELOW_BANK_BLOCKS.get();
-            int waterY = supportY == Integer.MIN_VALUE
-                    ? fittedWaterY
-                    : Math.min(fittedWaterY, supportY - clearance);
-            waterY = Math.max(minY + 1, Math.min(maxY - clearance, waterY));
-            return new RiverSectionProfile(waterY, waterY + clearance);
-        });
-    }
-
-    private static int riverSupportY(ServerLevel level, BlockPos.MutableBlockPos pos,
-                                     RiverSample river, int minY, int maxY) {
-        if (!Double.isFinite(river.centerXBlocks()) || !Double.isFinite(river.centerZBlocks())) {
-            return Integer.MIN_VALUE;
-        }
-        double normalLength = Math.hypot(river.normalX(), river.normalZ());
-        if (normalLength <= 1.0E-9D) {
-            return Integer.MIN_VALUE;
-        }
-        double normalX = river.normalX() / normalLength;
-        double normalZ = river.normalZ() / normalLength;
-        int left = sideSupportY(level, pos, river, -normalX, -normalZ, minY, maxY);
-        int right = sideSupportY(level, pos, river, normalX, normalZ, minY, maxY);
-        if (left != Integer.MIN_VALUE && right != Integer.MIN_VALUE) {
-            return Math.min(left, right);
-        }
-        return left != Integer.MIN_VALUE ? left : right;
-    }
-
-    private static int sideSupportY(ServerLevel level, BlockPos.MutableBlockPos pos, RiverSample river,
-                                    double normalX, double normalZ, int minY, int maxY) {
-        double halfWidth = Math.max(0.5D, river.halfWidthBlocks());
-        double bankWidth = Math.max(2.0D, AtlasWorldgenConfig.RIVER_BANK_WIDTH_BLOCKS.get());
-        double[] distances = {
-                halfWidth + 0.75D,
-                halfWidth + 1.5D,
-                halfWidth + Math.max(2.5D, bankWidth * 0.50D),
-                halfWidth + bankWidth
-        };
-        int minimum = Integer.MAX_VALUE;
-        boolean found = false;
-        long previousKey = Long.MIN_VALUE;
-        for (double distance : distances) {
-            int sampleX = (int) Math.round(river.centerXBlocks() + normalX * distance);
-            int sampleZ = (int) Math.round(river.centerZBlocks() + normalZ * distance);
-            long key = ((long) sampleX << 32) ^ (sampleZ & 0xffffffffL);
-            if (key == previousKey) {
-                continue;
-            }
-            previousKey = key;
-            int support = loadedTerrainTop(level, pos, sampleX, sampleZ, minY, maxY);
-            if (support != Integer.MIN_VALUE) {
-                minimum = Math.min(minimum, support);
-                found = true;
-            }
-        }
-        return found ? minimum : Integer.MIN_VALUE;
-    }
-
-    private static int loadedTerrainTop(ServerLevel level, BlockPos.MutableBlockPos pos,
-                                        int x, int z, int minY, int maxY) {
-        LevelChunk chunk = level.getChunkSource().getChunkNow(Math.floorDiv(x, 16), Math.floorDiv(z, 16));
-        if (chunk == null) {
-            return Integer.MIN_VALUE;
-        }
-        int localX = Math.floorMod(x, 16);
-        int localZ = Math.floorMod(z, 16);
-        int heightmapTopY = Math.min(maxY, chunk.getHeight(Heightmap.Types.WORLD_SURFACE, localX, localZ));
-        return findTopTerrain(level, pos, x, z, heightmapTopY, minY);
+    private static RiverSectionProfile riverSectionProfile(RiverSample river, int minY, int maxY) {
+        int waterY = AtlasCoordinateMapper.metersToWorldY(river.waterSurfaceMeters());
+        int clearance = Math.max(1, AtlasWorldgenConfig.RIVER_WATER_BELOW_BANK_BLOCKS.get());
+        waterY = Math.max(minY + 1, Math.min(maxY - clearance, waterY));
+        return new RiverSectionProfile(waterY, waterY + clearance);
     }
 
     private record RiverSectionProfile(int waterY, int bankTopY) {
-    }
-
-    private record RiverSupportKey(long riverId, int sectionIndex) {
-        private static RiverSupportKey of(RiverSample river) {
-            // Quantising distance along the centerline (rather than world X/Z) gives both mirrored
-            // sides the exact same section even for diagonal and curved rivers.
-            int section = Double.isFinite(river.alongRiverBlocks())
-                    ? (int) Math.floor(river.alongRiverBlocks() + 0.5D)
-                    : 0;
-            return new RiverSupportKey(river.riverId(), section);
-        }
     }
 
     private static BlockState riverBottomMaterial(RiverSample river, int depthBlocks) {
@@ -714,7 +702,8 @@ public final class AtlasSurfaceMaterialPolisher {
                         changed |= level.setBlock(pos, bottomMaterial, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
                     }
                 }
-            } else if (state.isAir() || state.liquid() || isReplaceableWaterColumnBlock(state) || isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state)) {
+            } else if (state.isAir() || state.liquid() || isReplaceableWaterColumnBlock(state)
+                    || isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state) || isIgnoredSurfaceFeature(state)) {
                 if (!state.is(Blocks.WATER)) {
                     changed |= level.setBlock(pos, Blocks.WATER.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
                 }
@@ -815,7 +804,8 @@ public final class AtlasSurfaceMaterialPolisher {
                             changed |= level.setBlock(pos, bottomMaterial, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
                         }
                     }
-                } else if (state.isAir() || state.liquid() || isReplaceableWaterColumnBlock(state) || isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state)) {
+                } else if (state.isAir() || state.liquid() || isReplaceableWaterColumnBlock(state)
+                        || isTerrainSurfaceCandidate(state) || isSoftSurfaceMaterial(state) || isIgnoredSurfaceFeature(state)) {
                     if (!state.is(Blocks.WATER)) {
                         changed |= level.setBlock(pos, Blocks.WATER.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
                     }
@@ -853,7 +843,7 @@ public final class AtlasSurfaceMaterialPolisher {
         for (int y = fillFrom; y <= fillTo; y++) {
             pos.set(x, y, z);
             BlockState state = level.getBlockState(pos);
-            if (state.isAir() || state.liquid() || isReplaceableWaterColumnBlock(state)) {
+            if (state.isAir() || state.liquid() || isReplaceableWaterColumnBlock(state) || isIgnoredSurfaceFeature(state)) {
                 if (!state.is(Blocks.WATER)) {
                     changed |= level.setBlock(pos, Blocks.WATER.defaultBlockState(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
                 }
@@ -1134,7 +1124,8 @@ public final class AtlasSurfaceMaterialPolisher {
     }
 
     private static boolean isReplaceableWaterColumnBlock(BlockState state) {
-        return state.is(Blocks.SHORT_GRASS)
+        return isIgnoredSurfaceFeature(state)
+                || state.is(Blocks.SHORT_GRASS)
                 || state.is(Blocks.TALL_GRASS)
                 || state.is(Blocks.FERN)
                 || state.is(Blocks.LARGE_FERN)
@@ -1143,8 +1134,10 @@ public final class AtlasSurfaceMaterialPolisher {
     }
 
     private static boolean isIgnoredSurfaceFeature(BlockState state) {
-        return state.is(BlockTags.LEAVES)
+        return state.canBeReplaced()
+                || state.is(BlockTags.LEAVES)
                 || state.is(BlockTags.LOGS)
+                || state.is(BlockTags.FLOWERS)
                 || state.is(Blocks.SHORT_GRASS)
                 || state.is(Blocks.TALL_GRASS)
                 || state.is(Blocks.FERN)
@@ -1200,7 +1193,10 @@ public final class AtlasSurfaceMaterialPolisher {
         return (dimensionHash << 32) ^ pos.pack();
     }
 
-    private record QueuedSurfaceChunk(ResourceKey<Level> dimension, ChunkPos pos) {
+    private record QueuedSurfaceChunk(ResourceKey<Level> dimension, ChunkPos pos, int nextColumn) {
+    }
+
+    private record PolishResult(int visitedColumns, int nextColumn, boolean complete) {
     }
 
     private AtlasSurfaceMaterialPolisher() {

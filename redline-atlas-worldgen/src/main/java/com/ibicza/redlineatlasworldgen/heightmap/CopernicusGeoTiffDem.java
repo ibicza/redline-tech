@@ -60,7 +60,7 @@ public final class CopernicusGeoTiffDem {
     private static final int TYPE_LONG8 = 16;
     private static final int TYPE_SLONG8 = 17;
     private static final int TYPE_IFD8 = 18;
-    private static final int MAX_CACHED_DECOMPRESSED_TILES = 32;
+    private static final int MAX_CACHED_DECOMPRESSED_TILES = 8;
 
     private final Path path;
     private final ByteOrder byteOrder;
@@ -257,13 +257,10 @@ public final class CopernicusGeoTiffDem {
             if (cached != null) {
                 return cached;
             }
-        }
-
-        float[] decoded = readDecodedTile(tileIndex);
-        synchronized (decodedTileCache) {
+            float[] decoded = readDecodedTile(tileIndex);
             decodedTileCache.put(tileIndex, decoded);
+            return decoded;
         }
-        return decoded;
     }
 
     private float[] readDecodedTile(int tileIndex) throws IOException {

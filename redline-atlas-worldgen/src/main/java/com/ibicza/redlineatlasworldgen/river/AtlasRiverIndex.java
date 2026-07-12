@@ -117,6 +117,7 @@ public final class AtlasRiverIndex {
                 RedlineAtlasWorldgen.LOGGER.warn("Failed to load HydroRIVERS source {}", shapefile, ex);
             }
         }
+        orientRawNetwork(raw);
 
         RiverSegmentBuilder builder = new RiverSegmentBuilder();
         List<RiverSegment> segments = new ArrayList<>(raw.size());
@@ -130,8 +131,11 @@ public final class AtlasRiverIndex {
                 RedlineAtlasWorldgen.LOGGER.warn("Failed to refine river {} from {}", source.attributes().riverId(), source.sourceId(), ex);
             }
         }
+        raw.clear();
         segments.sort(Comparator.comparingLong(RiverSegment::riverId).thenComparing(RiverSegment::sourceId));
-        joinDownstreamProfiles(segments);
+        connectDownstreamNetwork(segments);
+        RedlineAtlasWorldgen.LOGGER.info("River builder primitive sample cache retained estimate: {} MiB",
+                Math.max(1L, builder.sampleCacheRetainedBytesEstimate() / (1024L * 1024L)));
         if (!segments.isEmpty() && AtlasWorldgenConfig.RIVER_WRITE_COOKED_CACHE.get()) {
             try {
                 RiverAtlasCodec.write(cookedCache, configurationFingerprint, sourceFingerprint, segments);
@@ -294,28 +298,88 @@ public final class AtlasRiverIndex {
         if (candidate.kind() != current.kind()) {
             return candidate.kind() == RiverKind.CHANNEL;
         }
+        if (candidate.kind() == RiverKind.CHANNEL && current.kind() == RiverKind.CHANNEL) {
+            double vertical = Math.max(0.001D, AtlasWorldgenConfig.VERTICAL_METERS_PER_BLOCK.get());
+            if (Double.isFinite(candidate.waterSurfaceMeters()) && Double.isFinite(current.waterSurfaceMeters())
+                    && Math.abs(candidate.waterSurfaceMeters() - current.waterSurfaceMeters()) >= vertical * 0.5D) {
+                return candidate.waterSurfaceMeters() < current.waterSurfaceMeters();
+            }
+            if (Math.abs(candidate.depthMeters() - current.depthMeters()) >= vertical * 0.5D) {
+                return candidate.depthMeters() > current.depthMeters();
+            }
+            if (candidate.strahlerOrder() != current.strahlerOrder()) {
+                return candidate.strahlerOrder() > current.strahlerOrder();
+            }
+            if (Double.compare(candidate.dischargeCms(), current.dischargeCms()) != 0) {
+                return candidate.dischargeCms() > current.dischargeCms();
+            }
+        }
         if (candidate.distanceToCenterBlocks() != current.distanceToCenterBlocks()) {
             return candidate.distanceToCenterBlocks() < current.distanceToCenterBlocks();
         }
         return candidate.strahlerOrder() > current.strahlerOrder();
     }
 
-    private static void joinDownstreamProfiles(List<RiverSegment> segments) {
+    private static void orientRawNetwork(List<RawHydroRiver> raw) {
+        if (raw.isEmpty()) {
+            return;
+        }
+        Map<Long, RawHydroRiver> byId = new LinkedHashMap<>();
+        for (RawHydroRiver river : raw) {
+            byId.putIfAbsent(river.attributes().riverId(), river);
+        }
+        for (int i = 0; i < raw.size(); i++) {
+            RawHydroRiver river = raw.get(i);
+            RawHydroRiver downstream = byId.get(river.attributes().nextDownId());
+            if (downstream == null || river.points().size() < 2 || downstream.points().size() < 2) {
+                continue;
+            }
+            List<GeoRiverPoint> points = river.points();
+            GeoRiverPoint downstreamStart = downstream.points().getFirst();
+            double endToDownstreamStart = geoDistanceSq(points.getLast(), downstreamStart);
+            double startToDownstreamStart = geoDistanceSq(points.getFirst(), downstreamStart);
+            if (startToDownstreamStart + 1.0E-18D < endToDownstreamStart) {
+                List<GeoRiverPoint> reversed = new ArrayList<>(points);
+                java.util.Collections.reverse(reversed);
+                RawHydroRiver oriented = new RawHydroRiver(river.sourceId(), river.attributes(), List.copyOf(reversed));
+                raw.set(i, oriented);
+                byId.put(oriented.attributes().riverId(), oriented);
+            }
+        }
+    }
+
+    private static void connectDownstreamNetwork(List<RiverSegment> segments) {
         Map<Long, RiverSegment> byId = new LinkedHashMap<>();
         for (RiverSegment segment : segments) {
             byId.putIfAbsent(segment.riverId(), segment);
         }
-        for (int pass = 0; pass < 4; pass++) {
+        double snapDistance = Math.max(AtlasWorldgenConfig.RIVER_REFINE_POINT_SPACING_BLOCKS.get() * 2.0D,
+                AtlasWorldgenConfig.RIVER_MAX_WIDTH_BLOCKS.get() * 0.5D
+                        + AtlasWorldgenConfig.RIVER_BANK_WIDTH_BLOCKS.get() * 2.0D);
+        double snapDistanceSq = snapDistance * snapDistance;
+        for (int pass = 0; pass < 8; pass++) {
             for (RiverSegment upstream : segments) {
                 RiverSegment downstream = byId.get(upstream.nextDownId());
                 if (downstream == null || downstream == upstream) {
                     continue;
                 }
+                double dx = upstream.endX() - downstream.startX();
+                double dz = upstream.endZ() - downstream.startZ();
+                if (dx * dx + dz * dz <= snapDistanceSq) {
+                    upstream.snapEndTo(downstream.startX(), downstream.startZ());
+                    upstream.flareEndTo(downstream);
+                }
                 double junction = Math.min(upstream.endWaterMeters(), downstream.startWaterMeters());
-                upstream.lowerEndTo(junction);
+                upstream.lowerApproachTo(junction);
                 downstream.lowerStartTo(junction);
             }
         }
+    }
+
+    private static double geoDistanceSq(GeoRiverPoint a, GeoRiverPoint b) {
+        double dx = a.longitude() - b.longitude();
+        double dz = a.latitude() - b.latitude();
+        return dx * dx + dz * dz;
     }
 
     private static Map<Long, List<RiverSegment>> buildCells(List<RiverSegment> segments) {
@@ -352,10 +416,7 @@ public final class AtlasRiverIndex {
     private static String configurationFingerprint(Path gameDirectory, Optional<RiverSourceBounds> bounds) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            // v6 keeps the binary codec but tightens the cooked/runtime semantics: the lowest
-            // sampled rim is a hard ceiling, local sections are one block long, and atlas source
-            // water is not allowed to spread horizontally outside the explicit channel mask.
-            update(digest, "river-profile-rim-locked-no-spread-v6");
+            update(digest, "river-network-junction-owned-v7");
             update(digest, bounds.map(RiverSourceBounds::toString).orElse("all"));
             update(digest, Integer.toString(AtlasWorldgenConfig.RIVER_MIN_STRAHLER_ORDER.get()));
             update(digest, Double.toString(AtlasWorldgenConfig.ORIGIN_LATITUDE.get()));

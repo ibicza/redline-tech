@@ -43,6 +43,7 @@ public final class AtlasWorldgenEvents {
         }
 
         AtlasSurfaceMaterialPolisher.enqueue(level, event.getChunk().getPos(), event.isNewChunk());
+        AtlasSurfaceMaterialPolisher.enqueueRiverBoundaryNeighbors(level, event.getChunk().getPos(), event.isNewChunk());
 
         if (!AtlasWorldgenConfig.AUTO_POST_SHAPE_CHUNKS.get()) {
             return;

@@ -94,8 +94,9 @@ public final class AtlasBiomeResolver {
         LakeSample lake = AtlasLakeGuide.sampleForBiome(blockX, blockZ);
         RiverSample river = AtlasRiverIndex.active().sampleForBiome(blockX, blockZ);
         AtlasOpenWaterGuide.OpenWaterSample openWater = AtlasOpenWaterGuide.sampleForBiome(blockX, blockZ);
-        WaterContext water = lake.hasLakeData() ? waterContext(lake)
+        WaterContext water = lake.kind() == LakeKind.MANUAL_LAKE ? waterContext(lake)
                 : river.hasRiverData() ? waterContext(river)
+                : lake.hasLakeData() ? waterContext(lake)
                 : waterContext(openWater);
         LandcoverDecision landcover = landcoverDecision(blockX, blockZ, geo);
         double elevationMeters = height.get().meters();

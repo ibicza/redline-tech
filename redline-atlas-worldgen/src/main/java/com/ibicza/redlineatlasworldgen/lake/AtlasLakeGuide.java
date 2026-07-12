@@ -9,6 +9,8 @@ import com.ibicza.redlineatlasworldgen.landcover.AtlasLandcoverIndex;
 import com.ibicza.redlineatlasworldgen.landcover.LandcoverClass;
 import com.ibicza.redlineatlasworldgen.landcover.LandcoverSample;
 import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
+import com.ibicza.redlineatlasworldgen.river.AtlasRiverIndex;
+import com.ibicza.redlineatlasworldgen.river.RiverSample;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -72,6 +74,10 @@ public final class AtlasLakeGuide {
     public static Optional<HeightSample> compositeHeightSample(int blockX, int blockZ) {
         LakeSample sample = sampleForBiome(blockX, blockZ);
         if (isLakeWater(sample.kind())) {
+            RiverSample river = AtlasRiverIndex.active().sample(blockX, blockZ);
+            if (river.hasRiverData() && sample.kind() != LakeKind.MANUAL_LAKE) {
+                return Optional.empty();
+            }
             return Optional.of(new HeightSample(sample.bottomMeters(), "lake:" + sample.sourceId(), sample.resolutionMeters()));
         }
         return Optional.empty();
@@ -106,6 +112,9 @@ public final class AtlasLakeGuide {
             if (!AtlasWorldgenConfig.LAKE_USE_LANDCOVER_WATER.get()) {
                 return LakeSample.none();
             }
+            if (AtlasRiverIndex.active().sample(blockX, blockZ).hasRiverData()) {
+                return LakeSample.none();
+            }
 
             Optional<HeightSample> height = AtlasHeightmapIndex.active().sample(geo.latitude(), geo.longitude());
             if (height.isEmpty()) {
@@ -118,13 +127,18 @@ public final class AtlasLakeGuide {
             }
 
             Optional<LandcoverSample> center = AtlasLandcoverIndex.active().sample(geo.latitude(), geo.longitude());
-            boolean centerWater = center.isPresent() && center.get().landcover() == LandcoverClass.WATER;
+            boolean centerWater = center.isPresent()
+                    && center.get().landcover() == LandcoverClass.WATER
+                    && !isRiverClaimed(blockX, blockZ);
             int radius = Math.max(0, AtlasWorldgenConfig.LAKE_WORLDCOVER_WATER_RADIUS_BLOCKS.get());
             int step = Math.max(1, AtlasWorldgenConfig.LAKE_WORLDCOVER_WATER_STEP_BLOCKS.get());
             WaterStats stats = waterStats(blockX, blockZ, radius, step);
 
             if (centerWater) {
                 BasinFit fit = estimateWorldcoverBasinFit(blockX, blockZ, rawSurfaceMeters, center.map(LandcoverSample::sourceId).orElse("worldcover"));
+                if (fit.found() && fit.waterSamples() < AtlasWorldgenConfig.LAKE_WORLDCOVER_MIN_COMPONENT_SAMPLES.get()) {
+                    return LakeSample.none();
+                }
                 double waterSurfaceMeters = fit.found() ? fit.surfaceMeters() : estimateWorldcoverWaterSurfaceLegacy(blockX, blockZ, rawSurfaceMeters);
                 if (waterSurfaceMeters < AtlasWorldgenConfig.LAKE_MIN_SURFACE_METERS.get()) {
                     return LakeSample.none();
@@ -145,9 +159,11 @@ public final class AtlasLakeGuide {
             // A non-water center must never become a water column just because nearby cells are water.
             // Treat it as a shore candidate only. This prevents WorldCover radius checks from creating
             // hanging water slabs outside the real mask.
+            int shoreRadius = Math.min(AtlasWorldgenConfig.LAKE_SHORE_RADIUS_BLOCKS.get(),
+                    AtlasWorldgenConfig.LAKE_WORLDCOVER_SHORE_RADIUS_BLOCKS.get());
             if ((exact || AtlasWorldgenConfig.LAKE_SHORE_IN_BIOME_GUIDE.get())
                     && stats.fraction() >= AtlasWorldgenConfig.LAKE_WORLDCOVER_MIN_WATER_FRACTION.get()) {
-                NearWater near = findNearWorldcoverWater(blockX, blockZ, AtlasWorldgenConfig.LAKE_SHORE_RADIUS_BLOCKS.get(), step, rawSurfaceMeters);
+                NearWater near = findNearWorldcoverWater(blockX, blockZ, shoreRadius, step, rawSurfaceMeters);
                 if (near.found()) {
                     return new LakeSample(LakeKind.LAKE_SHORE, true, false, near.distanceBlocks(), 0.0D, 0.0D, Double.NaN, near.waterSurfaceMeters(),
                             "worldcover_lake_shore", 10.0D, near.sourceId());
@@ -155,7 +171,7 @@ public final class AtlasLakeGuide {
             }
 
             if (exact || AtlasWorldgenConfig.LAKE_SHORE_IN_BIOME_GUIDE.get()) {
-                NearWater near = findNearWorldcoverWater(blockX, blockZ, AtlasWorldgenConfig.LAKE_SHORE_RADIUS_BLOCKS.get(), step, rawSurfaceMeters);
+                NearWater near = findNearWorldcoverWater(blockX, blockZ, shoreRadius, step, rawSurfaceMeters);
                 if (near.found()) {
                     return new LakeSample(LakeKind.LAKE_SHORE, true, false, near.distanceBlocks(), 0.0D, 0.0D, Double.NaN, near.waterSurfaceMeters(),
                             "worldcover_lake_shore", 10.0D, near.sourceId());
@@ -210,7 +226,7 @@ public final class AtlasLakeGuide {
     private static BasinFit computeWorldcoverBasinFit(int blockX, int blockZ, double fallbackMeters, String fallbackSourceId, int step) {
         long started = AtlasWorldgenProfiler.start();
         try {
-            if (!isWorldcoverWater(blockX, blockZ)) {
+            if (!isResidualWorldcoverWater(blockX, blockZ)) {
                 return BasinFit.none();
             }
             int maxRadius = Math.max(step, AtlasWorldgenConfig.LAKE_BASIN_FIT_SEARCH_BLOCKS.get());
@@ -238,7 +254,7 @@ public final class AtlasLakeGuide {
                             continue;
                         }
                         long key = gridKey(nx, nz);
-                        if (waterCells.contains(key) || !isWorldcoverWater(bx, bz)) {
+                        if (waterCells.contains(key) || !isResidualWorldcoverWater(bx, bz)) {
                             continue;
                         }
                         waterCells.add(key);
@@ -284,7 +300,7 @@ public final class AtlasLakeGuide {
                         }
                         int rbX = blockX + rx * step;
                         int rbZ = blockZ + rz * step;
-                        if (!isWorldcoverWater(rbX, rbZ)) {
+                        if (!isResidualWorldcoverWater(rbX, rbZ)) {
                             heightMeters(rbX, rbZ).ifPresent(rimHeights::add);
                         }
                     }
@@ -340,7 +356,8 @@ public final class AtlasLakeGuide {
                 }
                 GeoPoint geo = AtlasCoordinateMapper.toGeo(blockX + dx, blockZ + dz);
                 Optional<LandcoverSample> landcover = AtlasLandcoverIndex.active().sample(geo.latitude(), geo.longitude());
-                if (landcover.isEmpty() || landcover.get().landcover() != LandcoverClass.WATER) {
+                if (landcover.isEmpty() || landcover.get().landcover() != LandcoverClass.WATER
+                        || isRiverClaimed(blockX + dx, blockZ + dz)) {
                     continue;
                 }
                 Optional<HeightSample> height = AtlasHeightmapIndex.active().sample(geo.latitude(), geo.longitude());
@@ -440,7 +457,8 @@ public final class AtlasLakeGuide {
                     continue;
                 }
                 samples++;
-                if (sample.get().landcover() == LandcoverClass.WATER) {
+                if (sample.get().landcover() == LandcoverClass.WATER
+                        && !isRiverClaimed(blockX + dx, blockZ + dz)) {
                     water++;
                 }
             }
@@ -465,7 +483,8 @@ public final class AtlasLakeGuide {
                         continue;
                     }
                     samples++;
-                    if (sample.get().landcover() != LandcoverClass.WATER) {
+                    if (sample.get().landcover() != LandcoverClass.WATER
+                            || isRiverClaimed(blockX + dx, blockZ + dz)) {
                         land++;
                     }
                 }
@@ -497,7 +516,8 @@ public final class AtlasLakeGuide {
                 int sz = blockZ + dz;
                 GeoPoint geo = AtlasCoordinateMapper.toGeo(sx, sz);
                 Optional<LandcoverSample> landcover = AtlasLandcoverIndex.active().sample(geo.latitude(), geo.longitude());
-                if (landcover.isEmpty() || landcover.get().landcover() != LandcoverClass.WATER) {
+                if (landcover.isEmpty() || landcover.get().landcover() != LandcoverClass.WATER
+                        || isRiverClaimed(sx, sz)) {
                     continue;
                 }
                 Optional<HeightSample> waterHeight = AtlasHeightmapIndex.active().sample(geo.latitude(), geo.longitude());
@@ -506,6 +526,10 @@ public final class AtlasLakeGuide {
                 }
                 double stableSurface = estimateWorldcoverWaterSurface(sx, sz, waterHeight.get().meters());
                 if (stableSurface < AtlasWorldgenConfig.LAKE_MIN_SURFACE_METERS.get()) {
+                    continue;
+                }
+                BasinFit fit = estimateWorldcoverBasinFit(sx, sz, waterHeight.get().meters(), landcover.get().sourceId());
+                if (fit.found() && fit.waterSamples() < AtlasWorldgenConfig.LAKE_WORLDCOVER_MIN_COMPONENT_SAMPLES.get()) {
                     continue;
                 }
                 double waterDistanceToShore = estimateDistanceToShore(sx, sz, Math.max(step, 8), Math.max(radius, AtlasWorldgenConfig.LAKE_MAX_SHORE_SEARCH_BLOCKS.get()));
@@ -521,6 +545,14 @@ public final class AtlasLakeGuide {
             return NearWater.none();
         }
         return new NearWater(true, Math.sqrt(bestDistanceSq), bestSurface, bestSource);
+    }
+
+    private static boolean isResidualWorldcoverWater(int blockX, int blockZ) {
+        return isWorldcoverWater(blockX, blockZ) && !isRiverClaimed(blockX, blockZ);
+    }
+
+    private static boolean isRiverClaimed(int blockX, int blockZ) {
+        return AtlasRiverIndex.active().sample(blockX, blockZ).hasRiverData();
     }
 
     private static long gridKey(int gx, int gz) {

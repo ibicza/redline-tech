@@ -34,6 +34,7 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue LAKE_WORLDCOVER_WATER_RADIUS_BLOCKS;
     public static final ModConfigSpec.IntValue LAKE_WORLDCOVER_WATER_STEP_BLOCKS;
     public static final ModConfigSpec.DoubleValue LAKE_WORLDCOVER_MIN_WATER_FRACTION;
+    public static final ModConfigSpec.IntValue LAKE_WORLDCOVER_MIN_COMPONENT_SAMPLES;
     public static final ModConfigSpec.IntValue LAKE_WORLDCOVER_SURFACE_SEARCH_BLOCKS;
     public static final ModConfigSpec.DoubleValue LAKE_WORLDCOVER_SURFACE_PERCENTILE;
     public static final ModConfigSpec.DoubleValue LAKE_WORLDCOVER_SURFACE_MAX_ABOVE_MIN_METERS;
@@ -53,6 +54,7 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.DoubleValue LAKE_SHORE_RING_LAND_FRACTION;
     public static final ModConfigSpec.IntValue LAKE_MAX_SHORE_SEARCH_BLOCKS;
     public static final ModConfigSpec.IntValue LAKE_SHORE_RADIUS_BLOCKS;
+    public static final ModConfigSpec.IntValue LAKE_WORLDCOVER_SHORE_RADIUS_BLOCKS;
     public static final ModConfigSpec.DoubleValue LAKE_SHORE_MAX_HEIGHT_DELTA_METERS;
     public static final ModConfigSpec.DoubleValue LAKE_SYNTHETIC_MIN_DEPTH_METERS;
     public static final ModConfigSpec.DoubleValue LAKE_SYNTHETIC_MAX_DEPTH_METERS;
@@ -314,6 +316,8 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("worldcoverWaterStepBlocks", 8, 1, 128);
         LAKE_WORLDCOVER_MIN_WATER_FRACTION = builder.comment("Minimum water fraction in the local WorldCover window to accept a small waterbody when the exact center pixel is not water.")
                 .defineInRange("worldcoverMinWaterFraction", 0.30D, 0.0D, 1.0D);
+        LAKE_WORLDCOVER_MIN_COMPONENT_SAMPLES = builder.comment("Minimum connected residual WorldCover-water samples before a non-manual water patch can become a small lake. River-owned pixels are excluded first.")
+                .defineInRange("worldcoverMinComponentSamples", 4, 1, 1024);
         LAKE_WORLDCOVER_SURFACE_SEARCH_BLOCKS = builder.comment("Radius for estimating one stable water-surface level for a WorldCover small waterbody. Uses nearby water pixels so lake surface does not step up/down per column.")
                 .defineInRange("worldcoverSurfaceSearchBlocks", 128, 8, 2048);
         LAKE_WORLDCOVER_SURFACE_PERCENTILE = builder.comment("Low percentile of nearby water-pixel DEM heights used as the small-waterbody surface. Keep this low: WorldCover often marks quarry banks as water, and high DEM outliers must not lift the whole lake into the air.")
@@ -352,6 +356,8 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("maxShoreSearchBlocks", 160, 8, 2048);
         LAKE_SHORE_RADIUS_BLOCKS = builder.comment("Land columns within this distance from inland water can become lake shore.")
                 .defineInRange("shoreRadiusBlocks", 48, 0, 1024);
+        LAKE_WORLDCOVER_SHORE_RADIUS_BLOCKS = builder.comment("Residual WorldCover-only pond shore radius after rivers have claimed their masks. Keep this tight to avoid wide random sand patches near river rasters.")
+                .defineInRange("worldcoverShoreRadiusBlocks", 8, 0, 256);
         LAKE_SHORE_IN_BIOME_GUIDE = builder.comment("When true, biome guide can classify near-lake land as lake shore. Disable if too expensive or too sandy.")
                 .define("shoreInBiomeGuide", true);
         LAKE_SHORE_MAX_HEIGHT_DELTA_METERS = builder.comment("Maximum real height difference between land and nearby WorldCover-water for lake shore classification.")

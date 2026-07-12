@@ -8,15 +8,11 @@ import com.ibicza.redlineatlasworldgen.landcover.AtlasLandcoverIndex;
 import com.ibicza.redlineatlasworldgen.landcover.LandcoverClass;
 
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.OptionalDouble;
 
 final class RiverSegmentBuilder {
-    private final Map<Long, OptionalDouble> heightCache = new HashMap<>();
-    private final Map<Long, Boolean> waterCache = new HashMap<>();
+    private final RiverBuilderSampleCache sampleCache = new RiverBuilderSampleCache();
 
     RiverSegment build(RawHydroRiver raw) {
         List<WorldPoint> source = toWorld(raw.points());
@@ -24,7 +20,9 @@ final class RiverSegmentBuilder {
             return null;
         }
         source = densify(source, Math.max(4, AtlasWorldgenConfig.RIVER_REFINE_POINT_SPACING_BLOCKS.get()));
-        orientDownstream(source);
+        if (raw.attributes().nextDownId() == 0L) {
+            orientTerminalOutletByHeight(source);
+        }
         List<FittedPoint> fitted = AtlasWorldgenConfig.RIVER_REFINE_ENABLED.get() ? refine(source) : unrefined(source);
         fitted = fillMissingHeights(fitted);
         if (fitted.size() < 2) {
@@ -64,6 +62,10 @@ final class RiverSegmentBuilder {
             }
         }
         return new RiverSegment(raw.sourceId(), raw.attributes(), x, z, width, water, depth, worldcover);
+    }
+
+    long sampleCacheRetainedBytesEstimate() {
+        return sampleCache.retainedBytesEstimate();
     }
 
     private double bankAnchoredWaterSurface(List<FittedPoint> points, int index, double widthBlocks,
@@ -159,12 +161,12 @@ final class RiverSegmentBuilder {
         return result;
     }
 
-    private void orientDownstream(List<WorldPoint> points) {
+    private void orientTerminalOutletByHeight(List<WorldPoint> points) {
         OptionalDouble first = heightAt(points.getFirst().x(), points.getFirst().z());
         OptionalDouble last = heightAt(points.getLast().x(), points.getLast().z());
         double tolerance = AtlasWorldgenConfig.VERTICAL_METERS_PER_BLOCK.get() * 2.0D;
         if (first.isPresent() && last.isPresent() && first.getAsDouble() + tolerance < last.getAsDouble()) {
-            Collections.reverse(points);
+            java.util.Collections.reverse(points);
         }
     }
 
@@ -332,7 +334,7 @@ final class RiverSegmentBuilder {
         int blockX = (int) Math.round(x);
         int blockZ = (int) Math.round(z);
         long key = key(blockX, blockZ);
-        OptionalDouble cached = heightCache.get(key);
+        OptionalDouble cached = sampleCache.height(key);
         if (cached != null) {
             return cached;
         }
@@ -341,7 +343,7 @@ final class RiverSegmentBuilder {
         OptionalDouble value = sample.isPresent()
                 ? OptionalDouble.of(sample.get().meters())
                 : OptionalDouble.empty();
-        heightCache.put(key, value);
+        sampleCache.putHeight(key, value);
         return value;
     }
 
@@ -349,7 +351,7 @@ final class RiverSegmentBuilder {
         int blockX = (int) Math.round(x);
         int blockZ = (int) Math.round(z);
         long key = key(blockX, blockZ);
-        Boolean cached = waterCache.get(key);
+        Boolean cached = sampleCache.water(key);
         if (cached != null) {
             return cached;
         }
@@ -357,7 +359,7 @@ final class RiverSegmentBuilder {
         boolean water = AtlasLandcoverIndex.active().sample(geo.latitude(), geo.longitude())
                 .map(sample -> sample.landcover() == LandcoverClass.WATER)
                 .orElse(false);
-        waterCache.put(key, water);
+        sampleCache.putWater(key, water);
         return water;
     }
 

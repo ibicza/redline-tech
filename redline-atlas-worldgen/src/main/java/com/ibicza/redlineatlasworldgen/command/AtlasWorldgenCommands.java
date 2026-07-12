@@ -425,12 +425,18 @@ public final class AtlasWorldgenCommands {
     }
 
     private static int profile(CommandContext<CommandSourceStack> context, int limit) {
+        Runtime runtime = Runtime.getRuntime();
+        long mib = 1024L * 1024L;
+        long heapUsed = (runtime.totalMemory() - runtime.freeMemory()) / mib;
+        long heapCommitted = runtime.totalMemory() / mib;
+        long heapMax = runtime.maxMemory() / mib;
         context.getSource().sendSuccess(() -> Component.literal("RLA profiler, surfacePolishQueue=" + AtlasSurfaceMaterialPolisher.queueSize()
                 + ", biomeColumnCache=" + AtlasBiomeResolver.cacheSize()
                 + ", waterCellCache=" + AtlasOpenWaterGuide.cacheSize()
                 + ", coastalFloodCache=" + AtlasOpenWaterGuide.coastalFloodCacheSize()
                 + ", lakeCache=" + AtlasLakeGuide.cacheSize()
-                + ", riverCache=" + AtlasRiverIndex.active().cacheSize()), false);
+                + ", riverCache=" + AtlasRiverIndex.active().cacheSize()
+                + ", heap=" + heapUsed + "/" + heapCommitted + "/" + heapMax + " MiB used/committed/max"), false);
         for (String line : AtlasWorldgenProfiler.summaryLines(limit)) {
             context.getSource().sendSuccess(() -> Component.literal("  " + line), false);
         }
