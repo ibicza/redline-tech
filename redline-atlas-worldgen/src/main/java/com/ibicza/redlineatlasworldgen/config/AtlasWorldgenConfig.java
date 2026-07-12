@@ -231,6 +231,7 @@ public final class AtlasWorldgenConfig {
     public static final ModConfigSpec.IntValue NOISE_SMOOTHING_RADIUS_BLOCKS;
     public static final ModConfigSpec.IntValue NOISE_SMOOTHING_STEP_BLOCKS;
     public static final ModConfigSpec.IntValue NOISE_COLUMN_CACHE_LIMIT;
+    public static final ModConfigSpec.BooleanValue STRUCTURE_HEIGHT_GUIDE_ENABLED;
 
     static {
         ModConfigSpec.Builder builder = new ModConfigSpec.Builder();
@@ -291,6 +292,11 @@ public final class AtlasWorldgenConfig {
                 .defineInRange("smoothingStepBlocks", 8, 1, 128);
         NOISE_COLUMN_CACHE_LIMIT = builder.comment("Approximate cached atlas-guided columns. Cache is cleared when this limit is exceeded.")
                 .defineInRange("columnCacheLimit", 262144, 1024, 8388608);
+        builder.pop();
+
+        builder.push("structure_guide");
+        STRUCTURE_HEIGHT_GUIDE_ENABLED = builder.comment("Make vanilla surface structures query the same atlas-shifted base height and base column as generated terrain. Prevents villages, temples, outposts, shipwrecks and similar structures from floating near the old vanilla reference Y.")
+                .define("enabled", true);
         builder.pop();
 
         builder.push("landcover");

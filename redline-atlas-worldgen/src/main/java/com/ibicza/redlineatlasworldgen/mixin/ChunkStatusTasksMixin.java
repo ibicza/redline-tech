@@ -18,6 +18,27 @@ import java.util.concurrent.CompletableFuture;
 
 @Mixin(ChunkStatusTasks.class)
 public abstract class ChunkStatusTasksMixin {
+
+    @Inject(method = "generateStructureStarts", at = @At("HEAD"))
+    private static void redlineAtlasWorldgen$beginStructureQueries(WorldGenContext context, ChunkStep step,
+                                                                    StaticCache2D<GenerationChunkHolder> cache,
+                                                                    ChunkAccess chunk,
+                                                                    CallbackInfoReturnable<CompletableFuture<ChunkAccess>> cir) {
+        AtlasNoiseContext.beginStructureQueries(
+                context.level().dimension(),
+                context.level().getSeed(),
+                context.level().registryAccess().lookupOrThrow(Registries.BIOME)
+        );
+    }
+
+    @Inject(method = "generateStructureStarts", at = @At("RETURN"))
+    private static void redlineAtlasWorldgen$endStructureQueries(WorldGenContext context, ChunkStep step,
+                                                                  StaticCache2D<GenerationChunkHolder> cache,
+                                                                  ChunkAccess chunk,
+                                                                  CallbackInfoReturnable<CompletableFuture<ChunkAccess>> cir) {
+        AtlasNoiseContext.endStructureQueries(context.level().dimension());
+        profileFuture("chunkStatus.generateStructureStarts", cir);
+    }
     @Inject(
             method = {"generateBiomes", "generateNoise", "generateSurface", "generateCarvers"},
             at = @At("HEAD")

@@ -26,7 +26,22 @@ public final class AtlasNoiseGuide {
     private static final AtomicInteger CACHE_CLEAR_GUARD = new AtomicInteger();
 
     public static int shiftedBlockY(int blockX, int originalY, int blockZ) {
+        return shiftedBlockY(originalY, column(blockX, blockZ));
+    }
+
+    /**
+     * Returns the exact integer world-space shift produced by {@link #shiftedBlockY}.
+     *
+     * <p>Structure placement works with sampled surface heights instead of density-function Y
+     * coordinates. Reusing this value keeps structure height queries bit-for-bit aligned with the
+     * rounding and safety clamp used by terrain generation.</p>
+     */
+    public static int effectiveVerticalShiftBlocks(int blockX, int blockZ) {
         GuideColumn column = column(blockX, blockZ);
+        return -shiftedBlockY(0, column);
+    }
+
+    private static int shiftedBlockY(int originalY, GuideColumn column) {
         if (!column.hasSample()) {
             return originalY;
         }

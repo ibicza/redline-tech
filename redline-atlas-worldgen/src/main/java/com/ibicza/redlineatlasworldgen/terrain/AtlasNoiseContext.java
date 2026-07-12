@@ -9,6 +9,8 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.biome.Biome;
 
 import java.util.Optional;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -23,6 +25,7 @@ import java.util.concurrent.ConcurrentMap;
  */
 public final class AtlasNoiseContext {
     private static final ConcurrentMap<Long, ChunkInfo> GENERATING_CHUNKS = new ConcurrentHashMap<>();
+    private static final ThreadLocal<Deque<ChunkInfo>> STRUCTURE_QUERY_CONTEXT = new ThreadLocal<>();
 
     public static void register(ChunkPos pos, ResourceKey<Level> dimension) {
         register(pos, dimension, 0L, null);
@@ -49,6 +52,53 @@ public final class AtlasNoiseContext {
     public static Optional<ResourceKey<Level>> dimensionFor(ChunkPos pos) {
         ChunkInfo info = GENERATING_CHUNKS.get(pos.pack());
         return info == null ? Optional.empty() : Optional.of(info.dimension());
+    }
+
+    /**
+     * Opens a synchronous structure-placement query scope. Structure code may sample corners that
+     * fall just outside the currently generated chunk, so a thread-local fallback is required in
+     * addition to the per-chunk map used by asynchronous biome/noise stages.
+     */
+    public static void beginStructureQueries(ResourceKey<Level> dimension, long seed, HolderGetter<Biome> biomeLookup) {
+        if (!AtlasWorldgenConfig.ENABLED.get()) {
+            return;
+        }
+        if (AtlasWorldgenConfig.OVERWORLD_ONLY.get() && dimension != Level.OVERWORLD) {
+            return;
+        }
+        Deque<ChunkInfo> stack = STRUCTURE_QUERY_CONTEXT.get();
+        if (stack == null) {
+            stack = new ArrayDeque<>();
+            STRUCTURE_QUERY_CONTEXT.set(stack);
+        }
+        stack.push(new ChunkInfo(dimension, seed, biomeLookup));
+    }
+
+    public static void endStructureQueries(ResourceKey<Level> dimension) {
+        Deque<ChunkInfo> stack = STRUCTURE_QUERY_CONTEXT.get();
+        if (stack == null) {
+            return;
+        }
+        if (!stack.isEmpty()) {
+            stack.pop();
+        }
+        if (stack.isEmpty()) {
+            STRUCTURE_QUERY_CONTEXT.remove();
+        }
+    }
+
+    /**
+     * Resolves atlas context for arbitrary base-height/base-column probes made during structure
+     * placement. The synchronous scope deliberately limits the base-height/base-column patch to
+     * structure-start creation, so unrelated vanilla height probes cannot be shifted twice.
+     */
+    public static Optional<ResourceKey<Level>> dimensionForQuery(int blockX, int blockZ) {
+        Deque<ChunkInfo> stack = STRUCTURE_QUERY_CONTEXT.get();
+        return stack == null || stack.isEmpty() ? Optional.empty() : Optional.of(stack.peek().dimension());
+    }
+
+    public static boolean shouldGuideStructures(ResourceKey<Level> dimension) {
+        return AtlasWorldgenConfig.STRUCTURE_HEIGHT_GUIDE_ENABLED.get() && shouldGuideNoise(dimension);
     }
 
     public static OptionalLong seedFor(ChunkPos pos) {
