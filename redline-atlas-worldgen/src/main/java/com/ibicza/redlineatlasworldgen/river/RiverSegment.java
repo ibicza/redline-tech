@@ -44,7 +44,10 @@ final class RiverSegment {
         double localMinZ = Double.POSITIVE_INFINITY;
         double localMaxZ = Double.NEGATIVE_INFINITY;
         for (int i = 0; i < x.length; i++) {
-            double expansion = widthBlocks[i] * 0.5D + AtlasWorldgenConfig.RIVER_BANK_WIDTH_BLOCKS.get() + 2.0D;
+            double expansion = widthBlocks[i] * 0.5D
+                    + AtlasWorldgenConfig.RIVER_BANK_WIDTH_BLOCKS.get()
+                    + AtlasWorldgenConfig.RIVER_TERRAIN_SHOULDER_WIDTH_BLOCKS.get()
+                    + 2.0D;
             localMinX = Math.min(localMinX, x[i] - expansion);
             localMaxX = Math.max(localMaxX, x[i] + expansion);
             localMinZ = Math.min(localMinZ, z[i] - expansion);
@@ -89,7 +92,8 @@ final class RiverSegment {
         double width = lerp(widthBlocks[bestEdge], widthBlocks[bestEdge + 1], bestT);
         double halfWidth = Math.max(0.5D, width * 0.5D);
         double bankWidth = AtlasWorldgenConfig.RIVER_BANK_WIDTH_BLOCKS.get();
-        if (distance > halfWidth + bankWidth) {
+        double shoulderWidth = AtlasWorldgenConfig.RIVER_TERRAIN_SHOULDER_WIDTH_BLOCKS.get();
+        if (distance > halfWidth + bankWidth + shoulderWidth) {
             return RiverSample.none();
         }
 
@@ -99,7 +103,9 @@ final class RiverSegment {
             surface = Math.floor(surface / vertical) * vertical;
         }
         double depth = lerp(depthMeters[bestEdge], depthMeters[bestEdge + 1], bestT);
-        RiverKind kind = distance <= halfWidth ? RiverKind.CHANNEL : RiverKind.BANK;
+        RiverKind kind = distance <= halfWidth
+                ? RiverKind.CHANNEL
+                : distance <= halfWidth + bankWidth ? RiverKind.BANK : RiverKind.SHOULDER;
         boolean exact = worldcoverWater[bestEdge] || worldcoverWater[bestEdge + 1];
 
         double edgeX = x[bestEdge + 1] - x[bestEdge];

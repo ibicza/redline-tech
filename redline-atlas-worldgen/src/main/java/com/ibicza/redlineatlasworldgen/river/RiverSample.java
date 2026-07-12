@@ -15,6 +15,10 @@ public record RiverSample(RiverKind kind, boolean exactWater, double distanceToC
     }
 
     public boolean hasRiverData() {
+        return kind == RiverKind.CHANNEL || kind == RiverKind.BANK;
+    }
+
+    public boolean hasTerrainContext() {
         return kind != RiverKind.NONE;
     }
 }

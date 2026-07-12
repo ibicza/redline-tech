@@ -289,14 +289,14 @@ public final class AtlasRiverIndex {
     }
 
     private static boolean better(RiverSample candidate, RiverSample current) {
-        if (!candidate.hasRiverData()) {
+        if (!candidate.hasTerrainContext()) {
             return false;
         }
-        if (!current.hasRiverData()) {
+        if (!current.hasTerrainContext()) {
             return true;
         }
         if (candidate.kind() != current.kind()) {
-            return candidate.kind() == RiverKind.CHANNEL;
+            return kindPriority(candidate.kind()) > kindPriority(current.kind());
         }
         if (candidate.kind() == RiverKind.CHANNEL && current.kind() == RiverKind.CHANNEL) {
             double vertical = Math.max(0.001D, AtlasWorldgenConfig.VERTICAL_METERS_PER_BLOCK.get());
@@ -318,6 +318,15 @@ public final class AtlasRiverIndex {
             return candidate.distanceToCenterBlocks() < current.distanceToCenterBlocks();
         }
         return candidate.strahlerOrder() > current.strahlerOrder();
+    }
+
+    private static int kindPriority(RiverKind kind) {
+        return switch (kind) {
+            case CHANNEL -> 3;
+            case BANK -> 2;
+            case SHOULDER -> 1;
+            case NONE -> 0;
+        };
     }
 
     private static void orientRawNetwork(List<RawHydroRiver> raw) {

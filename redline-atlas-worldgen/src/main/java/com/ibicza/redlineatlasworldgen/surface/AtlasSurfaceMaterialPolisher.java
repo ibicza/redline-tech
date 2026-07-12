@@ -224,6 +224,14 @@ public final class AtlasSurfaceMaterialPolisher {
                     continue;
                 }
 
+                if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_RIVER_WATER.get()
+                        && river.kind() == RiverKind.SHOULDER
+                        && isRiverTerrainShoulderLand(water, lake)) {
+                    changed |= finishRiverTerrainShoulderColumn(level, mutable, blockX, blockZ, heightmapTopY,
+                            minY, maxY, water, lake, river);
+                    continue;
+                }
+
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_LAKE_WATER.get()
                         && lake.kind() == LakeKind.LAKE_SHORE) {
                     changed |= finishLakeShoreColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, maxY, lake);
@@ -354,7 +362,7 @@ public final class AtlasSurfaceMaterialPolisher {
         int bankWidth = Math.max(1, AtlasWorldgenConfig.RIVER_BANK_WIDTH_BLOCKS.get());
         int lateralBand = Math.max(0, (int) Math.floor(river.distanceToBankBlocks() + 0.5D));
         double progress = Math.min(1.0D, lateralBand / (double) bankWidth);
-        int targetY = Math.min(maxY, section.bankTopY() + (int) Math.round(2.0D * smoothstep(progress)));
+        int targetY = Math.min(maxY, section.bankTopY());
         int existingColumnTopY = Math.min(maxY, Math.max(heightmapTopY, terrainY));
         boolean changed = clearRiverVegetationColumn(level, pos, x, z, targetY + 1, existingColumnTopY);
         changed |= clearRiverLiquidColumn(level, pos, x, z, targetY + 1, existingColumnTopY);
@@ -386,10 +394,12 @@ public final class AtlasSurfaceMaterialPolisher {
         if (looseFoundationDepth > 0) {
             fillBottom = Math.min(fillBottom, Math.max(minY, targetY - looseFoundationDepth));
         }
+        if (terrainY != Integer.MIN_VALUE) {
+            fillBottom = Math.min(fillBottom, Math.max(minY, terrainY + 1));
+        }
 
-        // A one/two-column mirrored rim seals the whole water column. This prevents source water
-        // from falling through caves or flowing below a missing bank while avoiding tall dams in
-        // the outer blend zone.
+        // The complete bank reaches existing terrain. A shallow surface shell here used to leave
+        // air below low banks, producing the elevated aqueducts repaired by this pass.
         for (int y = fillBottom; y <= targetY; y++) {
             pos.set(x, y, z);
             BlockState current = level.getBlockState(pos);
@@ -415,6 +425,71 @@ public final class AtlasSurfaceMaterialPolisher {
             changed |= clearFlowingRiverOverflow(level, pos, x, z, minY, maxY, river);
         }
         return changed;
+    }
+
+    private static boolean finishRiverTerrainShoulderColumn(ServerLevel level, BlockPos.MutableBlockPos pos,
+                                                             int x, int z, int heightmapTopY, int minY, int maxY,
+                                                             AtlasOpenWaterGuide.OpenWaterSample water, LakeSample lake,
+                                                             RiverSample river) {
+        long started = AtlasWorldgenProfiler.start();
+        try {
+            int maxRaise = Math.max(0, AtlasWorldgenConfig.SURFACE_POLISH_RIVER_BANK_MAX_RAISE_BLOCKS.get());
+            if (maxRaise == 0) {
+                return false;
+            }
+
+            int terrainY = findTopTerrain(level, pos, x, z, Math.min(maxY, heightmapTopY), minY);
+            if (terrainY == Integer.MIN_VALUE) {
+                return false;
+            }
+
+            RiverSectionProfile section = riverSectionProfile(river, minY, maxY);
+            int bankWidth = Math.max(0, AtlasWorldgenConfig.RIVER_BANK_WIDTH_BLOCKS.get());
+            double shoulderDistance = Math.max(0.0D, river.distanceToBankBlocks() - bankWidth);
+            double maxSlope = Math.max(0.0D,
+                    AtlasWorldgenConfig.SURFACE_POLISH_RIVER_TERRAIN_SHOULDER_MAX_SLOPE.get());
+            int envelopeY = section.bankTopY() - (int) Math.floor(shoulderDistance * maxSlope);
+            int targetY = Math.min(maxY, Math.min(envelopeY, terrainY + maxRaise));
+            if (targetY <= terrainY) {
+                return false;
+            }
+
+            for (int y = terrainY + 1; y <= targetY; y++) {
+                pos.set(x, y, z);
+                BlockState state = level.getBlockState(pos);
+                if (state.liquid() || (!state.isAir() && !isReplaceableTerrainMaterial(state, true)
+                        && !isIgnoredSurfaceFeature(state))) {
+                    return false;
+                }
+            }
+
+            pos.set(x, terrainY, z);
+            BlockState existingCap = level.getBlockState(pos);
+            BlockState cap = replacementFor(level, x, targetY, z, water, lake);
+            if (cap == null) {
+                cap = existingCap;
+            }
+
+            int existingColumnTopY = Math.min(maxY, Math.max(heightmapTopY, terrainY));
+            boolean changed = clearRiverVegetationColumn(level, pos, x, z, targetY + 1, existingColumnTopY);
+            for (int y = terrainY + 1; y <= targetY; y++) {
+                pos.set(x, y, z);
+                BlockState replacement = layerReplacement(cap, targetY - y);
+                changed |= level.setBlock(pos, replacement,
+                        Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+            }
+            return changed;
+        } finally {
+            AtlasWorldgenProfiler.recordSince("surfacePolish.riverTerrainShoulder", started);
+        }
+    }
+
+    private static boolean isRiverTerrainShoulderLand(AtlasOpenWaterGuide.OpenWaterSample water, LakeSample lake) {
+        if (lake.kind() != LakeKind.NONE) {
+            return false;
+        }
+        return water.kind() == AtlasOpenWaterGuide.OpenWaterKind.NONE
+                || water.kind() == AtlasOpenWaterGuide.OpenWaterKind.NON_OCEAN_OR_LAND_GEBCO;
     }
 
     private static boolean clearFlowingRiverOverflow(ServerLevel level, BlockPos.MutableBlockPos pos,
