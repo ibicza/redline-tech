@@ -56,6 +56,16 @@ public final class AtlasNoiseContext {
     }
 
     /**
+     * Resolves biome-generation context, including synchronous structure-start probes.
+     * Structure biome checks can sample positions outside the center chunk, so the
+     * thread-local scope is the authoritative fallback when no chunk registration exists.
+     */
+    public static Optional<ResourceKey<Level>> dimensionForBiomeQuery(ChunkPos pos) {
+        ChunkInfo info = biomeQueryInfo(pos);
+        return info == null ? Optional.empty() : Optional.of(info.dimension());
+    }
+
+    /**
      * Opens a synchronous structure-placement query scope. Structure code may sample corners that
      * fall just outside the currently generated chunk, so a thread-local fallback is required in
      * addition to the per-chunk map used by asynchronous biome/noise stages.
@@ -94,8 +104,8 @@ public final class AtlasNoiseContext {
      * structure-start creation, so unrelated vanilla height probes cannot be shifted twice.
      */
     public static Optional<ResourceKey<Level>> dimensionForQuery(int blockX, int blockZ) {
-        Deque<ChunkInfo> stack = STRUCTURE_QUERY_CONTEXT.get();
-        return stack == null || stack.isEmpty() ? Optional.empty() : Optional.of(stack.peek().dimension());
+        ChunkInfo info = activeStructureQuery();
+        return info == null ? Optional.empty() : Optional.of(info.dimension());
     }
 
     public static boolean shouldGuideStructures(ResourceKey<Level> dimension) {
@@ -132,16 +142,26 @@ public final class AtlasNoiseContext {
     }
 
     public static OptionalLong seedFor(ChunkPos pos) {
-        ChunkInfo info = GENERATING_CHUNKS.get(pos.pack());
+        ChunkInfo info = biomeQueryInfo(pos);
         return info == null ? OptionalLong.empty() : OptionalLong.of(info.seed());
     }
 
     public static Optional<Holder<Biome>> biomeHolderFor(ChunkPos pos, ResourceKey<Biome> key) {
-        ChunkInfo info = GENERATING_CHUNKS.get(pos.pack());
+        ChunkInfo info = biomeQueryInfo(pos);
         if (info == null || info.biomeLookup() == null || key == null) {
             return Optional.empty();
         }
         return info.biomeLookup().get(key).map(holder -> (Holder<Biome>) holder);
+    }
+
+    private static ChunkInfo biomeQueryInfo(ChunkPos pos) {
+        ChunkInfo info = GENERATING_CHUNKS.get(pos.pack());
+        return info != null ? info : activeStructureQuery();
+    }
+
+    private static ChunkInfo activeStructureQuery() {
+        Deque<ChunkInfo> stack = STRUCTURE_QUERY_CONTEXT.get();
+        return stack == null || stack.isEmpty() ? null : stack.peek();
     }
 
     public static boolean shouldGuideNoise(ResourceKey<Level> dimension) {

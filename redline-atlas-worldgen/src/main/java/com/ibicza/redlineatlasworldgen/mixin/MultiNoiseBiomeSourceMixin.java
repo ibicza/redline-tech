@@ -34,7 +34,7 @@ public abstract class MultiNoiseBiomeSourceMixin {
         int blockY = quartY << 2;
         int blockZ = quartZ << 2;
         ChunkPos chunkPos = new ChunkPos(blockX >> 4, blockZ >> 4);
-        Optional<ResourceKey<Level>> dimension = AtlasNoiseContext.dimensionFor(chunkPos);
+        Optional<ResourceKey<Level>> dimension = AtlasNoiseContext.dimensionForBiomeQuery(chunkPos);
         if (dimension.isEmpty() || !AtlasNoiseContext.shouldGuideBiome(dimension.get())) {
             return;
         }
