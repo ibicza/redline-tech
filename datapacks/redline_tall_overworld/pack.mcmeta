@@ -1,6 +1,8 @@
 {
   "pack": {
     "pack_format": 103,
+    "min_format": 103,
+    "max_format": 103,
     "description": "Redline Tall Overworld + Noise Height: -2032..2031, sea level 0, aquifers off for atlas worldgen"
   }
 }
