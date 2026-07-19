@@ -22,10 +22,13 @@ import com.ibicza.redlineatlasworldgen.terrain.AtlasTerrainShaper;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasTerrainStats;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -57,6 +60,7 @@ public final class AtlasWorldgenCommands {
                         .then(Commands.literal("profile").executes(context -> profile(context, 16))
                                 .then(Commands.literal("reset").executes(AtlasWorldgenCommands::profileReset))
                                 .then(Commands.argument("limit", IntegerArgumentType.integer(1, 64)).executes(context -> profile(context, IntegerArgumentType.getInteger(context, "limit")))))
+                        .then(chunkProfileCommand())
                         .then(Commands.literal("biome_sample").executes(AtlasWorldgenCommands::biomeSampleHere))
                         .then(Commands.literal("landcover_tiles").executes(context -> listLandcoverTiles(context, 8))
                                 .then(Commands.argument("limit", IntegerArgumentType.integer(1, 64)).executes(context -> listLandcoverTiles(context, IntegerArgumentType.getInteger(context, "limit")))))
@@ -449,6 +453,88 @@ public final class AtlasWorldgenCommands {
         return 1;
     }
 
+
+    private static LiteralArgumentBuilder<CommandSourceStack> chunkProfileCommand() {
+        var radius = Commands.argument(
+                        "radiusChunks",
+                        IntegerArgumentType.integer(0, AtlasWorldgenProfiler.MAX_CHUNK_PROFILE_RADIUS)
+                )
+                .executes(context -> chunkProfileStart(
+                        context,
+                        AtlasWorldgenProfiler.DEFAULT_CHUNK_PROFILE_TIMEOUT_TICKS,
+                        AtlasWorldgenProfiler.DEFAULT_CHUNK_PROFILE_SETTLE_TICKS
+                ))
+                .then(Commands.argument("timeoutTicks", IntegerArgumentType.integer(20, 72_000))
+                        .executes(context -> chunkProfileStart(
+                                context,
+                                IntegerArgumentType.getInteger(context, "timeoutTicks"),
+                                AtlasWorldgenProfiler.DEFAULT_CHUNK_PROFILE_SETTLE_TICKS
+                        ))
+                        .then(Commands.argument("settleTicks", IntegerArgumentType.integer(0, 1_200))
+                                .executes(context -> chunkProfileStart(
+                                        context,
+                                        IntegerArgumentType.getInteger(context, "timeoutTicks"),
+                                        IntegerArgumentType.getInteger(context, "settleTicks")
+                                ))));
+
+        var start = Commands.literal("start")
+                .then(Commands.argument("label", StringArgumentType.word())
+                        .then(Commands.argument(
+                                        "blockX",
+                                        IntegerArgumentType.integer(-30_000_000, 29_999_999)
+                                )
+                                .then(Commands.argument(
+                                                "blockZ",
+                                                IntegerArgumentType.integer(-30_000_000, 29_999_999)
+                                        )
+                                        .then(radius))));
+
+        return Commands.literal("chunk_profile")
+                .requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
+                .then(Commands.literal("status").executes(AtlasWorldgenCommands::chunkProfileStatus))
+                .then(Commands.literal("stop").executes(AtlasWorldgenCommands::chunkProfileStop))
+                .then(start);
+    }
+
+    private static int chunkProfileStart(CommandContext<CommandSourceStack> context,
+                                         int timeoutTicks, int settleTicks) {
+        CommandSourceStack source = context.getSource();
+        AtlasWorldgenProfiler.OperationResult result = AtlasWorldgenProfiler.startChunkProfile(
+                source.getServer(),
+                source.getLevel().dimension(),
+                StringArgumentType.getString(context, "label"),
+                SectionPos.blockToSectionCoord(IntegerArgumentType.getInteger(context, "blockX")),
+                SectionPos.blockToSectionCoord(IntegerArgumentType.getInteger(context, "blockZ")),
+                IntegerArgumentType.getInteger(context, "radiusChunks"),
+                timeoutTicks,
+                settleTicks
+        );
+        return sendProfileResult(context, result);
+    }
+
+    private static int chunkProfileStatus(CommandContext<CommandSourceStack> context) {
+        for (String line : AtlasWorldgenProfiler.chunkProfileStatusLines()) {
+            context.getSource().sendSuccess(() -> Component.literal(line), false);
+        }
+        return 1;
+    }
+
+    private static int chunkProfileStop(CommandContext<CommandSourceStack> context) {
+        return sendProfileResult(
+                context,
+                AtlasWorldgenProfiler.stopChunkProfile(context.getSource().getServer())
+        );
+    }
+
+    private static int sendProfileResult(CommandContext<CommandSourceStack> context,
+                                         AtlasWorldgenProfiler.OperationResult result) {
+        if (result.success()) {
+            context.getSource().sendSuccess(() -> Component.literal(result.message()), true);
+            return 1;
+        }
+        context.getSource().sendFailure(Component.literal(result.message()));
+        return 0;
+    }
     private static int listManualLakes(CommandContext<CommandSourceStack> context, int limit) {
         ManualLakeIndex index = ManualLakeIndex.active();
         context.getSource().sendSuccess(() -> Component.literal("RLA manual lakes: " + index.lakeCount() + ", root=" + index.root()), false);

@@ -12,6 +12,7 @@ import com.ibicza.redlineatlasworldgen.terrain.AtlasNoiseGuide;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasTerrainShaper;
 import com.ibicza.redlineatlasworldgen.surface.AtlasSurfaceMaterialPolisher;
 import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
+import com.ibicza.redlineatlasworldgen.profiler.ChunkProfilePlanRunner;
 import com.ibicza.redlineatlasworldgen.river.AtlasRiverIndex;
 import net.minecraft.server.level.ServerLevel;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -19,10 +20,13 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.level.ChunkEvent;
 import net.neoforged.neoforge.event.level.LevelEvent;
+import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 @EventBusSubscriber(modid = RedlineAtlasWorldgen.MOD_ID)
 public final class AtlasWorldgenEvents {
+    private static long serverTickStartedNanos;
+
     @SubscribeEvent
     public static void onLevelLoad(LevelEvent.Load event) {
         if (event.getLevel() instanceof ServerLevel level) {
@@ -42,6 +46,7 @@ public final class AtlasWorldgenEvents {
             return;
         }
 
+        AtlasWorldgenProfiler.chunkLoaded(level, event.getChunk().getPos(), event.isNewChunk());
         AtlasSurfaceMaterialPolisher.enqueue(level, event.getChunk().getPos(), event.isNewChunk());
         AtlasSurfaceMaterialPolisher.enqueueRiverBoundaryNeighbors(level, event.getChunk().getPos(), event.isNewChunk());
 
@@ -57,11 +62,23 @@ public final class AtlasWorldgenEvents {
     }
 
     @SubscribeEvent
+    public static void onServerTick(ServerTickEvent.Pre event) {
+        serverTickStartedNanos = AtlasWorldgenProfiler.serverTickStarted();
+    }
+
+    @SubscribeEvent
     public static void onServerTick(ServerTickEvent.Post event) {
         AtlasTerrainShaper.tick(event.getServer());
         AtlasSurfaceMaterialPolisher.tick(event.getServer());
-        AtlasWorldgenProfiler.serverTick();
+        AtlasWorldgenProfiler.serverTick(event.getServer(), serverTickStartedNanos);
+        ChunkProfilePlanRunner.tick(event.getServer());
     }
+
+    @SubscribeEvent
+    public static void onServerStopping(ServerStoppingEvent event) {
+        ChunkProfilePlanRunner.serverStopping(event.getServer());
+    }
+
 
     @SubscribeEvent
     public static void onRegisterCommands(RegisterCommandsEvent event) {
