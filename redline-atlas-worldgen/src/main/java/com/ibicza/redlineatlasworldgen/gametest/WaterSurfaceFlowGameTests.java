@@ -12,6 +12,7 @@ import net.minecraft.gametest.framework.TestEnvironmentDefinition;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.tags.FluidTags;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.event.RegisterGameTestsEvent;
@@ -94,8 +95,7 @@ public final class WaterSurfaceFlowGameTests {
     }
 
     private static void waterSpreadsAcrossWaterSupport(GameTestHelper helper) {
-        helper.setBlock(SUPPORT, Blocks.WATER);
-        helper.setBlock(TARGET_SUPPORT, Blocks.WATER);
+        prepareFixture(helper, Blocks.WATER, Blocks.WATER);
         flowOnce(helper);
         assertWaterAndSucceed(
                 helper,
@@ -105,7 +105,7 @@ public final class WaterSurfaceFlowGameTests {
     }
 
     private static void waterDoesNotSelfSupportOverAir(GameTestHelper helper) {
-        helper.setBlock(SUPPORT, Blocks.WATER);
+        prepareFixture(helper, Blocks.WATER, Blocks.AIR);
         flowOnce(helper);
         helper.assertTrue(
                 helper.getBlockState(TARGET).isAir(),
@@ -115,7 +115,7 @@ public final class WaterSurfaceFlowGameTests {
     }
 
     private static void waterKeepsVanillaSolidEdgeFlow(GameTestHelper helper) {
-        helper.setBlock(SUPPORT, Blocks.STONE);
+        prepareFixture(helper, Blocks.STONE, Blocks.AIR);
         flowOnce(helper);
         assertWaterAndSucceed(
                 helper,
@@ -132,6 +132,13 @@ public final class WaterSurfaceFlowGameTests {
                 flowPos,
                 helper.getLevel().getBlockState(flowPos)
         );
+    }
+
+    private static void prepareFixture(GameTestHelper helper, Block flowSupport, Block targetSupport) {
+        helper.setBlock(FLOW, Blocks.AIR);
+        helper.setBlock(SUPPORT, flowSupport);
+        helper.setBlock(TARGET, Blocks.AIR);
+        helper.setBlock(TARGET_SUPPORT, targetSupport);
     }
 
     private static void assertWaterAndSucceed(GameTestHelper helper, BlockPos pos, String message) {
