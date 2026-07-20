@@ -6,6 +6,7 @@ import com.ibicza.redlineatlasworldgen.heightmap.AtlasCoordinateMapper;
 import com.ibicza.redlineatlasworldgen.heightmap.AtlasHeightmapIndex;
 import com.ibicza.redlineatlasworldgen.heightmap.GeoPoint;
 import com.ibicza.redlineatlasworldgen.heightmap.HeightSample;
+import it.unimi.dsi.fastutil.HashCommon;
 import net.minecraft.util.Mth;
 
 import java.util.Optional;
@@ -69,7 +70,7 @@ public final class AtlasNoiseGuide {
     }
 
     private static GuideColumn column(int blockX, int blockZ) {
-        long key = (((long) blockX) << 32) ^ (blockZ & 0xffffffffL);
+        long key = HashCommon.mix((((long) blockX) << 32) ^ (blockZ & 0xffffffffL));
         GuideColumn cached = COLUMN_CACHE.get(key);
         if (cached != null) {
             return cached;

@@ -79,6 +79,12 @@ shut down normally. The script watches the per-point reports, prints the six slo
 stages, and reads the final marker. On a host-side timeout it writes a bounded
 cancellation marker so the runner can release tickets and stop JFR before shutdown.
 
+After JFR has stopped, the runner classifies every measured center against the atlas
+pipelines as `ordinary`, `river`, `lake`, or `ocean`. A point may declare an expected
+`terrainClass`; the run marker then records the expected class, actual class,
+requested coordinates, and resolved coordinates. A mismatch makes the automated run
+fail without discarding the per-point performance report.
+
 Before startup the script inventories these configured atlas layers and refuses to
 run if one is absent or empty:
 
@@ -95,10 +101,10 @@ Example plan:
   "timeoutTicks": 12000,
   "settleTicks": 100,
   "points": [
-    { "label": "ordinary-a", "blockX": 120000, "blockZ": 120000 },
-    { "label": "river-a", "blockX": -180000, "blockZ": 90000 },
-    { "label": "lake-a", "blockX": 60000, "blockZ": -150000 },
-    { "label": "ocean-a", "blockX": -210000, "blockZ": -210000 }
+    { "label": "ordinary-a", "blockX": 120000, "blockZ": 120000, "terrainClass": "ordinary" },
+    { "label": "river-a", "blockX": -180000, "blockZ": 90000, "terrainClass": "river", "nearestRiverRadiusBlocks": 4096 },
+    { "label": "lake-a", "blockX": 60000, "blockZ": -150000, "terrainClass": "lake" },
+    { "label": "ocean-a", "blockX": -210000, "blockZ": -210000, "terrainClass": "ocean" }
   ]
 }
 ```
@@ -106,6 +112,12 @@ Example plan:
 The coordinates above only illustrate the schema. A real plan must use points
 classified against the active atlas data. Points should also be far from spawn and
 from earlier experiments so every measured region consists of new chunks.
+
+`terrainClass` is optional and accepts only the four names above. For river points,
+`nearestRiverRadiusBlocks` may be `0..32768`; the runner resolves the requested point
+to the nearest indexed river segment before loading chunks. Other terrain classes use
+the requested coordinates unchanged. Comparative runs must also require
+`newChunkLoads > 0`; an existing-chunk report measures loading, not generation.
 
 Run from the repository root:
 

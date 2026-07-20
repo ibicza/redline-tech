@@ -7,6 +7,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.ibicza.redlineatlasworldgen.RedlineAtlasWorldgen;
+import com.ibicza.redlineatlasworldgen.river.AtlasRiverIndex;
 import net.minecraft.core.SectionPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.dedicated.DedicatedServer;
@@ -132,8 +133,25 @@ public final class ChunkProfilePlanRunner {
             int radius = intValue(point, "radiusChunks", defaultRadius);
             int timeout = intValue(point, "timeoutTicks", defaultTimeout);
             int settle = intValue(point, "settleTicks", defaultSettle);
+            ChunkProfileTerrainClassifier.TerrainClass expectedTerrainClass =
+                    ChunkProfileTerrainClassifier.parseExpected(optionalString(point, "terrainClass"));
+            int nearestRiverRadius = intValue(point, "nearestRiverRadiusBlocks", 0);
             validatePoint(label, blockX, blockZ, radius, timeout, settle);
-            points.add(new ProfilePoint(label, blockX, blockZ, radius, timeout, settle));
+            if (nearestRiverRadius < 0 || nearestRiverRadius > 32_768) {
+                throw new IllegalArgumentException(
+                        "profile point " + label + " has invalid nearestRiverRadiusBlocks"
+                );
+            }
+            if (nearestRiverRadius > 0
+                    && expectedTerrainClass != ChunkProfileTerrainClassifier.TerrainClass.RIVER) {
+                throw new IllegalArgumentException(
+                        "nearestRiverRadiusBlocks requires terrainClass=river for profile " + label
+                );
+            }
+            points.add(new ProfilePoint(
+                    label, blockX, blockZ, radius, timeout, settle, expectedTerrainClass,
+                    nearestRiverRadius, blockX, blockZ
+            ));
         }
         return new ProfilePlan(List.copyOf(points));
     }
@@ -176,6 +194,17 @@ public final class ChunkProfilePlanRunner {
         return element == null ? defaultValue : element.getAsInt();
     }
 
+    private static String optionalString(JsonObject object, String name) {
+        JsonElement element = object.get(name);
+        if (element == null) {
+            return null;
+        }
+        if (!element.isJsonPrimitive()) {
+            throw new IllegalArgumentException("property must be a string: " + name);
+        }
+        return element.getAsString();
+    }
+
     private static void writeInitializationFailure(Path summaryPath, String runId,
                                                    String planValue, String error) {
         Map<String, Object> summary = baseSummary(runId, planValue, Instant.now(), Instant.now());
@@ -196,7 +225,7 @@ public final class ChunkProfilePlanRunner {
     private static Map<String, Object> baseSummary(String runId, String planPath,
                                                    Instant startedAt, Instant endedAt) {
         Map<String, Object> summary = new LinkedHashMap<>();
-        summary.put("schemaVersion", 1);
+        summary.put("schemaVersion", 2);
         summary.put("runId", runId);
         summary.put("planPath", planPath);
         summary.put("startedAtUtc", startedAt.toString());
@@ -238,7 +267,46 @@ public final class ChunkProfilePlanRunner {
     }
 
     private record ProfilePoint(String label, int blockX, int blockZ,
-                                int radius, int timeout, int settle) {
+                                int radius, int timeout, int settle,
+                                ChunkProfileTerrainClassifier.TerrainClass expectedTerrainClass,
+                                int nearestRiverRadiusBlocks,
+                                int requestedBlockX, int requestedBlockZ) {
+        private ProfilePoint withCoordinates(int resolvedBlockX, int resolvedBlockZ) {
+            return new ProfilePoint(
+                    label, resolvedBlockX, resolvedBlockZ, radius, timeout, settle,
+                    expectedTerrainClass, nearestRiverRadiusBlocks, requestedBlockX, requestedBlockZ
+            );
+        }
+    }
+
+    private static ProfilePlan resolveNearestRivers(ProfilePlan requested) {
+        List<ProfilePoint> resolved = new ArrayList<>(requested.points().size());
+        for (ProfilePoint point : requested.points()) {
+            if (point.nearestRiverRadiusBlocks() == 0) {
+                resolved.add(point);
+                continue;
+            }
+            var nearest = AtlasRiverIndex.active().nearestChannel(
+                    point.blockX(), point.blockZ(), point.nearestRiverRadiusBlocks()
+            );
+            if (nearest.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "profile " + point.label() + " found no river within "
+                                + point.nearestRiverRadiusBlocks() + " blocks of "
+                                + point.blockX() + "," + point.blockZ()
+                );
+            }
+            ProfilePoint resolvedPoint = point.withCoordinates(
+                    nearest.get().blockX(), nearest.get().blockZ()
+            );
+            RedlineAtlasWorldgen.LOGGER.info(
+                    "Resolved chunk profile river label={} from {},{} to {},{} (distance={} blocks)",
+                    point.label(), point.blockX(), point.blockZ(), resolvedPoint.blockX(),
+                    resolvedPoint.blockZ(), nearest.get().distanceBlocks()
+            );
+            resolved.add(resolvedPoint);
+        }
+        return new ProfilePlan(List.copyOf(resolved));
     }
 
     private static final class Runner {
@@ -246,9 +314,11 @@ public final class ChunkProfilePlanRunner {
         private final Path planPath;
         private final Path summaryPath;
         private final Path cancelPath;
-        private final ProfilePlan plan;
+        private ProfilePlan plan;
         private final boolean autoStop;
         private final List<AtlasWorldgenProfiler.ChunkProfileCompletion> completions = new ArrayList<>();
+        private final Map<String, ChunkProfileTerrainClassifier.Classification> classifications =
+                new LinkedHashMap<>();
         private final Instant startedAt = Instant.now();
 
         private int nextPointIndex;
@@ -269,6 +339,7 @@ public final class ChunkProfilePlanRunner {
         }
 
         private void begin(MinecraftServer server) {
+            plan = resolveNearestRivers(plan);
             if (server instanceof DedicatedServer dedicatedServer) {
                 previousPauseSeconds = dedicatedServer.pauseWhenEmptySeconds();
                 if (previousPauseSeconds > 0) {
@@ -394,6 +465,41 @@ public final class ChunkProfilePlanRunner {
                 RedlineAtlasWorldgen.LOGGER.error("Could not stop automated JFR recording", exception);
             }
 
+            for (AtlasWorldgenProfiler.ChunkProfileCompletion completion : completions) {
+                ProfilePoint point = point(completion.label());
+                if (point == null) {
+                    finalError = appendError(finalError,
+                            "profile completion has no matching plan point: " + completion.label());
+                    success = false;
+                    continue;
+                }
+                try {
+                    ChunkProfileTerrainClassifier.Classification classification =
+                            ChunkProfileTerrainClassifier.classify(point.blockX(), point.blockZ());
+                    classifications.put(point.label(), classification);
+                    String expected = point.expectedTerrainClass() == null
+                            ? "unspecified" : point.expectedTerrainClass().id();
+                    RedlineAtlasWorldgen.LOGGER.info(
+                            "Chunk profile terrain label={}, expected={}, actual={}, details={}",
+                            point.label(), expected, classification.id(), classification.details()
+                    );
+                    if (point.expectedTerrainClass() != null
+                            && point.expectedTerrainClass() != classification.terrainClass()) {
+                        finalError = appendError(finalError,
+                                "profile " + point.label() + " expected terrainClass=" + expected
+                                        + " but classified as " + classification.id());
+                        success = false;
+                    }
+                } catch (RuntimeException exception) {
+                    finalError = appendError(finalError,
+                            "terrain classification failed for " + point.label() + ": " + exception.getMessage());
+                    success = false;
+                    RedlineAtlasWorldgen.LOGGER.error(
+                            "Could not classify chunk profile point {}", point.label(), exception
+                    );
+                }
+            }
+
             if (pauseChanged && server instanceof DedicatedServer dedicatedServer) {
                 dedicatedServer.setPauseWhenEmptySeconds(previousPauseSeconds);
                 pauseChanged = false;
@@ -407,6 +513,26 @@ public final class ChunkProfilePlanRunner {
             summary.put("pointsRequested", plan.points().size());
             summary.put("pointsCompleted", completions.size());
             summary.put("jfrPath", jfrPath == null ? null : jfrPath.toString());
+            List<Map<String, Object>> classificationRows = new ArrayList<>(classifications.size());
+            for (ProfilePoint point : plan.points()) {
+                ChunkProfileTerrainClassifier.Classification classification = classifications.get(point.label());
+                if (classification == null) {
+                    continue;
+                }
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("label", point.label());
+                row.put("blockX", point.blockX());
+                row.put("blockZ", point.blockZ());
+                row.put("requestedBlockX", point.requestedBlockX());
+                row.put("requestedBlockZ", point.requestedBlockZ());
+                row.put("nearestRiverRadiusBlocks", point.nearestRiverRadiusBlocks());
+                row.put("expectedTerrainClass", point.expectedTerrainClass() == null
+                        ? null : point.expectedTerrainClass().id());
+                row.put("terrainClass", classification.id());
+                row.put("details", classification.details());
+                classificationRows.add(row);
+            }
+            summary.put("classifications", classificationRows);
             List<Map<String, Object>> reports = new ArrayList<>(completions.size());
             for (AtlasWorldgenProfiler.ChunkProfileCompletion completion : completions) {
                 Map<String, Object> report = new LinkedHashMap<>();
@@ -415,6 +541,9 @@ public final class ChunkProfilePlanRunner {
                 report.put("reportWritten", completion.reportWritten());
                 report.put("jsonPath", completion.jsonPath().toString());
                 report.put("csvPath", completion.csvPath().toString());
+                ChunkProfileTerrainClassifier.Classification classification =
+                        classifications.get(completion.label());
+                report.put("terrainClass", classification == null ? null : classification.id());
                 reports.add(report);
             }
             summary.put("reports", reports);
@@ -444,6 +573,15 @@ public final class ChunkProfilePlanRunner {
 
         private static String appendError(String current, String addition) {
             return current == null || current.isBlank() ? addition : current + "; " + addition;
+        }
+
+        private ProfilePoint point(String label) {
+            for (ProfilePoint point : plan.points()) {
+                if (point.label().equals(label)) {
+                    return point;
+                }
+            }
+            return null;
         }
     }
 

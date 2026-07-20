@@ -3,6 +3,8 @@ package com.ibicza.redlineatlasworldgen.river;
 import com.ibicza.redlineatlasworldgen.RedlineAtlasWorldgen;
 import com.ibicza.redlineatlasworldgen.config.AtlasWorldgenConfig;
 import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
+import it.unimi.dsi.fastutil.HashCommon;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -12,7 +14,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -30,15 +31,15 @@ public final class AtlasRiverIndex {
     private static final AtomicInteger CACHE_CLEAR_GUARD = new AtomicInteger();
 
     private final List<RiverSegment> segments;
-    private final Map<Long, List<RiverSegment>> cells;
+    private final Long2ObjectOpenHashMap<List<RiverSegment>> cells;
     private final Path root;
     private final int sourceFileCount;
     private final Optional<RiverSourceBounds> sourceBounds;
 
-    private AtlasRiverIndex(List<RiverSegment> segments, Map<Long, List<RiverSegment>> cells,
+    private AtlasRiverIndex(List<RiverSegment> segments, Long2ObjectOpenHashMap<List<RiverSegment>> cells,
                             Path root, int sourceFileCount, Optional<RiverSourceBounds> sourceBounds) {
         this.segments = List.copyOf(segments);
-        this.cells = Map.copyOf(cells);
+        this.cells = cells;
         this.root = root;
         this.sourceFileCount = sourceFileCount;
         this.sourceBounds = sourceBounds;
@@ -90,7 +91,7 @@ public final class AtlasRiverIndex {
                 if (configurationMatches && sourcesMatch) {
                     List<RiverSegment> cookedSegments = new ArrayList<>(cooked.segments());
                     cookedSegments.sort(Comparator.comparingLong(RiverSegment::riverId).thenComparing(RiverSegment::sourceId));
-                    Map<Long, List<RiverSegment>> cookedCells = buildCells(cookedSegments);
+                    Long2ObjectOpenHashMap<List<RiverSegment>> cookedCells = buildCells(cookedSegments);
                     AtlasRiverIndex index = new AtlasRiverIndex(cookedSegments, cookedCells, root, shapefiles.size(), bounds);
                     active = index;
                     clearCache();
@@ -144,7 +145,7 @@ public final class AtlasRiverIndex {
                 RedlineAtlasWorldgen.LOGGER.warn("Could not write cooked river cache {}", cookedCache, ex);
             }
         }
-        Map<Long, List<RiverSegment>> cells = buildCells(segments);
+        Long2ObjectOpenHashMap<List<RiverSegment>> cells = buildCells(segments);
 
         AtlasRiverIndex index = new AtlasRiverIndex(segments, cells, root, shapefiles.size(), bounds);
         active = index;
@@ -188,7 +189,7 @@ public final class AtlasRiverIndex {
         int cell = AtlasWorldgenConfig.RIVER_BIOME_CACHE_CELL_SIZE_BLOCKS.get();
         int gx = Math.floorDiv(blockX, cell);
         int gz = Math.floorDiv(blockZ, cell);
-        long key = cellKey(gx, gz);
+        long key = HashCommon.mix(cellKey(gx, gz));
         RiverSample cached = BIOME_CACHE.get(key);
         if (cached != null) {
             return cached;
@@ -285,7 +286,7 @@ public final class AtlasRiverIndex {
     }
 
     private static AtlasRiverIndex empty(Path root) {
-        return new AtlasRiverIndex(List.of(), Map.of(), root, 0, Optional.empty());
+        return new AtlasRiverIndex(List.of(), new Long2ObjectOpenHashMap<>(), root, 0, Optional.empty());
     }
 
     private static boolean better(RiverSample candidate, RiverSample current) {
@@ -391,9 +392,9 @@ public final class AtlasRiverIndex {
         return dx * dx + dz * dz;
     }
 
-    private static Map<Long, List<RiverSegment>> buildCells(List<RiverSegment> segments) {
+    private static Long2ObjectOpenHashMap<List<RiverSegment>> buildCells(List<RiverSegment> segments) {
         int cellSize = AtlasWorldgenConfig.RIVER_INDEX_CELL_SIZE_BLOCKS.get();
-        Map<Long, List<RiverSegment>> mutable = new HashMap<>();
+        Long2ObjectOpenHashMap<List<RiverSegment>> mutable = new Long2ObjectOpenHashMap<>();
         for (RiverSegment segment : segments) {
             int minCellX = Math.floorDiv((int) Math.floor(segment.minX()), cellSize);
             int maxCellX = Math.floorDiv((int) Math.floor(segment.maxX()), cellSize);
@@ -410,9 +411,10 @@ public final class AtlasRiverIndex {
                 }
             }
         }
-        Map<Long, List<RiverSegment>> immutable = new HashMap<>(mutable.size());
-        mutable.forEach((key, value) -> immutable.put(key, List.copyOf(value)));
-        return immutable;
+        Long2ObjectOpenHashMap<List<RiverSegment>> result = new Long2ObjectOpenHashMap<>(mutable.size());
+        mutable.long2ObjectEntrySet().forEach(entry -> result.put(entry.getLongKey(), List.copyOf(entry.getValue())));
+        result.trim();
+        return result;
     }
 
     private static long cellKey(int x, int z) {
@@ -521,6 +523,6 @@ public final class AtlasRiverIndex {
     }
 
     private AtlasRiverIndex() {
-        this(List.of(), Map.of(), Path.of("."), 0, Optional.empty());
+        this(List.of(), new Long2ObjectOpenHashMap<>(), Path.of("."), 0, Optional.empty());
     }
 }

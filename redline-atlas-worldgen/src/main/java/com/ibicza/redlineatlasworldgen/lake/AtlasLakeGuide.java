@@ -11,15 +11,16 @@ import com.ibicza.redlineatlasworldgen.landcover.LandcoverSample;
 import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 import com.ibicza.redlineatlasworldgen.river.AtlasRiverIndex;
 import com.ibicza.redlineatlasworldgen.river.RiverSample;
+import it.unimi.dsi.fastutil.HashCommon;
+import it.unimi.dsi.fastutil.longs.LongIterator;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -52,7 +53,7 @@ public final class AtlasLakeGuide {
             int cell = Math.max(4, AtlasWorldgenConfig.LAKE_CACHE_CELL_SIZE_BLOCKS.get());
             int cellX = Math.floorDiv(blockX, cell);
             int cellZ = Math.floorDiv(blockZ, cell);
-            long key = (((long) cellX) << 32) ^ (cellZ & 0xffffffffL);
+            long key = cacheKey(cellX, cellZ);
             LakeSample cached = SAMPLE_CACHE.get(key);
             if (cached != null) {
                 return cached;
@@ -224,7 +225,7 @@ public final class AtlasLakeGuide {
         int cacheCell = Math.max(8, step * 2);
         int cellX = Math.floorDiv(blockX, cacheCell);
         int cellZ = Math.floorDiv(blockZ, cacheCell);
-        long key = (((long) cellX) << 32) ^ (cellZ & 0xffffffffL);
+        long key = cacheKey(cellX, cellZ);
         BasinFit cached = BASIN_FIT_CACHE.get(key);
         if (cached != null) {
             return cached;
@@ -251,7 +252,7 @@ public final class AtlasLakeGuide {
             int maxRadius = Math.max(step, AtlasWorldgenConfig.LAKE_BASIN_FIT_SEARCH_BLOCKS.get());
             int maxGrid = Math.max(1, maxRadius / step);
             ArrayDeque<GridCell> queue = new ArrayDeque<>();
-            Set<Long> waterCells = new HashSet<>();
+            LongOpenHashSet waterCells = new LongOpenHashSet();
             queue.add(new GridCell(0, 0));
             waterCells.add(gridKey(0, 0));
 
@@ -285,10 +286,12 @@ public final class AtlasLakeGuide {
             List<Double> allWaterHeights = new ArrayList<>();
             List<Double> coreHeights = new ArrayList<>();
             List<Double> rimHeights = new ArrayList<>();
-            Set<Long> rimCells = new HashSet<>();
+            LongOpenHashSet rimCells = new LongOpenHashSet();
             int coreMinNeighbours = Math.max(0, Math.min(8, AtlasWorldgenConfig.LAKE_BASIN_CORE_MIN_WATER_NEIGHBORS.get()));
 
-            for (long encoded : waterCells) {
+            LongIterator waterIterator = waterCells.iterator();
+            while (waterIterator.hasNext()) {
+                long encoded = waterIterator.nextLong();
                 GridCell cell = decodeGridKey(encoded);
                 int bx = blockX + cell.gx() * step;
                 int bz = blockZ + cell.gz() * step;
@@ -584,6 +587,10 @@ public final class AtlasLakeGuide {
 
     private static long gridKey(int gx, int gz) {
         return (((long) gx) << 32) ^ (gz & 0xffffffffL);
+    }
+
+    private static long cacheKey(int gx, int gz) {
+        return HashCommon.mix(gridKey(gx, gz));
     }
 
     private static GridCell decodeGridKey(long key) {

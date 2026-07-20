@@ -269,6 +269,9 @@ foreach ($point in $rawPoints) {
     [int]$radius = Get-PropertyValue -InputObject $point -Name "radiusChunks" -DefaultValue $defaultRadius
     [int]$timeout = Get-PropertyValue -InputObject $point -Name "timeoutTicks" -DefaultValue $defaultTimeout
     [int]$settle = Get-PropertyValue -InputObject $point -Name "settleTicks" -DefaultValue $defaultSettle
+    $terrainClass = [string](Get-PropertyValue -InputObject $point -Name "terrainClass" -DefaultValue "")
+    $terrainClass = $terrainClass.ToLowerInvariant()
+    [int]$nearestRiverRadius = Get-PropertyValue -InputObject $point -Name "nearestRiverRadiusBlocks" -DefaultValue 0
 
     if ($blockX -lt -30000000 -or $blockX -gt 29999999 -or
             $blockZ -lt -30000000 -or $blockZ -gt 29999999) {
@@ -283,6 +286,15 @@ foreach ($point in $rawPoints) {
     if ($settle -lt 0 -or $settle -gt 1200 -or $settle -gt $timeout) {
         throw "Profile '$label' settleTicks must be between 0 and min(1200, timeoutTicks)."
     }
+    if ($terrainClass -and $terrainClass -notin @("ordinary", "river", "lake", "ocean")) {
+        throw "Profile '$label' terrainClass must be ordinary, river, lake or ocean."
+    }
+    if ($nearestRiverRadius -lt 0 -or $nearestRiverRadius -gt 32768) {
+        throw "Profile '$label' nearestRiverRadiusBlocks must be between 0 and 32768."
+    }
+    if ($nearestRiverRadius -gt 0 -and $terrainClass -ne "river") {
+        throw "Profile '$label' nearestRiverRadiusBlocks requires terrainClass=river."
+    }
 
     $points.Add([pscustomobject]@{
             Label = $label
@@ -291,6 +303,8 @@ foreach ($point in $rawPoints) {
             Radius = $radius
             Timeout = $timeout
             Settle = $settle
+            TerrainClass = $terrainClass
+            NearestRiverRadius = $nearestRiverRadius
         })
 }
 
@@ -375,6 +389,23 @@ try {
     }
 
     $runSummary = Wait-ForRunSummary
+    $classificationsProperty = $runSummary.PSObject.Properties["classifications"]
+    if ($null -ne $classificationsProperty) {
+        foreach ($classification in @($classificationsProperty.Value)) {
+            $expectedProperty = $classification.PSObject.Properties["expectedTerrainClass"]
+            $expected = if ($null -eq $expectedProperty -or $null -eq $expectedProperty.Value) {
+                "unspecified"
+            } else {
+                [string]$expectedProperty.Value
+            }
+            Write-Host ("CLASSIFY {0}: expected={1}, actual={2}, block={3},{4}" -f
+                    $classification.label,
+                    $expected,
+                    $classification.terrainClass,
+                    $classification.blockX,
+                    $classification.blockZ)
+        }
+    }
     if (-not [bool]$runSummary.success) {
         throw "Automated profile run failed: $($runSummary.error)"
     }
