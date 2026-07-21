@@ -3,10 +3,12 @@ package com.ibicza.redlineatlasworldgen.mixin;
 import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasNoiseContext;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.GenerationChunkHolder;
 import net.minecraft.util.StaticCache2D;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.status.ChunkStep;
 import net.minecraft.world.level.chunk.status.ChunkStatusTasks;
 import net.minecraft.world.level.chunk.status.WorldGenContext;
@@ -118,20 +120,22 @@ public abstract class ChunkStatusTasksMixin {
         if (startedNanos == 0L && token == null) {
             return;
         }
+        ResourceKey<Level> dimension = context.level().dimension();
         CompletableFuture<ChunkAccess> future = cir.getReturnValue();
         if (future == null) {
             AtlasWorldgenProfiler.completeChunkStage(token, counterName, startedNanos, null);
-            redlineAtlasWorldgen$recordSectionSnapshot(stageName, chunk);
+            redlineAtlasWorldgen$recordSectionSnapshot(stageName, dimension, chunk);
             return;
         }
         future.whenComplete((ignored, throwable) -> {
             AtlasWorldgenProfiler.completeChunkStage(token, counterName, startedNanos, throwable);
-            redlineAtlasWorldgen$recordSectionSnapshot(stageName, chunk);
+            redlineAtlasWorldgen$recordSectionSnapshot(stageName, dimension, chunk);
         });
     }
 
     @Unique
-    private static void redlineAtlasWorldgen$recordSectionSnapshot(String stageName, ChunkAccess chunk) {
+    private static void redlineAtlasWorldgen$recordSectionSnapshot(String stageName, ResourceKey<Level> dimension,
+                                                                   ChunkAccess chunk) {
         String stageId = redlineAtlasWorldgen$stageId(stageName);
         if (!redlineAtlasWorldgen$shouldSnapshotSections(stageId)) {
             return;
@@ -144,13 +148,22 @@ public abstract class ChunkStatusTasksMixin {
                 empty++;
             }
         }
+        int topAir = 0;
+        for (int index = sections.length - 1; index >= 0; index--) {
+            if (!sections[index].hasOnlyAir()) {
+                break;
+            }
+            topAir++;
+        }
 
         int nonEmpty = sections.length - empty;
         String prefix = "worldgen.sections." + stageId + ".";
-        AtlasWorldgenProfiler.recordMetric(prefix + "chunks");
-        AtlasWorldgenProfiler.recordMetric(prefix + "total", sections.length);
-        AtlasWorldgenProfiler.recordMetric(prefix + "empty", empty);
-        AtlasWorldgenProfiler.recordMetric(prefix + "nonEmpty", nonEmpty);
+        AtlasWorldgenProfiler.recordChunkMetric(dimension, chunk.getPos(), prefix + "chunks");
+        AtlasWorldgenProfiler.recordChunkMetric(dimension, chunk.getPos(), prefix + "total", sections.length);
+        AtlasWorldgenProfiler.recordChunkMetric(dimension, chunk.getPos(), prefix + "empty", empty);
+        AtlasWorldgenProfiler.recordChunkMetric(dimension, chunk.getPos(), prefix + "nonEmpty", nonEmpty);
+        AtlasWorldgenProfiler.recordChunkMetric(dimension, chunk.getPos(), prefix + "topAir", topAir);
+        AtlasWorldgenProfiler.recordChunkMetric(dimension, chunk.getPos(), prefix + "topAirBlocks", topAir * 16L);
     }
 
     @Unique

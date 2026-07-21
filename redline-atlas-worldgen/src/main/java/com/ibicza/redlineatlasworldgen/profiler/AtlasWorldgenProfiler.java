@@ -77,6 +77,23 @@ public final class AtlasWorldgenProfiler {
         }
     }
 
+    public static void recordChunkMetric(ResourceKey<Level> dimension, ChunkPos pos, String name) {
+        recordChunkMetric(dimension, pos, name, 1L);
+    }
+
+    public static void recordChunkMetric(ResourceKey<Level> dimension, ChunkPos pos, String name, long amount) {
+        if (amount < 0L || !shouldMeasure() || dimension == null || pos == null) {
+            return;
+        }
+        if (AtlasWorldgenConfig.PROFILER_ENABLED.get()) {
+            globalMetric(name).record(amount);
+        }
+        ChunkProfileSession session = ACTIVE_CHUNK_PROFILE.get();
+        if (session != null) {
+            session.recordMetric(dimension, pos, name, amount);
+        }
+    }
+
     public static void reset() {
         COUNTERS.clear();
         METRICS.clear();

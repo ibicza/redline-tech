@@ -184,3 +184,40 @@ Each phase should be checked with:
 - save/load checks for partially materialized underground sections.
 
 The full project verification remains `.\scripts\verify.ps1`.
+
+## M35 Measurement Notes
+
+The first metrics implementation showed that section snapshots must be scoped to
+the chunk profile target set. Vanilla can generate dependency chunks while a
+radius-0 profile is active, so raw section totals can otherwise include neighbor
+work and overstate the target chunk section count.
+
+Section metrics now use chunk-scoped profiler recording. The chunk profile report
+only accepts those metrics when the measured chunk is inside the active profile
+radius, while global profiler metrics still remain available.
+
+The section snapshot also records contiguous top-air sections as `topAir` and
+`topAirBlocks`. This gives a direct, profile-local estimate for the first air-skip
+implementation: sections at the top of the chunk that remained entirely air after
+the measured stage and are therefore the safest first skip candidate.
+
+The profile harness now creates a fresh `rla-profile-*` world for each automated
+run, preloads `datapacks/redline_tall_overworld`, temporarily switches
+`server.properties` to that world, and restores the original properties after the
+server exits. This is required because the old dev `run/world` was created without
+the tall datapack and only exposed 24 sections instead of the expected 254.
+
+Tall-world radius-0 baseline from the corrected harness:
+
+| Label | Noise Stage | Density Y Calls | Sections | Top Air |
+| --- | ---: | ---: | ---: | ---: |
+| `m35-tall-ordinary` | 1361.6 ms | 76,481,417 | 254 | 96 / 37.8% |
+| `m35-tall-lake` | 1286.1 ms | 81,426,735 | 254 | 119 / 46.9% |
+| `m35-tall-ocean` | 1310.7 ms | 86,767,382 | 254 | 146 / 57.5% |
+
+These numbers confirm that air-only top sections are a first-order optimization
+target in the 4064-block profile. A local `NoiseChunk` column-cache experiment was
+also measured and not kept: it reduced global noise-column cache hits, but did not
+produce stable stage-time improvement under JFR, so the next implementation should
+skip whole top-air cells/sections instead of only making the per-sample lookup path
+cheaper.

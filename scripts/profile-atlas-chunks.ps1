@@ -29,6 +29,8 @@ $runDirectory = Join-Path $moduleRoot "run"
 $atlasRoot = Join-Path $runDirectory "config\redline-atlas-worldgen"
 $reportDirectory = Join-Path $runDirectory "profile-results"
 $gradleWrapper = Join-Path $repoRoot "gradlew.bat"
+$serverPropertiesPath = Join-Path $runDirectory "server.properties"
+$tallOverworldDatapack = Join-Path $repoRoot "datapacks\redline_tall_overworld"
 
 function Get-PropertyValue {
     param(
@@ -210,6 +212,42 @@ function Wait-ForRunSummary {
     throw "Automated run did not produce '$runSummaryPath' within $ReportTimeoutSeconds seconds."
 }
 
+function Set-ServerProperty {
+    param(
+        [Parameter(Mandatory = $true)] [string]$Content,
+        [Parameter(Mandatory = $true)] [string]$Name,
+        [Parameter(Mandatory = $true)] [string]$Value
+    )
+
+    $line = "$Name=$Value"
+    $pattern = "(?m)^$([regex]::Escape($Name))=.*$"
+    if ($Content -match $pattern) {
+        return [regex]::Replace($Content, $pattern, $line)
+    }
+    if ($Content.Length -gt 0 -and -not $Content.EndsWith("`n")) {
+        $Content += [Environment]::NewLine
+    }
+    return $Content + $line + [Environment]::NewLine
+}
+
+function Initialize-ProfileWorld {
+    param(
+        [Parameter(Mandatory = $true)] [string]$WorldDirectory,
+        [Parameter(Mandatory = $true)] [string]$DatapackSource
+    )
+
+    if (-not (Test-Path -LiteralPath $DatapackSource -PathType Container)) {
+        throw "Tall overworld datapack is missing: $DatapackSource"
+    }
+    $datapacksDirectory = Join-Path $WorldDirectory "datapacks"
+    $datapackTarget = Join-Path $datapacksDirectory "redline_tall_overworld"
+    if (Test-Path -LiteralPath $datapackTarget) {
+        throw "Profile world datapack target already exists: $datapackTarget"
+    }
+    [void][System.IO.Directory]::CreateDirectory($datapacksDirectory)
+    Copy-Item -LiteralPath $DatapackSource -Destination $datapackTarget -Recurse
+}
+
 function Write-ProfileSummary {
     param([Parameter(Mandatory = $true)] [object]$Result)
 
@@ -343,6 +381,8 @@ $runStartedUtc = [DateTime]::UtcNow
 $runId = "rla-$($runStartedUtc.ToString('yyyyMMdd-HHmmss-fff'))-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 $runSummaryPath = Join-Path $reportDirectory "$runId.run.json"
 $cancelPath = Join-Path $reportDirectory "$runId.cancel"
+$profileWorldName = "rla-profile-$runId"
+$profileWorldDirectory = Join-Path $runDirectory $profileWorldName
 $gradleArguments = [System.Collections.Generic.List[string]]::new()
 $gradleArguments.Add(":redline-atlas-worldgen:runServer")
 $gradleArguments.Add("--console=plain")
@@ -384,8 +424,25 @@ $processStarted = $false
 $processExitCode = $null
 $results = [System.Collections.Generic.List[object]]::new()
 $runSummary = $null
+$serverPropertiesExisted = $false
+$serverPropertiesBackup = $null
+$serverPropertiesPrepared = $false
 
 try {
+    Initialize-ProfileWorld -WorldDirectory $profileWorldDirectory -DatapackSource $tallOverworldDatapack
+
+    $serverPropertiesExisted = Test-Path -LiteralPath $serverPropertiesPath -PathType Leaf
+    if ($serverPropertiesExisted) {
+        $serverPropertiesBackup = [System.IO.File]::ReadAllText($serverPropertiesPath)
+    } else {
+        $serverPropertiesBackup = ""
+    }
+    $profileServerProperties = Set-ServerProperty -Content $serverPropertiesBackup -Name "level-name" -Value $profileWorldName
+    $profileServerProperties = Set-ServerProperty -Content $profileServerProperties -Name "initial-enabled-packs" -Value "vanilla,file/redline_tall_overworld"
+    [System.IO.File]::WriteAllText($serverPropertiesPath, $profileServerProperties)
+    $serverPropertiesPrepared = $true
+    Write-Host "Using fresh profile world: $profileWorldName"
+
     if (-not $script:process.Start()) {
         throw "Failed to start Gradle server process."
     }
@@ -450,6 +507,14 @@ try {
     }
     Remove-Item -LiteralPath $cancelPath -Force -ErrorAction SilentlyContinue
     $script:process.Dispose()
+
+    if ($serverPropertiesPrepared) {
+        if ($serverPropertiesExisted) {
+            [System.IO.File]::WriteAllText($serverPropertiesPath, $serverPropertiesBackup)
+        } else {
+            Remove-Item -LiteralPath $serverPropertiesPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 if ($completedNormally) {

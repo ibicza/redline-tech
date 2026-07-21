@@ -231,6 +231,13 @@ final class ChunkProfileSession {
         metric.record(amount);
     }
 
+    void recordMetric(ResourceKey<Level> metricDimension, ChunkPos pos, String name, long amount) {
+        if (!containsChunk(metricDimension, pos)) {
+            return;
+        }
+        recordMetric(name, amount);
+    }
+
     StopReason serverTick(int tick, long tickNanos) {
         if (!accepting) {
             return null;
@@ -417,6 +424,10 @@ final class ChunkProfileSession {
             return -1;
         }
         return dz * diameterChunks + dx;
+    }
+
+    private boolean containsChunk(ResourceKey<Level> metricDimension, ChunkPos pos) {
+        return accepting && dimension.equals(metricDimension) && pos != null && index(pos.x(), pos.z()) >= 0;
     }
 
     private static Map<String, Object> counterMap(CounterSnapshot snapshot, long failures) {
