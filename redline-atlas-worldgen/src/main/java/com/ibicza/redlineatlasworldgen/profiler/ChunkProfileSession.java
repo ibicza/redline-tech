@@ -28,9 +28,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 
 final class ChunkProfileSession {
     static final int MAX_COUNTERS = 128;
+    static final int MAX_METRICS = 256;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final DateTimeFormatter FILE_TIMESTAMP = DateTimeFormatter
@@ -66,6 +68,7 @@ final class ChunkProfileSession {
     private final Counter serverTicks = new Counter();
     private final StageStats[] stages = new StageStats[ChunkStage.values().length];
     private final Map<String, Counter> counters = new ConcurrentHashMap<>();
+    private final Map<String, Metric> metrics = new ConcurrentHashMap<>();
 
     private volatile boolean accepting = true;
     private volatile int allLoadedTick = -1;
@@ -208,6 +211,26 @@ final class ChunkProfileSession {
         counter.record(nanos);
     }
 
+    void recordMetric(String name, long amount) {
+        if (!accepting || amount < 0L) {
+            return;
+        }
+        Metric metric = metrics.get(name);
+        if (metric == null) {
+            synchronized (metrics) {
+                metric = metrics.get(name);
+                if (metric == null) {
+                    if (metrics.size() >= MAX_METRICS) {
+                        return;
+                    }
+                    metric = new Metric();
+                    metrics.put(name, metric);
+                }
+            }
+        }
+        metric.record(amount);
+    }
+
     StopReason serverTick(int tick, long tickNanos) {
         if (!accepting) {
             return null;
@@ -247,6 +270,7 @@ final class ChunkProfileSession {
                 + ", preloaded=" + preloadedChunks.get()
                 + ", heapStart/peak=" + heapStartBytes / MIB + "/" + peakHeapBytes.get() / MIB + " MiB");
         counterSnapshots().stream().limit(8).forEach(entry -> lines.add("  " + formatCounter(entry.getKey(), entry.getValue())));
+        metricSnapshots().stream().limit(8).forEach(entry -> lines.add("  " + formatMetric(entry.getKey(), entry.getValue())));
         return lines;
     }
 
@@ -280,7 +304,7 @@ final class ChunkProfileSession {
     private void writeJson(Path path, StopReason reason, Instant endedAt, long endedNanos,
                            long heapEndBytes, GcSnapshot gcEnd) throws IOException {
         Map<String, Object> report = new LinkedHashMap<>();
-        report.put("schemaVersion", 1);
+        report.put("schemaVersion", 2);
         report.put("label", label);
         report.put("dimension", dimension.identifier().toString());
         report.put("stopReason", reason.id);
@@ -339,13 +363,21 @@ final class ChunkProfileSession {
         }
         report.put("counters", counterRows);
 
+        List<Map<String, Object>> metricRows = new ArrayList<>();
+        for (Map.Entry<String, MetricSnapshot> entry : metricSnapshots()) {
+            Map<String, Object> row = metricMap(entry.getValue());
+            row.put("name", entry.getKey());
+            metricRows.add(row);
+        }
+        report.put("metrics", metricRows);
+
         try (Writer writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
             GSON.toJson(report, writer);
         }
     }
 
     private void writeCsv(Path path) throws IOException {
-        StringBuilder csv = new StringBuilder("category,name,count,failures,total_ms,avg_ms,max_ms\n");
+        StringBuilder csv = new StringBuilder("category,name,count,failures,total_ms,avg_ms,max_ms,unit\n");
         for (ChunkStage stage : ChunkStage.values()) {
             StageStats stats = stages[stage.ordinal()];
             CounterSnapshot snapshot = stats.counter().snapshot();
@@ -357,6 +389,9 @@ final class ChunkProfileSession {
         for (Map.Entry<String, CounterSnapshot> entry : counterSnapshots()) {
             appendCsvRow(csv, "counter", entry.getKey(), entry.getValue(), 0L);
         }
+        for (Map.Entry<String, MetricSnapshot> entry : metricSnapshots()) {
+            appendMetricCsvRow(csv, "metric", entry.getKey(), entry.getValue(), 0L);
+        }
         appendCsvRow(csv, "server", "tick", serverTicks.snapshot(), 0L);
         Files.writeString(path, csv, StandardCharsets.UTF_8);
     }
@@ -365,6 +400,13 @@ final class ChunkProfileSession {
         List<Map.Entry<String, CounterSnapshot>> snapshots = new ArrayList<>();
         counters.forEach((name, counter) -> snapshots.add(Map.entry(name, counter.snapshot())));
         snapshots.sort(Comparator.<Map.Entry<String, CounterSnapshot>>comparingLong(entry -> entry.getValue().totalNanos()).reversed());
+        return snapshots;
+    }
+
+    private List<Map.Entry<String, MetricSnapshot>> metricSnapshots() {
+        List<Map.Entry<String, MetricSnapshot>> snapshots = new ArrayList<>();
+        metrics.forEach((name, metric) -> snapshots.add(Map.entry(name, metric.snapshot())));
+        snapshots.sort(Comparator.<Map.Entry<String, MetricSnapshot>>comparingLong(entry -> entry.getValue().total()).reversed());
         return snapshots;
     }
 
@@ -387,6 +429,15 @@ final class ChunkProfileSession {
         return row;
     }
 
+    private static Map<String, Object> metricMap(MetricSnapshot snapshot) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("count", snapshot.count());
+        row.put("total", snapshot.total());
+        row.put("average", snapshot.total() / Math.max(1L, snapshot.count()));
+        row.put("max", snapshot.max());
+        return row;
+    }
+
     private static void appendCsvRow(StringBuilder csv, String category, String name,
                                      CounterSnapshot snapshot, long failures) {
         csv.append(csvCell(category)).append(',')
@@ -395,7 +446,20 @@ final class ChunkProfileSession {
                 .append(failures).append(',')
                 .append(formatMillis(snapshot.totalNanos())).append(',')
                 .append(formatMillis(snapshot.totalNanos() / Math.max(1L, snapshot.count()))).append(',')
-                .append(formatMillis(snapshot.maxNanos())).append('\n');
+                .append(formatMillis(snapshot.maxNanos())).append(',')
+                .append(csvCell("ms")).append('\n');
+    }
+
+    private static void appendMetricCsvRow(StringBuilder csv, String category, String name,
+                                           MetricSnapshot snapshot, long failures) {
+        csv.append(csvCell(category)).append(',')
+                .append(csvCell(name)).append(',')
+                .append(snapshot.count()).append(',')
+                .append(failures).append(',')
+                .append(snapshot.total()).append(',')
+                .append(snapshot.total() / Math.max(1L, snapshot.count())).append(',')
+                .append(snapshot.max()).append(',')
+                .append(csvCell("count")).append('\n');
     }
 
     private static String formatCounter(String name, CounterSnapshot snapshot) {
@@ -403,6 +467,13 @@ final class ChunkProfileSession {
                 + ", total=" + formatMillis(snapshot.totalNanos()) + "ms"
                 + ", avg=" + formatMillis(snapshot.totalNanos() / Math.max(1L, snapshot.count())) + "ms"
                 + ", max=" + formatMillis(snapshot.maxNanos()) + "ms";
+    }
+
+    private static String formatMetric(String name, MetricSnapshot snapshot) {
+        return "metric." + name + ": count=" + snapshot.count()
+                + ", total=" + snapshot.total()
+                + ", avg=" + (snapshot.total() / Math.max(1L, snapshot.count()))
+                + ", max=" + snapshot.max();
     }
 
     private static String csvCell(String value) {
@@ -515,6 +586,25 @@ final class ChunkProfileSession {
     }
 
     private record CounterSnapshot(long count, long totalNanos, long maxNanos) {
+    }
+
+    private static final class Metric {
+        private final LongAdder count = new LongAdder();
+        private final LongAdder total = new LongAdder();
+        private final AtomicLong max = new AtomicLong();
+
+        void record(long amount) {
+            count.increment();
+            total.add(amount);
+            max.accumulateAndGet(amount, Math::max);
+        }
+
+        MetricSnapshot snapshot() {
+            return new MetricSnapshot(count.sum(), total.sum(), max.get());
+        }
+    }
+
+    private record MetricSnapshot(long count, long total, long max) {
     }
 
     private record GcSnapshot(long collections, long collectionMillis) {

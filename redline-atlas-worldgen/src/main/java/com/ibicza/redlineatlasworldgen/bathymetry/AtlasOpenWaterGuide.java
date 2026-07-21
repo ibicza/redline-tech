@@ -48,12 +48,15 @@ public final class AtlasOpenWaterGuide {
 
             OpenWaterSample cached = BIOME_SAMPLE_CACHE.get(key);
             if (cached != null) {
+                AtlasWorldgenProfiler.recordMetric("cache.openWaterBiome.hit");
                 return cached;
             }
+            AtlasWorldgenProfiler.recordMetric("cache.openWaterBiome.miss");
 
             if (BIOME_SAMPLE_CACHE.size() > AtlasWorldgenConfig.OPEN_WATER_SAMPLE_CACHE_LIMIT.get()
                     && CACHE_CLEAR_GUARD.compareAndSet(0, 1)) {
                 try {
+                    AtlasWorldgenProfiler.recordMetric("cache.openWaterBiome.clear");
                     BIOME_SAMPLE_CACHE.clear();
                 } finally {
                     CACHE_CLEAR_GUARD.set(0);
@@ -172,12 +175,15 @@ public final class AtlasOpenWaterGuide {
             long key = cellKey(cellX, cellZ);
             OpenWaterSample cached = COASTAL_FLOOD_CACHE.get(key);
             if (cached != null) {
+                AtlasWorldgenProfiler.recordMetric("cache.coastalFlood.hit");
                 return cached;
             }
+            AtlasWorldgenProfiler.recordMetric("cache.coastalFlood.miss");
 
             if (COASTAL_FLOOD_CACHE.size() > AtlasWorldgenConfig.OPEN_WATER_COASTAL_FLOOD_CACHE_LIMIT.get()
                     && FLOOD_CACHE_CLEAR_GUARD.compareAndSet(0, 1)) {
                 try {
+                    AtlasWorldgenProfiler.recordMetric("cache.coastalFlood.clear");
                     COASTAL_FLOOD_CACHE.clear();
                 } finally {
                     FLOOD_CACHE_CLEAR_GUARD.set(0);
@@ -202,10 +208,12 @@ public final class AtlasOpenWaterGuide {
         CellState origin = cellState(originCellX, originCellZ, cell, seaLevelMeters, toleranceMeters, landOverride);
         if (origin.seedOcean()) {
             OceanBathymetrySample ocean = origin.oceanSample();
+            AtlasWorldgenProfiler.recordMetric("water.coastalFlood.cellsVisited", 1);
             return new OpenWaterSample(OpenWaterKind.OCEAN, true, true, 0.0D, ocean.depthMeters(), ocean.bottomMeters(), seaLevelMeters,
                     ocean.sourceId(), ocean.nominalResolutionMeters());
         }
         if (!origin.floodCandidate()) {
+            AtlasWorldgenProfiler.recordMetric("water.coastalFlood.cellsVisited", 1);
             return OpenWaterSample.none();
         }
 
@@ -219,6 +227,7 @@ public final class AtlasOpenWaterGuide {
             CellState state = cellState(node.cellX(), node.cellZ(), cell, seaLevelMeters, toleranceMeters, landOverride);
             if (state.seedOcean()) {
                 double distanceBlocks = Math.hypot((node.cellX() - originCellX) * (double) cell, (node.cellZ() - originCellZ) * (double) cell);
+                AtlasWorldgenProfiler.recordMetric("water.coastalFlood.cellsVisited", visited.size());
                 return inferredFloodSample(origin, state.oceanSample(), distanceBlocks, seaLevelMeters, cell);
             }
             if (!state.floodCandidate()) {
@@ -245,6 +254,7 @@ public final class AtlasOpenWaterGuide {
             }
         }
 
+        AtlasWorldgenProfiler.recordMetric("water.coastalFlood.cellsVisited", visited.size());
         return OpenWaterSample.none();
     }
 
@@ -288,6 +298,8 @@ public final class AtlasOpenWaterGuide {
         int step = Math.max(1, AtlasWorldgenConfig.OPEN_WATER_COAST_STEP_BLOCKS.get());
         double bestDistanceSq = Double.POSITIVE_INFINITY;
         OceanBathymetrySample best = null;
+        int attempts = 0;
+        int hits = 0;
         for (int dz = -radius; dz <= radius; dz += step) {
             for (int dx = -radius; dx <= radius; dx += step) {
                 if (dx == 0 && dz == 0) {
@@ -300,10 +312,12 @@ public final class AtlasOpenWaterGuide {
                 int sx = blockX + dx;
                 int sz = blockZ + dz;
                 GeoPoint geo = AtlasCoordinateMapper.toGeo(sx, sz);
+                attempts++;
                 Optional<OceanBathymetrySample> ocean = AtlasOceanBathymetryIndex.active().sample(geo.latitude(), geo.longitude());
                 if (ocean.isEmpty()) {
                     continue;
                 }
+                hits++;
                 Optional<HeightSample> land = AtlasHeightmapIndex.active().sample(geo.latitude(), geo.longitude());
                 if (land.isPresent() && land.get().meters() > seaLevelMeters + landOverride) {
                     continue;
@@ -312,6 +326,8 @@ public final class AtlasOpenWaterGuide {
                 best = ocean.get();
             }
         }
+        AtlasWorldgenProfiler.recordMetric("water.coastScan.sampleAttempts", attempts);
+        AtlasWorldgenProfiler.recordMetric("water.coastScan.sampleHits", hits);
         if (best == null) {
             return NearOcean.none();
         }

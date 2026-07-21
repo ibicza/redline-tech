@@ -6,6 +6,7 @@ import com.ibicza.redlineatlasworldgen.heightmap.AtlasCoordinateMapper;
 import com.ibicza.redlineatlasworldgen.heightmap.AtlasHeightmapIndex;
 import com.ibicza.redlineatlasworldgen.heightmap.GeoPoint;
 import com.ibicza.redlineatlasworldgen.heightmap.HeightSample;
+import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 import it.unimi.dsi.fastutil.HashCommon;
 import net.minecraft.util.Mth;
 
@@ -73,12 +74,15 @@ public final class AtlasNoiseGuide {
         long key = HashCommon.mix((((long) blockX) << 32) ^ (blockZ & 0xffffffffL));
         GuideColumn cached = COLUMN_CACHE.get(key);
         if (cached != null) {
+            AtlasWorldgenProfiler.recordMetric("cache.noiseColumn.hit");
             return cached;
         }
+        AtlasWorldgenProfiler.recordMetric("cache.noiseColumn.miss");
 
         if (COLUMN_CACHE.size() > AtlasWorldgenConfig.NOISE_COLUMN_CACHE_LIMIT.get()
                 && CACHE_CLEAR_GUARD.compareAndSet(0, 1)) {
             try {
+                AtlasWorldgenProfiler.recordMetric("cache.noiseColumn.clear");
                 COLUMN_CACHE.clear();
             } finally {
                 CACHE_CLEAR_GUARD.set(0);
@@ -141,11 +145,20 @@ public final class AtlasNoiseGuide {
     }
 
     private static Optional<HeightSample> sample(AtlasHeightmapIndex index, int blockX, int blockZ) {
+        AtlasWorldgenProfiler.recordMetric("noiseGuide.heightSample.attempts");
         if (AtlasWorldgenConfig.OPEN_WATER_USE_FOR_NOISE_GUIDE.get()) {
-            return AtlasOpenWaterGuide.compositeHeightSample(blockX, blockZ);
+            Optional<HeightSample> sample = AtlasOpenWaterGuide.compositeHeightSample(blockX, blockZ);
+            if (sample.isPresent()) {
+                AtlasWorldgenProfiler.recordMetric("noiseGuide.heightSample.hits");
+            }
+            return sample;
         }
         GeoPoint geo = AtlasCoordinateMapper.toGeo(blockX, blockZ);
-        return index.sample(geo.latitude(), geo.longitude());
+        Optional<HeightSample> sample = index.sample(geo.latitude(), geo.longitude());
+        if (sample.isPresent()) {
+            AtlasWorldgenProfiler.recordMetric("noiseGuide.heightSample.hits");
+        }
+        return sample;
     }
 
     public record GuideColumn(boolean hasSample, double heightMeters, int atlasY, int referenceY,

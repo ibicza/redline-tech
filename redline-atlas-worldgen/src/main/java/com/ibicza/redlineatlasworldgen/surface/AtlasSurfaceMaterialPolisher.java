@@ -199,6 +199,7 @@ public final class AtlasSurfaceMaterialPolisher {
             int localZ = column >>> 4;
             int blockX = pos.getMinBlockX() + localX;
             int blockZ = pos.getMinBlockZ() + localZ;
+                AtlasWorldgenProfiler.recordMetric("surfacePolish.columns.visited");
                 int heightmapTopY = Math.min(maxY, chunk.getHeight(Heightmap.Types.WORLD_SURFACE, localX, localZ));
                 AtlasOpenWaterGuide.OpenWaterSample water = waterForSurface(blockX, blockZ);
                 LakeSample lake = lakeForSurface(blockX, blockZ);
@@ -206,12 +207,14 @@ public final class AtlasSurfaceMaterialPolisher {
 
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_LAKE_WATER.get()
                         && AtlasLakeGuide.isLakeWater(lake.kind())) {
+                    AtlasWorldgenProfiler.recordMetric("surfacePolish.columns.lakeWater");
                     changed |= finishLakeColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, maxY, lake);
                     continue;
                 }
 
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_RIVER_WATER.get()
                         && river.kind() == RiverKind.CHANNEL) {
+                    AtlasWorldgenProfiler.recordMetric("surfacePolish.columns.riverChannel");
                     changed |= finishRiverColumn(level, mutable, blockX, blockZ, heightmapTopY,
                             minY, maxY, river);
                     continue;
@@ -219,6 +222,7 @@ public final class AtlasSurfaceMaterialPolisher {
 
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_RIVER_WATER.get()
                         && river.kind() == RiverKind.BANK) {
+                    AtlasWorldgenProfiler.recordMetric("surfacePolish.columns.riverBank");
                     changed |= finishRiverBankColumn(level, mutable, blockX, blockZ, heightmapTopY,
                             minY, maxY, river);
                     continue;
@@ -227,6 +231,7 @@ public final class AtlasSurfaceMaterialPolisher {
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_RIVER_WATER.get()
                         && river.kind() == RiverKind.SHOULDER
                         && isRiverTerrainShoulderLand(water, lake)) {
+                    AtlasWorldgenProfiler.recordMetric("surfacePolish.columns.riverShoulder");
                     changed |= finishRiverTerrainShoulderColumn(level, mutable, blockX, blockZ, heightmapTopY,
                             minY, maxY, water, lake, river);
                     continue;
@@ -235,6 +240,7 @@ public final class AtlasSurfaceMaterialPolisher {
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_LAKE_WATER.get()
                         && lake.kind() == LakeKind.LAKE_TERRAIN_SHOULDER
                         && isLakeTerrainShoulderLand(water)) {
+                    AtlasWorldgenProfiler.recordMetric("surfacePolish.columns.lakeShoulder");
                     changed |= finishLakeTerrainShoulderColumn(level, mutable, blockX, blockZ, heightmapTopY,
                             minY, maxY, water, lake);
                     continue;
@@ -242,12 +248,14 @@ public final class AtlasSurfaceMaterialPolisher {
 
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_LAKE_WATER.get()
                         && lake.kind() == LakeKind.LAKE_SHORE) {
+                    AtlasWorldgenProfiler.recordMetric("surfacePolish.columns.lakeShore");
                     changed |= finishLakeShoreColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, maxY, lake);
                     continue;
                 }
 
                 if (AtlasWorldgenConfig.SURFACE_POLISH_FILL_OPEN_OCEAN_WATER.get()
                         && isFillableOceanKind(water.kind())) {
+                    AtlasWorldgenProfiler.recordMetric("surfacePolish.columns.openOcean");
                     changed |= finishOceanColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, maxY, seaY, water);
                     continue;
                 }
@@ -256,6 +264,7 @@ public final class AtlasSurfaceMaterialPolisher {
                         && AtlasWorldgenConfig.SURFACE_POLISH_FILL_COAST_DEPRESSION_WATER.get()
                         && water.kind() == AtlasOpenWaterGuide.OpenWaterKind.COAST
                         && water.distanceToOceanBlocks() <= AtlasWorldgenConfig.SURFACE_POLISH_COAST_WATER_MAX_DISTANCE_BLOCKS.get()) {
+                    AtlasWorldgenProfiler.recordMetric("surfacePolish.columns.coastDepression");
                     changed |= finishCoastDepressionColumn(level, mutable, blockX, blockZ, heightmapTopY, minY, seaY, water);
                 }
 
@@ -270,6 +279,7 @@ public final class AtlasSurfaceMaterialPolisher {
                 }
 
                 boolean replaceSoft = shouldReplaceSoftSurface(replacement);
+                AtlasWorldgenProfiler.recordMetric("surfacePolish.columns.surfaceCap");
                 changed |= applySurfaceCap(level, mutable, blockX, terrainY, blockZ, minY, replacement, replaceSoft);
         }
         if (changed) {
@@ -1134,17 +1144,29 @@ public final class AtlasSurfaceMaterialPolisher {
     }
 
     private static int findTopTerrain(ServerLevel level, BlockPos.MutableBlockPos pos, int x, int z, int topY, int minY) {
+        int requestedBlocks = Math.max(0, topY - minY + 1);
+        AtlasWorldgenProfiler.recordMetric("surfacePolish.topScan.calls");
+        AtlasWorldgenProfiler.recordMetric("surfacePolish.topScan.requestedBlocks", requestedBlocks);
+        if (requestedBlocks > Math.max(1, AtlasWorldgenConfig.SURFACE_POLISH_TOP_SCAN_BLOCKS.get())) {
+            AtlasWorldgenProfiler.recordMetric("surfacePolish.topScan.deepCalls");
+        }
+        int scanned = 0;
         for (int y = topY; y >= minY; y--) {
+            scanned++;
             pos.set(x, y, z);
             BlockState state = level.getBlockState(pos);
             if (state.isAir() || state.liquid() || isIgnoredSurfaceFeature(state)) {
                 continue;
             }
             if (isTerrainSurfaceCandidate(state)) {
+                AtlasWorldgenProfiler.recordMetric("surfacePolish.topScan.blocks", scanned);
+                AtlasWorldgenProfiler.recordMetric("surfacePolish.topScan.hits");
                 return y;
             }
             // Unknown solid feature, not terrain. Keep scanning so trees/structures do not block repair.
         }
+        AtlasWorldgenProfiler.recordMetric("surfacePolish.topScan.blocks", scanned);
+        AtlasWorldgenProfiler.recordMetric("surfacePolish.topScan.misses");
         return Integer.MIN_VALUE;
     }
 
@@ -1169,7 +1191,12 @@ public final class AtlasSurfaceMaterialPolisher {
             }
             BlockState layerReplacement = layerReplacement(replacement, dy);
             if (!current.is(layerReplacement.getBlock())) {
-                changed |= level.setBlock(pos, layerReplacement, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                AtlasWorldgenProfiler.recordMetric("surfacePolish.blockSet.surfaceCap.attempts");
+                boolean replaced = level.setBlock(pos, layerReplacement, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS);
+                if (replaced) {
+                    AtlasWorldgenProfiler.recordMetric("surfacePolish.blockSet.surfaceCap.changed");
+                }
+                changed |= replaced;
             }
         }
         return changed;

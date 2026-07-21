@@ -232,6 +232,19 @@ function Write-ProfileSummary {
                 [double]$stage.averageMillis,
                 [double]$stage.maxMillis)
     }
+    $metricsProperty = $report.PSObject.Properties["metrics"]
+    if ($null -ne $metricsProperty) {
+        foreach ($metric in @($metricsProperty.Value) |
+                Sort-Object { [long]$_.total } -Descending |
+                Select-Object -First 8) {
+            Write-Host ("  metric {0}: count={1}, total={2}, avg={3}, max={4}" -f
+                    $metric.name,
+                    $metric.count,
+                    $metric.total,
+                    $metric.average,
+                    $metric.max)
+        }
+    }
     Write-Host "  report=$($Result.File.FullName)"
 }
 

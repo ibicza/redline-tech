@@ -1,6 +1,7 @@
 package com.ibicza.redlineatlasworldgen.mixin;
 
 import com.ibicza.redlineatlasworldgen.bridge.AtlasNoiseChunkBridge;
+import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasNoiseContext;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasNoiseGuide;
 import net.minecraft.resources.ResourceKey;
@@ -59,8 +60,15 @@ public abstract class NoiseChunkMixin implements AtlasNoiseChunkBridge {
             return;
         }
         int originalY = cir.getReturnValue();
+        boolean recordMetrics = AtlasWorldgenProfiler.hasActiveChunkProfile();
+        if (recordMetrics) {
+            AtlasWorldgenProfiler.recordMetric("noiseGuide.densityY.calls");
+        }
         int shiftedY = AtlasNoiseGuide.shiftedBlockY(this.blockX(), originalY, this.blockZ());
         if (shiftedY != originalY) {
+            if (recordMetrics) {
+                AtlasWorldgenProfiler.recordMetric("noiseGuide.densityY.shiftedCalls");
+            }
             cir.setReturnValue(shiftedY);
         }
     }

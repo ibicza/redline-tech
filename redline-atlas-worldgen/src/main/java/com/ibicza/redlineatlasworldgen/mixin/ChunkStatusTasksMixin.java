@@ -6,6 +6,7 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.server.level.GenerationChunkHolder;
 import net.minecraft.util.StaticCache2D;
 import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.chunk.status.ChunkStep;
 import net.minecraft.world.level.chunk.status.ChunkStatusTasks;
 import net.minecraft.world.level.chunk.status.WorldGenContext;
@@ -109,6 +110,7 @@ public abstract class ChunkStatusTasksMixin {
                                                                        CallbackInfoReturnable<CompletableFuture<ChunkAccess>> cir) {
         ProfileInvocation invocation = REDLINE_ATLAS_WORLDGEN$PROFILE_INVOCATION.get();
         String counterName = "chunkStatus." + invocation.stageName;
+        String stageName = invocation.stageName;
         long startedNanos = invocation.startedNanos;
         AtlasWorldgenProfiler.ChunkStageToken token = invocation.token;
         invocation.clear();
@@ -119,10 +121,55 @@ public abstract class ChunkStatusTasksMixin {
         CompletableFuture<ChunkAccess> future = cir.getReturnValue();
         if (future == null) {
             AtlasWorldgenProfiler.completeChunkStage(token, counterName, startedNanos, null);
+            redlineAtlasWorldgen$recordSectionSnapshot(stageName, chunk);
             return;
         }
-        future.whenComplete((ignored, throwable) ->
-                AtlasWorldgenProfiler.completeChunkStage(token, counterName, startedNanos, throwable));
+        future.whenComplete((ignored, throwable) -> {
+            AtlasWorldgenProfiler.completeChunkStage(token, counterName, startedNanos, throwable);
+            redlineAtlasWorldgen$recordSectionSnapshot(stageName, chunk);
+        });
+    }
+
+    @Unique
+    private static void redlineAtlasWorldgen$recordSectionSnapshot(String stageName, ChunkAccess chunk) {
+        String stageId = redlineAtlasWorldgen$stageId(stageName);
+        if (!redlineAtlasWorldgen$shouldSnapshotSections(stageId)) {
+            return;
+        }
+
+        LevelChunkSection[] sections = chunk.getSections();
+        int empty = 0;
+        for (LevelChunkSection section : sections) {
+            if (section.hasOnlyAir()) {
+                empty++;
+            }
+        }
+
+        int nonEmpty = sections.length - empty;
+        String prefix = "worldgen.sections." + stageId + ".";
+        AtlasWorldgenProfiler.recordMetric(prefix + "chunks");
+        AtlasWorldgenProfiler.recordMetric(prefix + "total", sections.length);
+        AtlasWorldgenProfiler.recordMetric(prefix + "empty", empty);
+        AtlasWorldgenProfiler.recordMetric(prefix + "nonEmpty", nonEmpty);
+    }
+
+    @Unique
+    private static boolean redlineAtlasWorldgen$shouldSnapshotSections(String stageId) {
+        return switch (stageId) {
+            case "noise", "surface", "carvers", "features", "initialize_light", "light", "full" -> true;
+            default -> false;
+        };
+    }
+
+    @Unique
+    private static String redlineAtlasWorldgen$stageId(String stageName) {
+        if (stageName == null || stageName.isBlank()) {
+            return "unknown";
+        }
+        int separator = stageName.indexOf(':');
+        return separator >= 0 && separator + 1 < stageName.length()
+                ? stageName.substring(separator + 1)
+                : stageName;
     }
 
     private static final class ProfileInvocation {

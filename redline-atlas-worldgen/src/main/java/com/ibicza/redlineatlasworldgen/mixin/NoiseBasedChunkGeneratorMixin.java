@@ -1,5 +1,6 @@
 package com.ibicza.redlineatlasworldgen.mixin;
 
+import com.ibicza.redlineatlasworldgen.profiler.AtlasWorldgenProfiler;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasNoiseContext;
 import com.ibicza.redlineatlasworldgen.terrain.AtlasNoiseGuide;
 import net.minecraft.util.Mth;
@@ -41,6 +42,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         // Base height is the first free block and may legally be one block above max build Y.
         int shiftedHeight = Mth.clamp(cir.getReturnValue() + shift,
                 heightAccessor.getMinY(), heightAccessor.getMaxY() + 1);
+        AtlasWorldgenProfiler.recordMetric("structureGuide.baseHeight.shiftedCalls");
         cir.setReturnValue(shiftedHeight);
     }
 
@@ -59,7 +61,10 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         }
 
         int minY = heightAccessor.getMinY();
-        BlockState[] shiftedStates = new BlockState[heightAccessor.getHeight()];
+        int height = heightAccessor.getHeight();
+        AtlasWorldgenProfiler.recordMetric("structureGuide.baseColumn.shiftedCalls");
+        AtlasWorldgenProfiler.recordMetric("structureGuide.baseColumn.heightBlocks", height);
+        BlockState[] shiftedStates = new BlockState[height];
         for (int index = 0; index < shiftedStates.length; index++) {
             int worldY = minY + index;
             // Generated terrain at worldY samples vanilla density-space at worldY - shift.

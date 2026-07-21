@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 
 public final class AtlasWorldgenProfiler {
     public static final int MAX_CHUNK_PROFILE_RADIUS = 7;
@@ -25,7 +26,9 @@ public final class AtlasWorldgenProfiler {
     public static final int DEFAULT_CHUNK_PROFILE_SETTLE_TICKS = 100;
 
     private static final int MAX_COUNTERS = 256;
+    private static final int MAX_METRICS = 256;
     private static final Map<String, Counter> COUNTERS = new ConcurrentHashMap<>();
+    private static final Map<String, Metric> METRICS = new ConcurrentHashMap<>();
     private static final AtomicLong SERVER_TICKS = new AtomicLong();
     private static final AtomicLong SESSION_IDS = new AtomicLong();
     private static final AtomicReference<ChunkProfileSession> ACTIVE_CHUNK_PROFILE = new AtomicReference<>();
@@ -57,8 +60,26 @@ public final class AtlasWorldgenProfiler {
         }
     }
 
+    public static void recordMetric(String name) {
+        recordMetric(name, 1L);
+    }
+
+    public static void recordMetric(String name, long amount) {
+        if (amount < 0L || !shouldMeasure()) {
+            return;
+        }
+        if (AtlasWorldgenConfig.PROFILER_ENABLED.get()) {
+            globalMetric(name).record(amount);
+        }
+        ChunkProfileSession session = ACTIVE_CHUNK_PROFILE.get();
+        if (session != null) {
+            session.recordMetric(name, amount);
+        }
+    }
+
     public static void reset() {
         COUNTERS.clear();
+        METRICS.clear();
         SERVER_TICKS.set(0L);
     }
 
@@ -154,6 +175,10 @@ public final class AtlasWorldgenProfiler {
         return lastChunkProfileCompletion;
     }
 
+    public static boolean hasActiveChunkProfile() {
+        return ACTIVE_CHUNK_PROFILE.get() != null;
+    }
+
     public static void chunkLoaded(ServerLevel level, ChunkPos pos, boolean newChunk) {
         ChunkProfileSession session = ACTIVE_CHUNK_PROFILE.get();
         if (session != null) {
@@ -192,10 +217,18 @@ public final class AtlasWorldgenProfiler {
         }
         snapshots.sort(Comparator.<Map.Entry<String, CounterSnapshot>>comparingLong(
                 entry -> entry.getValue().totalNanos()).reversed());
+        List<Map.Entry<String, MetricSnapshot>> metricSnapshots = new ArrayList<>();
+        for (Map.Entry<String, Metric> entry : METRICS.entrySet()) {
+            metricSnapshots.add(Map.entry(entry.getKey(), entry.getValue().snapshot()));
+        }
+        metricSnapshots.sort(Comparator.<Map.Entry<String, MetricSnapshot>>comparingLong(
+                entry -> entry.getValue().total()).reversed());
 
         List<String> lines = new ArrayList<>();
         long totalMeasured = snapshots.stream().mapToLong(entry -> entry.getValue().totalNanos()).sum();
-        lines.add("measuredTotal=" + formatNanos(totalMeasured) + ", counters=" + snapshots.size());
+        lines.add("measuredTotal=" + formatNanos(totalMeasured)
+                + ", counters=" + snapshots.size()
+                + ", metrics=" + metricSnapshots.size());
         for (int i = 0; i < Math.min(limit, snapshots.size()); i++) {
             Map.Entry<String, CounterSnapshot> entry = snapshots.get(i);
             CounterSnapshot snapshot = entry.getValue();
@@ -204,6 +237,15 @@ public final class AtlasWorldgenProfiler {
                     + ", total=" + formatNanos(snapshot.totalNanos())
                     + ", avg=" + formatNanos(snapshot.totalNanos() / Math.max(1L, snapshot.count()))
                     + ", max=" + formatNanos(snapshot.maxNanos()));
+        }
+        for (int i = 0; i < Math.min(limit, metricSnapshots.size()); i++) {
+            Map.Entry<String, MetricSnapshot> entry = metricSnapshots.get(i);
+            MetricSnapshot snapshot = entry.getValue();
+            lines.add("metric." + entry.getKey()
+                    + ": count=" + snapshot.count()
+                    + ", total=" + snapshot.total()
+                    + ", avg=" + (snapshot.total() / Math.max(1L, snapshot.count()))
+                    + ", max=" + snapshot.max());
         }
         return lines;
     }
@@ -245,6 +287,25 @@ public final class AtlasWorldgenProfiler {
             counter = new Counter();
             COUNTERS.put(name, counter);
             return counter;
+        }
+    }
+
+    private static Metric globalMetric(String name) {
+        Metric metric = METRICS.get(name);
+        if (metric != null) {
+            return metric;
+        }
+        synchronized (METRICS) {
+            metric = METRICS.get(name);
+            if (metric != null) {
+                return metric;
+            }
+            if (METRICS.size() >= MAX_METRICS) {
+                return Metric.DISCARDING;
+            }
+            metric = new Metric();
+            METRICS.put(name, metric);
+            return metric;
         }
     }
 
@@ -314,6 +375,39 @@ public final class AtlasWorldgenProfiler {
     }
 
     private record CounterSnapshot(long count, long totalNanos, long maxNanos) {
+    }
+
+    private static final class Metric {
+        private static final Metric DISCARDING = new Metric(true);
+
+        private final boolean discarding;
+        private final LongAdder count = new LongAdder();
+        private final LongAdder total = new LongAdder();
+        private final AtomicLong max = new AtomicLong();
+
+        Metric() {
+            this(false);
+        }
+
+        private Metric(boolean discarding) {
+            this.discarding = discarding;
+        }
+
+        void record(long amount) {
+            if (discarding) {
+                return;
+            }
+            count.increment();
+            total.add(amount);
+            max.accumulateAndGet(amount, Math::max);
+        }
+
+        MetricSnapshot snapshot() {
+            return new MetricSnapshot(count.sum(), total.sum(), max.get());
+        }
+    }
+
+    private record MetricSnapshot(long count, long total, long max) {
     }
 
     private AtlasWorldgenProfiler() {

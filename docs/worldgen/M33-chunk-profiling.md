@@ -51,6 +51,12 @@ Each report contains:
 JSON and CSV files are written under
 `redline-atlas-worldgen/run/profile-results/`.
 
+M35 extends the JSON report to `schemaVersion=2`. Existing duration counters remain
+in `counters`, while non-time measurements such as section counts, cache hits,
+sample attempts, scan depths, and block-set counts are written to a separate
+`metrics` array. The CSV report keeps the legacy timing columns and adds a `unit`
+column so count metrics can be distinguished from millisecond timings.
+
 ## Commands
 
 The commands require game-master permission:

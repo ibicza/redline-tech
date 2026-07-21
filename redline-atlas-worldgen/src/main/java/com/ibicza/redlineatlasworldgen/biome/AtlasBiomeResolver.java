@@ -67,12 +67,15 @@ public final class AtlasBiomeResolver {
         long key = columnKey(blockX, blockZ, seed);
         Optional<ColumnData> cached = COLUMN_CACHE.get(key);
         if (cached != null) {
+            AtlasWorldgenProfiler.recordMetric("cache.biomeColumn.hit");
             return cached;
         }
+        AtlasWorldgenProfiler.recordMetric("cache.biomeColumn.miss");
 
         if (COLUMN_CACHE.size() > AtlasWorldgenConfig.BIOME_COLUMN_CACHE_LIMIT.get()
                 && CACHE_CLEAR_GUARD.compareAndSet(0, 1)) {
             try {
+                AtlasWorldgenProfiler.recordMetric("cache.biomeColumn.clear");
                 COLUMN_CACHE.clear();
             } finally {
                 CACHE_CLEAR_GUARD.set(0);
@@ -342,10 +345,12 @@ public final class AtlasBiomeResolver {
         int step = Math.max(1, AtlasWorldgenConfig.BIOME_LANDCOVER_SMOOTH_STEP_BLOCKS.get());
         boolean ignoreWater = AtlasWorldgenConfig.BIOME_IGNORE_WATER_LANDCOVER.get();
         EnumMap<LandcoverClass, Integer> counts = new EnumMap<>(LandcoverClass.class);
+        int attempts = 0;
         int samples = 0;
         for (int dz = -radius; dz <= radius; dz += step) {
             for (int dx = -radius; dx <= radius; dx += step) {
                 GeoPoint geo = dx == 0 && dz == 0 ? centerGeo : AtlasCoordinateMapper.toGeo(blockX + dx, blockZ + dz);
+                attempts++;
                 Optional<LandcoverSample> sample = AtlasLandcoverIndex.active().sample(geo.latitude(), geo.longitude());
                 if (sample.isEmpty()) {
                     continue;
@@ -358,6 +363,8 @@ public final class AtlasBiomeResolver {
                 samples++;
             }
         }
+        AtlasWorldgenProfiler.recordMetric("biome.landcoverSample.attempts", attempts);
+        AtlasWorldgenProfiler.recordMetric("biome.landcoverSample.hits", samples);
 
         if (counts.isEmpty()) {
             if (center.isPresent() && (!ignoreWater || center.get().landcover() != LandcoverClass.WATER)) {
@@ -383,9 +390,11 @@ public final class AtlasBiomeResolver {
     }
 
     private static LandcoverDecision fromSample(Optional<LandcoverSample> sample, String sourcePrefix) {
+        AtlasWorldgenProfiler.recordMetric("biome.landcoverSample.attempts");
         if (sample.isEmpty()) {
             return new LandcoverDecision(LandcoverClass.UNKNOWN, 0, "none", 0);
         }
+        AtlasWorldgenProfiler.recordMetric("biome.landcoverSample.hits");
         LandcoverSample value = sample.get();
         return new LandcoverDecision(value.landcover(), value.rawCode(), sourcePrefix + ":" + value.sourceId(), 1);
     }
@@ -509,8 +518,10 @@ public final class AtlasBiomeResolver {
         };
         for (int[] offset : offsets) {
             GeoPoint geo = AtlasCoordinateMapper.toGeo(blockX + offset[0], blockZ + offset[1]);
+            AtlasWorldgenProfiler.recordMetric("biome.slopeSample.attempts");
             Optional<HeightSample> sample = AtlasOpenWaterGuide.compositeHeightSample(blockX + offset[0], blockZ + offset[1]);
             if (sample.isPresent()) {
+                AtlasWorldgenProfiler.recordMetric("biome.slopeSample.hits");
                 double delta = Math.abs(sample.get().meters() - centerMeters);
                 maxDelta = Math.max(maxDelta, delta);
                 sumDelta += delta;

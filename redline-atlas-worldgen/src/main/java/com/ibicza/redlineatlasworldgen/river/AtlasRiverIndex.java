@@ -167,8 +167,10 @@ public final class AtlasRiverIndex {
             int cellSize = AtlasWorldgenConfig.RIVER_INDEX_CELL_SIZE_BLOCKS.get();
             List<RiverSegment> candidates = cells.get(cellKey(Math.floorDiv(blockX, cellSize), Math.floorDiv(blockZ, cellSize)));
             if (candidates == null || candidates.isEmpty()) {
+                AtlasWorldgenProfiler.recordMetric("river.sample.candidateSegments", 0L);
                 return RiverSample.none();
             }
+            AtlasWorldgenProfiler.recordMetric("river.sample.candidateSegments", candidates.size());
             RiverSample best = RiverSample.none();
             for (RiverSegment segment : candidates) {
                 RiverSample candidate = segment.sample(blockX + 0.5D, blockZ + 0.5D);
@@ -192,11 +194,14 @@ public final class AtlasRiverIndex {
         long key = HashCommon.mix(cellKey(gx, gz));
         RiverSample cached = BIOME_CACHE.get(key);
         if (cached != null) {
+            AtlasWorldgenProfiler.recordMetric("cache.riverBiome.hit");
             return cached;
         }
+        AtlasWorldgenProfiler.recordMetric("cache.riverBiome.miss");
         if (BIOME_CACHE.size() >= AtlasWorldgenConfig.RIVER_SAMPLE_CACHE_LIMIT.get()
                 && CACHE_CLEAR_GUARD.compareAndSet(0, 1)) {
             try {
+                AtlasWorldgenProfiler.recordMetric("cache.riverBiome.clear");
                 BIOME_CACHE.clear();
             } finally {
                 CACHE_CLEAR_GUARD.set(0);
